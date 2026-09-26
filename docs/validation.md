@@ -11,7 +11,7 @@ No provider credentials or private review transcripts are included here.
 
 | Check | Observed result |
 | --- | --- |
-| Extracted regression suite plus standalone tests | 389 tests passed across 23 files |
+| Extracted regression suite plus standalone tests | 392 tests passed across 23 files |
 | Packed package in an isolated consumer workspace | Installed without Rove code or documents |
 | Version, help, initialization and default policy | Passed from the installed archive |
 | Windows scheduled watcher installation | Scheduler installed; healthy compatible heartbeat |

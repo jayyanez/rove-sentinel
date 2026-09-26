@@ -19,6 +19,11 @@ Rove's entire `node_modules` directory. Optional platform packages and future
 dependency updates require a fresh audit. Development tools are not runtime
 dependencies or bundled provider executables.
 
+The installed Windows development graph was also checked: 85 packages declared
+MIT, two Apache-2.0, two ISC and one BSD-3-Clause. These are permissive licenses;
+their attribution and redistribution conditions still apply. Other-platform
+optional binaries were not installed during that audit.
+
 Claude Code, Codex, Node.js, Git, GitHub CLI, and optional Cargo/Rust are external
 tools installed by the user. Their licenses and service terms remain independent
 of Sentinel's Apache-2.0 license. Sentinel does not redistribute Claude Code or

@@ -1,0 +1,7 @@
+{
+  "default": true,
+  // Long links and comparison tables should remain readable in source.
+  "MD013": false,
+  // Column padding is cosmetic and varies across Markdown renderers.
+  "MD060": false
+}

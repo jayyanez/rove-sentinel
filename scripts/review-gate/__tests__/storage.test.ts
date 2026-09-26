@@ -61,13 +61,26 @@ afterEach(async () => {
 });
 
 describe('shared review local state', () => {
+  it('preserves case-sensitive repository paths while retaining GitHub identity', () => {
+    expect(normalizeRepositoryIdentity('', '/tmp/Project', { platform: 'linux' }))
+      .not.toBe(normalizeRepositoryIdentity('', '/tmp/project', { platform: 'linux' }));
+    expect(normalizeRepositoryIdentity('ssh://git@example.com/Team/Project.git', 'unused'))
+      .not.toBe(normalizeRepositoryIdentity('ssh://git@example.com/team/project.git', 'unused'));
+    expect(normalizeRepositoryIdentity('ssh://git@github.com/Team/Project.git', 'unused'))
+      .toBe('https://github.com/team/project');
+  });
+
+  it('normalizes non-git SSH usernames across SCP and URL syntax', () => {
+    expect(normalizeRepositoryIdentity('deploy@example.com:Team/Project.git', 'unused'))
+      .toBe(normalizeRepositoryIdentity('ssh://deploy@example.com/Team/Project.git', 'unused'));
+  });
   it('never persists credentials embedded in a remote URL', () => {
     expect(
       normalizeRepositoryIdentity('https://x-access-token:secret@github.com/JayYanez/Rove.git', 'C:\\repo'),
     ).toBe('https://github.com/jayyanez/rove');
     expect(
       normalizeRepositoryIdentity('ftp://deploy:secret@example.com/Rove.git', 'C:\\repo'),
-    ).toBe('https://example.com/rove');
+    ).toBe('https://example.com/Rove');
     expect(
       normalizeRepositoryIdentity('not a URL containing secret', 'C:\\repo'),
     ).toMatch(/^remote:[a-f0-9]{32}$/);

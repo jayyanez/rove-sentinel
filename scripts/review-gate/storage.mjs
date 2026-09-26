@@ -20,10 +20,10 @@ export function hashText(value, length = 24) {
   return createHash('sha256').update(value).digest('hex').slice(0, length);
 }
 
-export function normalizeRepositoryIdentity(remoteUrl, repoRoot) {
+export function normalizeRepositoryIdentity(remoteUrl, repoRoot, { platform = process.platform } = {}) {
   const normalizedRemote = remoteUrl
     .trim()
-    .replace(/^git@([^:]+):/i, 'ssh://git@$1/')
+    .replace(/^([^@\s/:]+)@([^:/\s]+):/i, 'ssh://$1@$2/')
     .replace(/\.git$/i, '')
     .replace(/\/$/, '');
   if (normalizedRemote) {
@@ -37,12 +37,17 @@ export function normalizeRepositoryIdentity(remoteUrl, repoRoot) {
       // Transport and credentials do not identify a repository. Normalize
       // every host-based URL onto one credential-free identity so one daemon
       // and attestation store serve every local clone of the same remote.
-      return `https://${parsed.host}${parsed.pathname}`.replace(/\/$/, '').toLowerCase();
+      // GitHub paths are case-insensitive; preserving this identity also
+      // preserves existing Rove state. Other hosts may distinguish path case.
+      const pathname = parsed.hostname.toLowerCase() === 'github.com'
+        ? parsed.pathname.toLowerCase() : parsed.pathname;
+      return `https://${parsed.host.toLowerCase()}${pathname}`.replace(/\/$/, '');
     } catch {
       return `remote:${hashText(normalizedRemote, 32)}`;
     }
   }
-  return path.resolve(repoRoot).toLowerCase();
+  const local = (platform === 'win32' ? path.win32 : path.posix).resolve(repoRoot);
+  return platform === 'win32' ? local.toLowerCase() : local;
 }
 
 export function stateRootFor(

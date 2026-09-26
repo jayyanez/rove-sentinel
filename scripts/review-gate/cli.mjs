@@ -101,6 +101,10 @@ async function main() {
   const [command = 'help', ...rest] = process.argv.slice(2);
   const { options, positional } = parseArgs(rest);
   const repoRoot = options.repo || process.cwd();
+  if (options.help) {
+    print(HELP);
+    return;
+  }
   if (command === '--version' || command === 'version') {
     print(GATE_VERSION);
     return;

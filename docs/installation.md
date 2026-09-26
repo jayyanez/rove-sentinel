@@ -15,6 +15,12 @@ subscription, Codex through ChatGPT. An API key alone does not satisfy this
 release's installation checks. Your accounts need access to the configured
 models; usage consumes your own provider allowances.
 
+On Windows, use native `claude.exe` and `codex.exe` launchers. The qualified
+adapter launches executables directly without a command shell; installations
+that expose only `.cmd` or `.ps1` wrappers are not supported by this release.
+Run `Get-Command claude,codex` in PowerShell and check that both resolve to
+executables, then run `doctor` below. This is a current portability limitation.
+
 Install the external tools using their official instructions:
 [Node.js](https://nodejs.org/en/download), [Git](https://git-scm.com/downloads),
 [GitHub CLI](https://cli.github.com/),

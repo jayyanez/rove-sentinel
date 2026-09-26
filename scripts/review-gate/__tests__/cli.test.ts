@@ -69,6 +69,15 @@ describe('review-gate CLI pre-push stdin', () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })));
   });
 
+  it('shows subcommand help without an installed policy or repository', async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'sentinel-help-'));
+    dirs.push(scratch);
+    const result = await runCli(['gate', '--help', '--repo', scratch], []);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('Rove Sentinel');
+    expect(result.stderr).toBe('');
+  });
+
   it('reads git ref updates off stdin instead of rejecting the descriptor', async () => {
     const result = await runCli(['pre-push', '--repo', process.cwd(), 'origin'], []);
 

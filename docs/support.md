@@ -6,6 +6,7 @@
 | macOS | LaunchAgent and process adapters exist; live standalone qualification pending |
 | Linux | Portable core exists; no supported scheduler integration or live qualification |
 | Review providers | Claude Code and Codex, both installed and authenticated |
+| Windows launchers | Native `claude.exe` and `codex.exe`; shell-only wrappers are not supported |
 | Git host | Local Git; automatic PR comments for github.com |
 | Branch convention | `origin/main` by default; explicit base supported for direct review |
 | Inputs | Committed diffs; no review of uncommitted editor buffers |
