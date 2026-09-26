@@ -7,9 +7,9 @@ Codex** accounts. It checks candidate findings in fresh review contexts, records
 the result against the exact commit and project policy, and helps your Git hook
 decide whether that change is ready to push.
 
-**First standalone release: v1.9.0, for Windows.** Start with the
-[installation guide](docs/installation.md) and download the published archive
-from [GitHub Releases](https://github.com/jayyanez/rove-sentinel/releases).
+**Windows-first.** Start with the [installation guide](docs/installation.md).
+[GitHub Releases](https://github.com/jayyanez/rove-sentinel/releases) is the
+source of truth for published versions and downloadable archives.
 See the [validation record](docs/validation.md) for what was tested.
 
 ## Start here

@@ -88,7 +88,7 @@ present local review records as tamper-proof server enforcement.
   run such validation in isolation without host credentials.
 - [x] Make executable validation opt-in. The inherited Clippy target and timeout
   remain fixed in this release; arbitrary crate selection and configurable
-  timeout/warm-up are deferred and documented in the support matrix.
+  timeout/warm-up are deferred and documented in the configuration guide.
 - [x] Document data sent to model providers, retained locally, and published to
   GitHub; do not describe remote model inference as offline operation.
 
@@ -158,7 +158,8 @@ platforms is authorized and real test hosts are available.
 
 ## Next action
 
-Complete hosted Windows CI, publish the reviewed release archive, and switch
-Rove from its tested local candidate to that exact published asset.
+Hosted Windows CI passed for implementation commit `36f1ea9` on Node 22 and 24.
+Rerun it for the final documentation/test commit, publish the reviewed release
+archive, and switch Rove from its tested local candidate to that published asset.
 Keep the owning PR in draft while implementation or required verification is
 pending. Update this plan and the PR body as acceptance criteria are completed.

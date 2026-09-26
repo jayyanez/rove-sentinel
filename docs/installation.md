@@ -2,9 +2,10 @@
 
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
-These instructions target v1.9.0. Download its archive from
-[GitHub Releases](https://github.com/jayyanez/rove-sentinel/releases) and pin the
-version. To work on Sentinel itself, see [CONTRIBUTING.md](../CONTRIBUTING.md).
+These instructions target v1.9.0. Use the download commands once its archive is
+listed on [GitHub Releases](https://github.com/jayyanez/rove-sentinel/releases),
+and pin that version. To work on Sentinel itself, see
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## What you need
 

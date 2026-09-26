@@ -22,7 +22,7 @@ No provider credentials or private review transcripts are included here.
 | Watcher reinstall | Completed successfully |
 | Watcher uninstall | Scheduler removed; generated hook removed; shared hook configuration preserved |
 | Existing-hook preservation | Covered by deterministic regression tests |
-| Hosted Windows CI, Node 22 and 24 | Tests, notice regeneration and archive installation passed |
+| Hosted Windows CI, Node 22 and 24 | Tests, notices and archive installation passed for `36f1ea9`; each later head reruns CI |
 | macOS and Linux live operation | Not qualified |
 | Windows logoff/logon cycle | Not exercised; scheduled task was started through Task Scheduler |
 
