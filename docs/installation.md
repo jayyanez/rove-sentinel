@@ -88,6 +88,11 @@ watcher. On Windows it registers a hidden logon task. Keep this checkout and
 its installed dependency available; do not install the watcher from a temporary
 review worktree that will be deleted.
 
+In `status`, check that the watcher and policy are compatible, the scheduler is
+installed, and `paused` is `null`. A healthy heartbeat alone does not mean reviews
+are enabled. An earlier safety pause survives reinstall; investigate its reason
+and follow [recovery guidance](troubleshooting.md) before resuming.
+
 If another checkout owns an active watcher for the same remote, installation
 refuses to take it over. Use that stable checkout to upgrade or uninstall first.
 Configuration changes require reinstallation; the reviewed branch cannot silently

@@ -86,7 +86,7 @@ machine, watcher, network, and both authenticated CLIs must remain available.
 | `watch --once --no-github` | Process the local queue without PR discovery |
 | `pause --reason "Maintenance"` | Pause new review work |
 | `resume` | Resume ordinary paused work |
-| `recover --reason "Investigated and resolved the process failure"` | Recover after checking a technical failure |
+| `recover --reason "Investigated the stale watcher state"` | Recover stale locks and claims; refuses a healthy watcher and does not clear a pause |
 | `ledger --pr 123` | Draft an optional comparison ledger from external review comments |
 | `help` | List commands and flags |
 

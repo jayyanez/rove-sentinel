@@ -11,7 +11,7 @@ private remote URLs, and private source excerpts.
 | Policy missing or version mismatch | Reinstall from the trusted stable checkout after updating the dependency |
 | Another checkout owns the watcher | Operate from that checkout; avoid competing watchers for the same remote |
 | Push waits for review | Inspect watcher health, its current activity and the detached review log |
-| Process cleanup failure pauses work | Investigate remaining processes, then use `recover` with a reason |
+| Process cleanup failure pauses work | Investigate the recorded process and children; use `resume` if the watcher is healthy, or recover stale state before restarting |
 | GUI evidence requested unexpectedly | Inspect the installed `guiEvidence` configuration; generic projects use `none` |
 | Clippy timeout | Check the lane note and cold build cost; do not treat it as a passing Rust check |
 | No GitHub PR comment | Check draft state, author allowlist, same-repository head, `gh` permissions, and watcher health |
@@ -30,3 +30,9 @@ Local hooks can be bypassed by someone controlling their machine. Emergency
 bypass variables are retained for compatibility and are audited by exact SHA
 and reason; they are not a normal troubleshooting remedy. Use independent GitHub
 branch protection for server-side policy. Sentinel does not configure it for you.
+
+`recover --reason "..."` is for stale watcher state and deliberately refuses to
+clear a healthy watcher's lock. It does not clear a pause. After investigating
+the original failure, use `resume` to clear the pause; restart or reinstall a
+stopped watcher if necessary. Installation preserves an existing pause instead
+of silently overriding an operator or cleanup safety decision.

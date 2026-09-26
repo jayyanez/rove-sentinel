@@ -21,6 +21,7 @@ No provider credentials or private review transcripts are included here.
 | Different unreviewed head while watcher paused | Refused; old PASS was not reused |
 | Watcher reinstall | Completed successfully |
 | Watcher uninstall | Scheduler removed; generated hook removed; shared hook configuration preserved |
+| Retained safety pause after stopping an in-flight GitHub CLI call | No recorded process or direct child remained; healthy watcher resumed after inspection |
 | Existing-hook preservation | Covered by deterministic regression tests |
 | Hosted Windows CI, Node 22 and 24 | Tests, notices and archive installation passed for `36f1ea9`; each later head reruns CI |
 | macOS and Linux live operation | Not qualified |
@@ -30,6 +31,13 @@ The fixture had a deliberately simple arithmetic defect. It proves the installed
 provider and adjudication path ran; it is not a review-quality benchmark.
 Recovery and process-tree edge cases are exercised by the regression suite;
 not every OS failure was induced on a live host.
+
+During shutdown acceptance, a GitHub CLI process exited during the termination
+check and the watcher retained a safety pause. Reinstallation preserved it.
+Inspection found no matching process or direct child. Stale-state recovery
+correctly refused to remove the healthy replacement watcher's lock; `resume`
+cleared the inspected pause. A failed termination proof is never treated as
+permission to continue without investigation.
 
 Independent review covered the complete committed extraction and a follow-up.
 Two repository-identity defects were fixed with regressions that failed before
