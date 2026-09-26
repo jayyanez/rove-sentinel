@@ -61,8 +61,10 @@ describe('bounded review subprocesses', () => {
 
   it('attaches captured stdout to timeout errors so providers can salvage JSON', async () => {
     await expect(
-      runProcess(process.execPath, ['-e', 'process.stdout.write("{\\"ok\\":true}"); setTimeout(() => {}, 5000)'], {
-        timeoutMs: 250,
+      runProcess(process.execPath, ['-e', 'process.stdout.write("{\\"ok\\":true}"); setTimeout(() => {}, 30000)'], {
+        // Include Node startup on a contended Windows CI host. The child
+        // deliberately outlives this budget, so timeout capture is still tested.
+        timeoutMs: 5_000,
         maxOutputBytes: 1000,
       }),
     ).rejects.toMatchObject({
