@@ -68,6 +68,26 @@ describe('automatic engine activation', () => {
     expect(f.deps.stop).not.toHaveBeenCalled();
     expect(await readJson(f.context.paths.paused)).toBeNull();
   });
+  it.each(['valid', 'truncated', 'invalid-shape'])('reclaims a crashed %s lease when its PID belongs to a newer process', async (kind) => {
+    const f = await fixture();
+    const directory = path.join(f.context.paths.root, 'active-reviews');
+    await mkdir(directory);
+    const file = path.join(directory, '123-00000000-0000-4000-8000-000000000000.json');
+    await writeFile(file, kind === 'valid' ? JSON.stringify({ pid: 123, startedAt: 10 }) : kind === 'truncated' ? '{' : '{}');
+    const release = await acquireUpdateLease(f.context.paths, {}, {
+      isAlive: () => true, startedAt: async () => Date.now() + 5000,
+    });
+    await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
+    await release();
+  });
+  it('preserves a verified live owner and refuses to guess when creation time is unavailable', async () => {
+    const f = await fixture();
+    const directory = path.join(f.context.paths.root, 'active-reviews'); await mkdir(directory);
+    await writeFile(path.join(directory, '123-00000000-0000-4000-8000-000000000000.json'), JSON.stringify({ pid: 123, startedAt: 10 }));
+    for (const stamp of [10, null]) await expect(acquireUpdateLease(f.context.paths, {}, {
+      isAlive: () => true, startedAt: async () => stamp,
+    })).rejects.toThrow('review is active');
+  });
   it('restores the prior runtime after a failed new install', async () => {
     const f = await fixture(); const original = f.deps.run.getMockImplementation();
     f.deps.run.mockImplementation(async (command, args) => {

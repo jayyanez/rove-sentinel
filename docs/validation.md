@@ -11,7 +11,7 @@ No provider credentials or private review transcripts are included here.
 
 ## Release-update acceptance
 
-The 1.10.0 candidate passes 425 deterministic tests, including stable release and
+The 1.10.0 candidate passes 429 deterministic tests, including stable release and
 asset validation, cache/offline behavior, SHA-256 rejection, immutable runtime
 selection, active-review exclusion, rollback and recovery fencing. Multi-project
 fixtures verify independent activation with a shared runtime store. These lifecycle

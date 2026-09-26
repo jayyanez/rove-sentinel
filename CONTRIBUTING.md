@@ -57,6 +57,8 @@ immutable managed engines independently for each repository. Read the
 `sentinelEngineProtocol: 1` must keep the CLI version/status/install contract,
 including `install --preserve-policy`, and the repository selection format
 compatible. Do not claim protocol compatibility for a breaking update.
+Managed engines must also accept evidence produced by the pinned launcher's
+public helper exports; automatic updates do not replace those imported libraries.
 
 Run `node scripts/runtime-smoke.mjs` for explicit Windows lifecycle acceptance.
 It creates synthetic local consumers and scheduled tasks, requires existing CLI

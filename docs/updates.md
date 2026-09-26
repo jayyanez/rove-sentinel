@@ -123,3 +123,9 @@ Node.js installations normally include npm. macOS and Linux have no automatic
 activation in this release. npm registry and host policies still apply. Bootstrap
 versions before 1.10.0 cannot update themselves: install the 1.10.0 launcher once
 through the project's normal dependency workflow, then install its watcher.
+
+That initial migration also applies to existing worktrees and other clones on
+the machine: each needs the new launcher before it can follow managed engines.
+Let v1.9.0 reviews finish before switching the shared watcher. A checkout still
+running the old 1.9.0 package cannot use a newer installed policy; update its
+dependency through the project's normal branch workflow before its next review.

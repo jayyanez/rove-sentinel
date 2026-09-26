@@ -28,7 +28,7 @@ Operations:
   updates [--enable|--disable]         Configure background engine updates
   update                              Retry an update now (normally automatic)
 
-status and doctor include an advisory update check (cached for 24 hours).
+status and doctor include an advisory update check (success: 24 hours; failure: 1 hour).
 Use --no-update-check or ROVE_SENTINEL_UPDATE_CHECK=0 to disable network checks.
 Windows watchers update the engine automatically in separate versioned folders.
 Existing reviews finish first. Use updates --disable to keep the current engine.

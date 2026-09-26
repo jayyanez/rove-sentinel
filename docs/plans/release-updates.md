@@ -24,7 +24,7 @@ successfully. Different projects can activate independently and share downloads.
 
 ## Current evidence and next action
 
-The final full suite passed 425 tests and package installation. Live Windows
+The final full suite passed 429 tests and package installation. Live Windows
 acceptance passed with two real scheduled watchers, shared verified downloads,
 independent activation, frozen-policy preservation and restoration after an
 injected startup failure. It identified two lifecycle defects now covered by
