@@ -2,9 +2,9 @@
 
 ## Current status
 
-The public repository and project identity are established. The working engine
-remains inside Rove. No standalone package has been released, and Rove has not
-yet switched to an external dependency.
+The standalone engine, regression suite, onboarding CLI and documentation are
+under implementation in PR #1. No standalone package has been released, and
+Rove has not yet switched to an external dependency.
 
 ## First release
 

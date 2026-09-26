@@ -1,0 +1,29 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows / Node ${{ matrix.node }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install --global pnpm@12.3.4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - run: node scripts/license-inventory.mjs
+      - run: git diff --exit-code -- THIRD_PARTY_NOTICES.txt docs/dependencies.json
+      - run: pnpm verify:package

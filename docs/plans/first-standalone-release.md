@@ -1,6 +1,8 @@
 # Plan: first standalone release
 
-**Delivery status:** Planned. Implementation has not started in this repository.
+**Delivery status:** Implementing in [Sentinel #1](https://github.com/jayyanez/rove-sentinel/pull/1).
+Consumer migration is tracked in Rove's private repository; its source and evidence
+remain private. No standalone release has been published yet.
 
 **Owner:** @jayyanez, with implementation assisted by Codex.
 

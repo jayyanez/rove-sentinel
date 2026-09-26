@@ -1,0 +1,26 @@
+{
+  "name": "rove-sentinel",
+  "version": "1.9.0",
+  "description": "Commit-bound code review with your authenticated Claude Code and Codex CLIs",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Jay Yanez",
+  "repository": { "type": "git", "url": "https://github.com/jayyanez/rove-sentinel.git" },
+  "engines": { "node": ">=22" },
+  "bin": { "rove-sentinel": "scripts/review-gate/cli.mjs" },
+  "exports": {
+    "./cli": "./scripts/review-gate/cli.mjs",
+    "./gui-evidence": "./scripts/review-gate/guiEvidence.mjs"
+  },
+  "files": ["scripts/review-gate/*.mjs", "templates/", "README.md", "CONTRIBUTING.md", "SECURITY.md", "ROADMAP.md", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "docs/"],
+  "scripts": {
+    "test": "vitest run",
+    "verify": "vitest run",
+    "verify:package": "node scripts/package-smoke.mjs",
+    "review:gate": "node scripts/review-gate/cli.mjs gate",
+    "review:install": "node scripts/review-gate/cli.mjs install",
+    "review:status": "node scripts/review-gate/cli.mjs status"
+  },
+  "dependencies": { "markdownlint": "0.38.0" },
+  "devDependencies": { "vitest": "2.1.9", "typescript": "5.9.3", "@types/node": "22.19.19" }
+}

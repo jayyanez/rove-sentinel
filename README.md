@@ -1,99 +1,91 @@
 # Rove Sentinel
 
-**Independent AI code review, before you push.**
+**A second look at your code, before you push.**
 
-Rove Sentinel brings fresh Claude Code and Codex reviews into a local Git
-workflow. It reviews a specific committed change, checks candidate findings
-in a separate review context, and records the result against the exact commit
-and review policy.
+Rove Sentinel reviews a committed Git change using your own **Claude Code and
+Codex** accounts. It checks candidate findings in fresh review contexts, records
+the result against the exact commit and project policy, and helps your Git hook
+decide whether that change is ready to push.
 
-**Project status:** the public project is being established. The working
-implementation currently lives inside Rove and is being prepared for extraction.
-This repository does not yet contain an installable standalone release.
+**Status:** the first standalone release is being qualified. The engine and
+regression suite are now being extracted here; v1.9.0 is not published yet.
+The original engine is already used in Rove. See the [release plan](docs/plans/first-standalone-release.md).
+
+## Start here
+
+| You want to… | Read this |
+| --- | --- |
+| Install Sentinel in your project | [Installation guide](docs/installation.md) |
+| Run your first review and handle findings | [Usage guide](docs/usage.md) |
+| Understand requirements and limitations | [Support matrix](docs/support.md) |
+| Add your project's review rules | [Configuration](docs/configuration.md) |
+| Understand how the review works | [Architecture](docs/architecture.md) |
+| Compare its scope with CodeRabbit or Greptile | [Comparison](docs/comparison.md) |
+| Fix a setup problem | [Troubleshooting](docs/troubleshooting.md) |
+| Help build Sentinel | [Contributing](CONTRIBUTING.md) |
+
+## What a review looks like
+
+After installation, run your tests and commit your change:
+
+```powershell
+npx --no-install rove-sentinel gate --base origin/main --head HEAD --author human
+```
+
+Sentinel prepares the committed diff and relevant repository context, reviews
+it in bounded pieces, verifies proposed findings, and reports its decision.
+Fix a finding, commit the repair, and review again. The pre-push hook checks
+the exact pushed commit; an earlier PASS cannot authorize a later edit.
+
+The tool can also run a local watcher that reviews eligible GitHub PRs and
+posts status comments. It does not merge PRs or replace GitHub branch protection.
+
+## What you need
+
+- Windows for the first supported release; macOS and Linux qualification is pending.
+- Node.js 22+, Git, and authenticated GitHub CLI (`gh`).
+- **Both Claude Code and Codex CLI**, separately installed and on PATH.
+- Claude Code authenticated through a Claude subscription; Codex through ChatGPT.
+- Your own provider allowances and access to the configured models.
+
+The Claude Code + Codex configuration is enabled and required. Individual
+reviews select providers by risk and author; not every review calls both.
+Sentinel does not include subscriptions or provider binaries. Source context is
+sent through your CLIs to their AI providers; local orchestration is not offline
+inference. Read the [trust boundaries](docs/security.md).
+
+## What it does today
+
+- Reviews exact commits with project policy frozen at installation.
+- Separates candidate findings from their adjudication.
+- Uses diff shards, bounded history and reference maps for context.
+- Rechecks blockers and focuses follow-up reviews on repairs.
+- Records explicit permitted deferrals rather than silently dropping findings.
+- Integrates with local Git hooks and an optional GitHub PR watcher.
+- Bounds processes, queues, timeouts and retained reports.
+
+AI review can miss bugs or report false positives. Keep your tests and human
+judgment. Sentinel currently has no hosted service, IDE extension, automatic
+fork-PR review, or public provider-plugin API. Copilot, OpenCode, Muse, Grok
+Build and other agents are possible future work, not implemented integrations.
 
 ## Born in Rove
 
-Rove Sentinel is already used in the development of **Rove**, an upcoming
-desktop application built around a Mosaic Workspace. Its original,
-repository-integrated review workflow has been used across **hundreds of Rove
-pull requests**. This project gives that system an independent home so other
-repositories can use it too.
+Sentinel grew out of **Rove**, an upcoming desktop application built around a
+Mosaic Workspace. The original integrated review workflow has been used across
+**hundreds of Rove pull requests**. This independent project makes the engine
+available for other developers to inspect, use and improve.
 
 Rove has not been publicly released. Its planned website is
 `https://11kites.com/rove`; **the website is not live yet**.
-
-See [Origin and real-world use](docs/origin.md) for the scope of the usage claim
-and the relationship between the two projects.
-
-## What the existing implementation provides
-
-- Review of an exact Git diff, identified by repository, merge base, head
-  commit, policy digest, and engine version.
-- Fresh Claude Code and Codex contexts, with independent adjudication of
-  candidate findings.
-- Bounded review of large changes through diff shards, reference maps, and
-  relevant history.
-- Follow-up reviews that focus on repairs and recheck earlier blocking findings.
-- Explicit handling of findings: fix, dismiss with evidence, or record an
-  allowed deferral with a reason.
-- A local pre-push hook, review watcher, and GitHub pull-request status comments.
-- Bounded subprocesses, timeouts, retained reports, and recovery operations.
-
-These capabilities describe the system operating inside Rove. Their standalone
-packaging and public-repository defaults still need validation. AI review
-complements tests and human judgment; it does not prove correctness or replace
-branch protection.
-
-## Requirements for the first release
-
-The default configuration will require **both**:
-
-1. **OpenAI Codex CLI**, installed separately and authenticated with ChatGPT.
-2. **Anthropic Claude Code**, installed separately and authenticated with a
-   Claude subscription.
-
-Both tools must be available on the same machine. The Claude Code + Codex
-configuration will be enabled by default and required for the first release.
-Each user supplies their own accounts; usage remains subject to their provider
-plans, model availability, and limits. Rove Sentinel does not include provider
-subscriptions, collect provider login credentials, or redistribute their tools.
-
-Node.js and Git will also be required. The GitHub integration requires GitHub
-CLI (`gh`) authenticated for the target repository. Exact supported tool
-versions and installation instructions will accompany the first release.
-
-The current engine selects reviewers by change risk and author family; requiring
-both tools does not mean every individual review invokes both providers.
-
-GitHub Copilot, OpenCode, Muse, Grok Build, and other agents may be evaluated
-later. They are **not currently supported** or promised integrations.
-
-## Platform direction
-
-| Platform | Initial release scope |
-| --- | --- |
-| Windows | First supported platform, after standalone validation |
-| macOS | Existing platform-specific code; live standalone validation pending |
-| Linux | Portable core; platform integration and validation pending |
-
-The goal is cross-platform operation. A Windows-first release will not imply
-that macOS or Linux has been qualified.
-
-## Development status
-
-See the [roadmap](ROADMAP.md). Extraction must preserve Rove's working review
-behavior while separating project policy from the reusable engine. Automatic
-review of untrusted public pull requests needs an explicit execution trust
-boundary before release.
-
-No package has been published by this project yet. There is no installation
-command to run at this stage.
+See [origin and real-world use](docs/origin.md) for the scope of the usage claim.
 
 ## License
 
-This project's original material is licensed under [Apache-2.0](LICENSE).
-Third-party tools and services retain their own licenses and terms. This license
-does not license the Rove application or grant access to Claude or OpenAI services.
+Original code and documentation are [Apache-2.0](LICENSE).
+[Dependency notices](THIRD_PARTY_NOTICES.txt) retain third-party attribution;
+external tools and services have their own licenses and terms. This license
+does not license the Rove application or grant access to AI services.
 
-Rove Sentinel is an independent project and is not affiliated with or endorsed
-by Anthropic, OpenAI, GitHub, or the providers of possible future integrations.
+Rove Sentinel is independent and is not affiliated with or endorsed by
+Anthropic, OpenAI, GitHub, CodeRabbit, or Greptile.
