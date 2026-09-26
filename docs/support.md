@@ -14,6 +14,9 @@
 | Deterministic tools | Markdownlint; opt-in Clippy for `src-tauri` |
 | Visual evidence | Optional Rove format validation; no screenshot generation |
 | External contributors | No automatic fork PR review; same-repository author allowlist |
+| Release discovery | Cached public GitHub lookup in update-check, status and doctor; opt-out supported |
+| Automatic engine updates | Windows; checksum-verified isolated runtimes, idle activation, rollback and opt-out |
+| Multiple projects | Separate watcher and policy per repository; shared immutable runtime downloads per OS account |
 
 The first release does not implement GitHub Copilot, OpenCode, Muse, Grok Build,
 Gemini, or arbitrary provider plugins. The `grok` author label is routing

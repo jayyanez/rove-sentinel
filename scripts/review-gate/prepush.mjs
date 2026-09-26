@@ -13,6 +13,7 @@ import {
   showFileAtCommit,
 } from './git.mjs';
 import { startDaemonDetached } from './daemon.mjs';
+import { acquireReviewLease } from './maintenance.mjs';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
 import { undisposedRefusal } from './dispositions.mjs';
@@ -301,6 +302,7 @@ export async function runPrePush({
   // Review evidence belongs to the checkout's canonical repository identity,
   // not to whichever push destination happened to invoke this hook.
   const context = await createGateContext(repoRoot, { stateRoot });
+  const releaseReview = await acquireReviewLease(context.paths);
   // Every refusal below — including the earliest ones — must still run the
   // audit-retention prune on the way out (Greptile P2 on 04aa959e): the
   // unconditional per-invocation prune exists to heal a ledger left above its
@@ -560,6 +562,7 @@ export async function runPrePush({
     }).catch((error) => {
       process.stderr.write(`Shared review gate: audit retention prune failed: ${error?.message || error}\n`);
     });
+    await releaseReview();
   }
 }
 

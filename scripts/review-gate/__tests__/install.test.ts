@@ -101,6 +101,15 @@ describe('review-gate native installer plans', () => {
     expect(plan.create.args.join(' ')).not.toContain('powershell');
   });
 
+  it('preserves the installed state location when Task Scheduler supplies a fresh environment', () => {
+    const plan = buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'D:\\custom-state',
+      localAppData: 'D:\\custom-local', nodePath: 'C:\\node.exe', autoUpdate: '0', updateNotifications: '0' });
+    expect(plan.wrapper).toContain('set "LOCALAPPDATA=D:\\custom-local"');
+    expect(plan.wrapper.indexOf('set "LOCALAPPDATA=')).toBeLessThan(plan.wrapper.indexOf('"watch"'));
+    expect(plan.wrapper).toContain('set "ROVE_SENTINEL_AUTO_UPDATE=0"');
+    expect(plan.wrapper).toContain('set "ROVE_SENTINEL_UPDATE_NOTIFICATIONS=0"');
+  });
+
   it('runs the Windows watcher task in a headless console, never a visible window', () => {
     const plan = buildInstallPlan({
       platform: 'win32',

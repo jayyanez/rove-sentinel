@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
+import { acquireUpdateLease } from '../maintenance.mjs';
 import {
   assertReviewIdentity,
   buildGateRequestOptions,
@@ -77,6 +78,22 @@ afterEach(async () => {
 });
 
 describe('shared review pre-push enforcement', () => {
+  it('keeps an in-flight push on its engine and releases the update fence afterward', async () => {
+    const { root, stateRoot, head } = await makeRepository();
+    const paths = await ensureState(stateRoot);
+    let observed = false;
+    await runPrePush({ repoRoot: root, stateRoot, remoteName: 'origin',
+      input: `(delete) ${'0'.repeat(40)} refs/heads/old ${head}\n`,
+      writeAuditEvent: async () => {
+        observed = true;
+        await expect(acquireUpdateLease(paths, {})).rejects.toThrow('review is active');
+      }, pruneAuditEvents: async () => {},
+    });
+    expect(observed).toBe(true);
+    const release = await acquireUpdateLease(paths, {});
+    await release();
+  });
+
   it('falls back to the configured remote when Git passes a raw push URL', () => {
     expect(pushRemoteNameForHook('https://github.com/example/rove.git', 'origin')).toBe('origin');
     expect(pushRemoteNameForHook('git@github.com:example/rove.git', 'origin')).toBe('origin');

@@ -21,11 +21,12 @@ await writeFile(path.join(scratch, 'pnpm-workspace.yaml'), "packages:\n  - '.'\n
 await manager(['pack', '--pack-destination', scratch], root);
 const archive = path.join(scratch, `${pkg.name}-${pkg.version}.tgz`);
 await manager(['add', '--save-dev', '--ignore-scripts', archive]);
-const cli = path.join(scratch, 'node_modules/rove-sentinel/scripts/review-gate/cli.mjs');
+const cli = path.join(scratch, 'node_modules/rove-sentinel/scripts/review-gate/launcher.mjs');
 assert.equal((await run(process.execPath, [cli, '--version'])).stdout.trim(), pkg.version);
 assert.match((await run(process.execPath, [cli, '--help'])).stdout, /Rove Sentinel/);
 await run('git', ['init', '-b', 'main']);
 await run(process.execPath, [cli, 'init']);
+assert.equal(JSON.parse((await run(process.execPath, [cli, 'update-check', '--no-update-check', '--json'])).stdout).status, 'disabled');
 const hook = await readFile(path.join(scratch, '.githooks/pre-push'), 'utf8');
 assert.match(hook, /sentinel\.mjs/);
 assert.equal(JSON.parse((await run(process.execPath, [path.join(scratch, '.githooks/sentinel.mjs'), 'pre-push'], scratch, { input: '' })).stdout).reviewed, 0);

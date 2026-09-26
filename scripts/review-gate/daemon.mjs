@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { maybeStartUpdateWorker } from './automatic-updates.mjs';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
@@ -325,6 +326,7 @@ export async function runWatcher({
             charterVersion: CHARTER_VERSION,
             policyDigest: context.policy.policyDigest,
           });
+          if (!once) await maybeStartUpdateWorker(context).catch(() => {});
           const paused = await drainQueuedRequests(context, progress, {
             shouldStop: () => stopped,
           });
@@ -365,7 +367,7 @@ export async function runWatcher({
             nextGithubAt = Date.now() + githubBackoffMs;
           }
           watcherBackoffMs = LIMITS.queuePollMs;
-          watcherDelayDetails = { activity: 'idle' };
+          watcherDelayDetails = { activity: paused ? 'paused' : 'idle' };
         } catch (error) {
           if (once) throw error;
           const message = (error?.message || String(error)).slice(0, 2000);

@@ -10,8 +10,9 @@ describe('standalone package contract', () => {
     expect(pkg.version).toBe(GATE_VERSION);
     expect(charter).toContain(`**Charter version:** ${CHARTER_VERSION}`);
     expect(charter).toContain(`**Gate version:** ${GATE_VERSION}`);
-    expect(pkg.bin['rove-sentinel']).toBe('scripts/review-gate/cli.mjs');
-    expect(pkg.exports['./cli']).toBe('./scripts/review-gate/cli.mjs');
+    expect(pkg.bin['rove-sentinel']).toBe('scripts/review-gate/launcher.mjs');
+    expect(pkg.exports['./cli']).toBe('./scripts/review-gate/launcher.mjs');
+    expect(pkg.sentinelEngineProtocol).toBe(1);
   });
 
   it('keeps incomplete claimed fixes in every reviewer scope', async () => {

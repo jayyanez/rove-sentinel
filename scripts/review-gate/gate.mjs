@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import { acquireReviewLease } from './maintenance.mjs';
 
 import {
   createContextBundle,
@@ -537,7 +538,14 @@ export function priorBlockingFromReviews(reviews, deferrals) {
   return byKey;
 }
 
-export async function runGate({
+export async function runGate(options = {}) {
+  const context = await createGateContext(options.repoRoot || process.cwd(), { stateRoot: options.stateRoot });
+  const release = await acquireReviewLease(context.paths);
+  try { return await runGateWithLease(options); }
+  finally { await release(); }
+}
+
+async function runGateWithLease({
   repoRoot: repoRootInput = process.cwd(),
   base = 'origin/main',
   head = 'HEAD',

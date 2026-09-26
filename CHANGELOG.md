@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.0 — automatic engine updates
+
+- Add bounded, cached `update-check` and advisory notices in status/doctor, with
+  explicit opt-out and nonblocking offline behavior.
+- Add a pinned launcher and shared immutable runtime store. Windows watchers
+  install stable releases automatically, verify SHA-256 and engine compatibility,
+  wait for idle reviews, verify activation and restore the prior engine on failure.
+- Preserve installed project policy and consumer lockfiles. Different repositories
+  activate independently while sharing verified runtime files.
+- Add native and CLI update notices, per-repository opt-out, retained recovery
+  records, and documentation for multiple agents and projects.
+
 ## 1.9.0 — first standalone release
 
 The version continues the original Rove engine's 1.8.x lineage. Earlier

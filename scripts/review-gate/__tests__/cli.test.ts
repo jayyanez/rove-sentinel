@@ -69,6 +69,15 @@ describe('review-gate CLI pre-push stdin', () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })));
   });
 
+  it('can check updates with network disabled outside any repository', async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'sentinel-update-cli-'));
+    dirs.push(scratch);
+    const result = await runCli(['update-check', '--no-update-check', '--json', '--repo', scratch], []);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: 'disabled' });
+    expect(result.stderr).toBe('');
+  });
+
   it('shows subcommand help without an installed policy or repository', async () => {
     const scratch = await mkdtemp(path.join(os.tmpdir(), 'sentinel-help-'));
     dirs.push(scratch);

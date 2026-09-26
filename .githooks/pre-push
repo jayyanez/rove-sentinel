@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 root=$(git rev-parse --show-toplevel)
-exec node "$root/scripts/review-gate/cli.mjs" pre-push "$@"
+exec node "$root/scripts/review-gate/launcher.mjs" pre-push "$@"
