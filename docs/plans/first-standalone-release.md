@@ -3,7 +3,8 @@
 **Delivery status:** [v1.9.0 is published](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.9.0),
 following [Sentinel #1](https://github.com/jayyanez/rove-sentinel/pull/1).
 Consumer migration is tracked in Rove's private repository; its source and evidence
-remain private. Its published-package verification and final adoption are in progress.
+remain private. Rove's adoption is merged: its canonical checkout and installed
+Windows watcher now use the published v1.9.0 package.
 
 **Owner:** @jayyanez, with implementation assisted by Codex.
 
@@ -117,9 +118,9 @@ present local review records as tamper-proof server enforcement.
   limitations, and verified platform/tool versions.
 - [x] Track adoption in a dedicated Rove implementation PR, linked back to this
   public PR. Its private URL is retained in Rove; no private code is exported.
-- [ ] Pin Rove to the release, preserve its project checks, and validate a real
+- [x] Pin Rove to the release, preserve its project checks, and validate a real
   review and push using the external package.
-- [ ] Remove the embedded reusable engine only after parity is established;
+- [x] Remove the embedded reusable engine only after parity is established;
   retain a documented rollback path.
 
 ## Acceptance criteria
@@ -158,10 +159,15 @@ recorded separately; unit tests do not establish those behaviors.
 macOS and Linux acceptance will be tracked separately when work on those
 platforms is authorized and real test hosts are available.
 
-## Next action
+## Delivery record
 
-Complete Rove's published-package checks and independent consumer review before
-its approved merge and installed watcher transition. The release archive was
-downloaded from GitHub and its SHA-256 matched `SHA256SUMS`. A later CI run found
-an overly short startup allowance in a subprocess regression; follow-up test
-hardening does not change the released runtime or replace its immutable archive.
+The release archive was downloaded from GitHub and its SHA-256 matched
+`SHA256SUMS`. Rove passed its published-package suite, independent review and
+external PR review, then merged the adoption and removed the embedded engine.
+Its canonical Windows watcher runs gate 1.9.0 / charter 1.8.0 with compatible
+policy and no pause; the old watcher exited. Consumer integration checks passed
+again after installation. See the [validation record](../validation.md).
+
+A post-release CI run found an overly short startup allowance in a subprocess
+regression. Follow-up test hardening passed Windows CI on Node 22 and 24 and
+does not change the released runtime or replace its immutable archive.

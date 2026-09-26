@@ -51,8 +51,14 @@ Two repository-identity defects were fixed with regressions that failed before
 the fixes. Markdown lint passes. CI results are retained in
 [the workflow history](https://github.com/jayyanez/rove-sentinel/actions/workflows/verify.yml).
 
-Rove's consumer branch passed full verification with the external candidate,
-then again after removing the embedded engine: 5,647 tests passed, one test was
-skipped, and Svelte reported zero errors plus one pre-existing warning. Release
-adoption and the installed watcher transition require that repository's own
-review and merge. Do not infer that canonical Rove is already migrated.
+Rove passed full verification with the published archive after removing the
+embedded engine: 5,647 tests passed, one test was skipped, and Svelte reported
+zero errors plus one pre-existing warning. Its adoption passed independent
+review and CodeRabbit review before the authorized merge.
+
+The canonical Windows checkout now uses the pinned public release. Installation
+replaced its old idle watcher; the old process exited, the scheduler resolves the
+installed package CLI, and status reports gate 1.9.0 / charter 1.8.0, compatible
+policy, a healthy watcher and no pause. All 26 consumer/design integration tests
+passed again from that canonical checkout. This qualifies the observed Windows
+migration; it does not establish macOS/Linux support or universal review quality.
