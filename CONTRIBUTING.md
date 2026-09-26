@@ -5,6 +5,10 @@ Thanks for helping make independent code review easier to use. Start with
 [architecture](docs/architecture.md). Small reproductions, clearer instructions,
 platform verification and regression tests are as valuable as new features.
 
+Coding agents should also read [AGENTS.md](AGENTS.md), the shared repository
+instruction file. Keep agent guidance there rather than duplicating it across
+tool-specific files.
+
 ## Run the project
 
 Use Node.js 22 or later and pnpm. Clone the repository, then:
