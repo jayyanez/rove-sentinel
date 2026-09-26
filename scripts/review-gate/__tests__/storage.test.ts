@@ -64,6 +64,8 @@ describe('shared review local state', () => {
   it('preserves case-sensitive repository paths while retaining GitHub identity', () => {
     expect(normalizeRepositoryIdentity('', '/tmp/Project', { platform: 'linux' }))
       .not.toBe(normalizeRepositoryIdentity('', '/tmp/project', { platform: 'linux' }));
+    expect(normalizeRepositoryIdentity('', 'C:\\Repos\\Project', { platform: 'win32' }))
+      .toBe(normalizeRepositoryIdentity('', 'c:\\repos\\project', { platform: 'win32' }));
     expect(normalizeRepositoryIdentity('ssh://git@example.com/Team/Project.git', 'unused'))
       .not.toBe(normalizeRepositoryIdentity('ssh://git@example.com/team/project.git', 'unused'));
     expect(normalizeRepositoryIdentity('ssh://git@github.com/Team/Project.git', 'unused'))

@@ -2,9 +2,10 @@
 
 ## Current status
 
-The standalone engine, regression suite, onboarding CLI and documentation are
-under implementation in PR #1. No standalone package has been released, and
-Rove has not yet switched to an external dependency.
+The first standalone release line is 1.9.0: engine, regression suite, onboarding
+CLI and documentation. Rove's adoption of the published package is tracked
+separately; its canonical checkout remains on the integrated gate until that
+migration is approved and merged.
 
 ## First release
 

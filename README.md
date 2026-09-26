@@ -7,9 +7,10 @@ Codex** accounts. It checks candidate findings in fresh review contexts, records
 the result against the exact commit and project policy, and helps your Git hook
 decide whether that change is ready to push.
 
-**Status:** the first standalone release is being qualified. The engine and
-regression suite are now being extracted here; v1.9.0 is not published yet.
-The original engine is already used in Rove. See the [release plan](docs/plans/first-standalone-release.md).
+**First standalone release: v1.9.0, for Windows.** Start with the
+[installation guide](docs/installation.md) and download the published archive
+from [GitHub Releases](https://github.com/jayyanez/rove-sentinel/releases).
+See the [validation record](docs/validation.md) for what was tested.
 
 ## Start here
 

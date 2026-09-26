@@ -12,7 +12,7 @@
     "./cli": "./scripts/review-gate/cli.mjs",
     "./gui-evidence": "./scripts/review-gate/guiEvidence.mjs"
   },
-  "files": ["scripts/review-gate/*.mjs", "templates/", "README.md", "CONTRIBUTING.md", "SECURITY.md", "ROADMAP.md", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "docs/"],
+  "files": ["scripts/review-gate/*.mjs", "templates/", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md", "ROADMAP.md", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "docs/"],
   "scripts": {
     "test": "vitest run",
     "verify": "vitest run",

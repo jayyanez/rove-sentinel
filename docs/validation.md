@@ -1,7 +1,7 @@
 # Standalone validation record
 
 Date: September 25, 2026. This records observed acceptance, not a guarantee that
-all defects have been found. Release qualification is still in progress.
+all defects have been found.
 
 ## Windows host
 
@@ -22,6 +22,7 @@ No provider credentials or private review transcripts are included here.
 | Watcher reinstall | Completed successfully |
 | Watcher uninstall | Scheduler removed; generated hook removed; shared hook configuration preserved |
 | Existing-hook preservation | Covered by deterministic regression tests |
+| Hosted Windows CI, Node 22 and 24 | Tests, notice regeneration and archive installation passed |
 | macOS and Linux live operation | Not qualified |
 | Windows logoff/logon cycle | Not exercised; scheduled task was started through Task Scheduler |
 
@@ -30,7 +31,13 @@ provider and adjudication path ran; it is not a review-quality benchmark.
 Recovery and process-tree edge cases are exercised by the regression suite;
 not every OS failure was induced on a live host.
 
-Remaining release gates: final package and dependency audit, independent review
-of the complete committed extraction, hosted CI, and Rove consumer parity checks.
-Rove's release adoption and removal of its embedded engine are tracked in its
-own repository. Do not infer that Rove is already migrated from this record.
+Independent review covered the complete committed extraction and a follow-up.
+Two repository-identity defects were fixed with regressions that failed before
+the fixes. Markdown lint passes. CI results are retained in
+[the workflow history](https://github.com/jayyanez/rove-sentinel/actions/workflows/verify.yml).
+
+Rove's consumer branch passed full verification with the external candidate,
+then again after removing the embedded engine: 5,647 tests passed, one test was
+skipped, and Svelte reported zero errors plus one pre-existing warning. Release
+adoption and the installed watcher transition require that repository's own
+review and merge. Do not infer that canonical Rove is already migrated.

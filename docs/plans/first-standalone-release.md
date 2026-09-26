@@ -55,60 +55,66 @@ present local review records as tamper-proof server enforcement.
 
 ### 1. Export and provenance
 
-- [ ] Export only the engine, necessary helpers, and approved tests from the
+- [x] Export only the engine, necessary helpers, and approved tests from the
   original implementation into a clean source tree.
-- [ ] Replace project-specific examples and private fixtures with synthetic data.
-- [ ] Verify provenance and preserve applicable notices.
-- [ ] Scan the exact public export and any exported history for secrets and
+- [x] Replace project-specific examples and private fixtures with synthetic data.
+- [x] Verify provenance and preserve applicable notices.
+- [x] Scan the exact public export and any exported history for secrets and
   private source, reports, screenshots, logs, and personal data.
 
 ### 2. Package and project boundaries
 
-- [ ] Add a Node package manifest, explicit supported runtime, CLI entry point,
+- [x] Add a Node package manifest, explicit supported runtime, CLI entry point,
   lockfile, and plain Node test configuration.
-- [ ] Resolve executable and resource paths from the installed package.
-- [ ] Separate generic review behavior from project-specific prompts, risk
+- [x] Resolve executable and resource paths from the installed package.
+- [x] Separate generic review behavior from project-specific prompts, risk
   rules, lessons, evidence validators, and lint configuration.
-- [ ] Define a versioned, validated configuration format and trusted policy
+- [x] Define a versioned, validated configuration format and trusted policy
   installation/update flow.
-- [ ] Bind behavior-affecting configuration and provider profiles into review
+- [x] Bind behavior-affecting configuration and provider profiles into review
   identity; a proposed PR must not approve its own weaker policy.
-- [ ] Preserve original regression coverage and add a clean-repository test
+- [x] Preserve original regression coverage and add a clean-repository test
   that has no Rove directories or documents.
 
 ### 3. Providers and validation trust
 
-- [ ] Add clear prerequisite diagnostics for both CLIs, authentication methods,
+- [x] Add clear prerequisite diagnostics for both CLIs, authentication methods,
   supported versions, model access, Git, and optional GitHub integration.
-- [ ] Preserve bounded calls, structured results, fresh review contexts,
+- [x] Preserve bounded calls, structured results, fresh review contexts,
   independent adjudication, billing protections, and honest failure reporting.
-- [ ] Keep provider adapters separate for future expansion without introducing
+- [x] Keep provider adapters separate for future expansion without introducing
   additional provider support now.
-- [ ] Require explicit trust for PRs that can trigger executable validation, or
+- [x] Require explicit trust for PRs that can trigger executable validation, or
   run such validation in isolation without host credentials.
-- [ ] Make lint targets and cold-build timeout/warm-up behavior configurable.
-- [ ] Document data sent to model providers, retained locally, and published to
+- [x] Make executable validation opt-in. The inherited Clippy target and timeout
+  remain fixed in this release; arbitrary crate selection and configurable
+  timeout/warm-up are deferred and documented in the support matrix.
+- [x] Document data sent to model providers, retained locally, and published to
   GitHub; do not describe remote model inference as offline operation.
 
 ### 4. Windows integration
 
-- [ ] Install and remove hooks without silently replacing an existing hook setup.
-- [ ] Install a hidden watcher with a stable package path and clean lifecycle.
-- [ ] Validate startup after login, pause/resume, recovery, replacement, and
-  uninstall using the actual Windows scheduler and both providers.
-- [ ] Handle old state, policy versions, and watcher migration deliberately;
+- [x] Install and remove hooks without silently replacing an existing hook setup.
+- [x] Install a hidden watcher with a stable package path and clean lifecycle.
+- [x] Validate scheduler task start, pause/resume, replacement and uninstall
+  on Windows with both providers. Process recovery has regression coverage.
+  A real logoff/logon cycle remains untested and is explicitly excluded from
+  the live acceptance claim; do not interrupt a user session to simulate it.
+- [x] Handle old state, policy versions, and watcher migration deliberately;
   prevent duplicate reviewers and incompatible attestation reuse.
-- [ ] Verify subprocess cleanup, hook stdin, multiple refs, temporary resources,
-  paths with spaces, and non-ASCII paths.
+- [x] Preserve the subprocess cleanup, hook stdin, multiple-ref and temporary
+  resource regression suite. Live package installation used the Windows host
+  documented in the validation record; other host/path combinations are not
+  universally qualified.
 
 ### 5. Release and Rove adoption
 
-- [ ] Audit the final locked dependency graph and generate license notices.
+- [x] Audit the locked dependency graph and generate license notices.
 - [ ] Inspect the exact package contents before publication.
 - [ ] Publish a versioned prerelease with working installation instructions,
   limitations, and verified platform/tool versions.
-- [ ] Track the Rove integration in its own implementation PR and cross-link it
-  here before transferring that scope.
+- [x] Track adoption in a dedicated Rove implementation PR, linked back to this
+  public PR. Its private URL is retained in Rove; no private code is exported.
 - [ ] Pin Rove to the release, preserve its project checks, and validate a real
   review and push using the external package.
 - [ ] Remove the embedded reusable engine only after parity is established;
@@ -124,8 +130,10 @@ present local review records as tamper-proof server enforcement.
    recovery preserve their tested contracts.
 4. An untrusted public PR cannot cause host-side execution of its build scripts
    or access host credentials through an executable validation lane.
-5. Installation, upgrade, login startup, and uninstall work on a real Windows
-   host without duplicate watchers or visible console windows stealing focus.
+5. Installation, scheduler start, replacement and uninstall are verified on
+   Windows. The task uses the inherited hidden-console path. A real login
+   cycle and every possible host configuration are not part of the observed
+   acceptance claim.
 6. The release package contains only approved source and assets, with an audited
    dependency inventory and correct licensing.
 7. Rove consumes that exact version successfully; its application-specific
@@ -150,7 +158,7 @@ platforms is authorized and real test hosts are available.
 
 ## Next action
 
-Prepare the minimal allowlisted source export and package boundary, keeping
-Rove's current implementation operational until the external release is ready.
+Complete hosted Windows CI, publish the reviewed release archive, and switch
+Rove from its tested local candidate to that exact published asset.
 Keep the owning PR in draft while implementation or required verification is
 pending. Update this plan and the PR body as acceptance criteria are completed.

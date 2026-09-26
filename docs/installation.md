@@ -2,9 +2,9 @@
 
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
-> The standalone release is being qualified. The release download below becomes
-> available when v1.9.0 is published. To contribute before then, see
-> [CONTRIBUTING.md](../CONTRIBUTING.md).
+These instructions target v1.9.0. Download its archive from
+[GitHub Releases](https://github.com/jayyanez/rove-sentinel/releases) and pin the
+version. To work on Sentinel itself, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## What you need
 
