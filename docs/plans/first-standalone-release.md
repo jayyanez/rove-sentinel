@@ -1,8 +1,9 @@
 # Plan: first standalone release
 
-**Delivery status:** Implementing in [Sentinel #1](https://github.com/jayyanez/rove-sentinel/pull/1).
+**Delivery status:** [v1.9.0 is published](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.9.0),
+following [Sentinel #1](https://github.com/jayyanez/rove-sentinel/pull/1).
 Consumer migration is tracked in Rove's private repository; its source and evidence
-remain private. No standalone release has been published yet.
+remain private. Its published-package verification and final adoption are in progress.
 
 **Owner:** @jayyanez, with implementation assisted by Codex.
 
@@ -18,8 +19,9 @@ CLIs. Rove will then consume a released version of this same tool.
 
 ## Established baseline
 
-The public repository contains the project introduction, Apache-2.0 license,
-origin document, and roadmap. The operational engine remains inside Rove.
+At the start of this plan, the public repository contained the project
+introduction, Apache-2.0 license, origin document, and roadmap. The operational
+engine was still embedded inside Rove.
 
 The original engine already includes committed-diff review, independent
 adjudication, sharded coverage, follow-up reviews, finding dispositions,
@@ -110,8 +112,8 @@ present local review records as tamper-proof server enforcement.
 ### 5. Release and Rove adoption
 
 - [x] Audit the locked dependency graph and generate license notices.
-- [ ] Inspect the exact package contents before publication.
-- [ ] Publish a versioned prerelease with working installation instructions,
+- [x] Inspect the exact package contents before publication.
+- [x] Publish a versioned release with working installation instructions,
   limitations, and verified platform/tool versions.
 - [x] Track adoption in a dedicated Rove implementation PR, linked back to this
   public PR. Its private URL is retained in Rove; no private code is exported.
@@ -158,8 +160,8 @@ platforms is authorized and real test hosts are available.
 
 ## Next action
 
-Hosted Windows CI passed for implementation commit `36f1ea9` on Node 22 and 24.
-Rerun it for the final documentation/test commit, publish the reviewed release
-archive, and switch Rove from its tested local candidate to that published asset.
-Keep the owning PR in draft while implementation or required verification is
-pending. Update this plan and the PR body as acceptance criteria are completed.
+Complete Rove's published-package checks and independent consumer review before
+its approved merge and installed watcher transition. The release archive was
+downloaded from GitHub and its SHA-256 matched `SHA256SUMS`. A later CI run found
+an overly short startup allowance in a subprocess regression; follow-up test
+hardening does not change the released runtime or replace its immutable archive.

@@ -23,7 +23,8 @@ No provider credentials or private review transcripts are included here.
 | Watcher uninstall | Scheduler removed; generated hook removed; shared hook configuration preserved |
 | Retained safety pause after stopping an in-flight GitHub CLI call | No recorded process or direct child remained; healthy watcher resumed after inspection |
 | Existing-hook preservation | Covered by deterministic regression tests |
-| Hosted Windows CI, Node 22 and 24 | Tests, notices and archive installation passed for `36f1ea9`; each later head reruns CI |
+| Hosted Windows CI, Node 22 and 24 | Tests, notices and archive installation passed for final extraction head `bcd81c0` |
+| Published v1.9.0 archive | Downloaded from GitHub Releases; SHA-256 matched the published checksum |
 | macOS and Linux live operation | Not qualified |
 | Windows logoff/logon cycle | Not exercised; scheduled task was started through Task Scheduler |
 
@@ -31,6 +32,12 @@ The fixture had a deliberately simple arithmetic defect. It proves the installed
 provider and adjudication path ran; it is not a review-quality benchmark.
 Recovery and process-tree edge cases are exercised by the regression suite;
 not every OS failure was induced on a live host.
+
+A post-merge CI run on Node 22 exposed an intermittent test failure: a 250 ms
+budget could expire before the child Node process produced its first output.
+The follow-up test gives startup five seconds and keeps the child alive for
+30 seconds, preserving the real timeout and captured-output assertion. It does
+not change runtime timeouts or rewrite the published v1.9.0 archive.
 
 During shutdown acceptance, a GitHub CLI process exited during the termination
 check and the watcher retained a safety pause. Reinstallation preserved it.
