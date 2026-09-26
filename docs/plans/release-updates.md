@@ -1,7 +1,9 @@
 # Automatic engine updates
 
-Status: implementing in [Sentinel PR #6](https://github.com/jayyanez/rove-sentinel/pull/6).
-Rove's one-time launcher adoption is tracked in its private PR #535.
+Implementation and qualification are complete. Release delivery is tracked in
+[Sentinel PR #6](https://github.com/jayyanez/rove-sentinel/pull/6) and the
+[v1.10.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.10.0).
+Rove's one-time launcher adoption is a separate consumer PR.
 
 ## Outcome
 
@@ -28,6 +30,7 @@ The final full suite passed 429 tests and package installation. Live Windows
 acceptance passed with two real scheduled watchers, shared verified downloads,
 independent activation, frozen-policy preservation and restoration after an
 injected startup failure. It identified two lifecycle defects now covered by
-regressions; the final suite includes those repairs. Complete independent review
-and required CI, then publish v1.10.0 and adopt its launcher in Rove with normal
-per-PR merge authorization. The v1.9.0 release stays immutable.
+regressions; the final suite includes those repairs. Independent review passed
+after two advisory repairs, and required Windows CI passed on Node 22 and 24.
+The implementation is ready for release delivery and separate consumer adoption.
+The v1.9.0 release stays immutable.
