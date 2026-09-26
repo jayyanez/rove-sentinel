@@ -81,6 +81,9 @@ machine, watcher, network, and both authenticated CLIs must remain available.
 | --- | --- |
 | `doctor` | Check installed tools and authentication |
 | `status` | Inspect policy versions, watcher health, state paths and timing |
+| `update-check` | Check for a newer stable release without installing it |
+| `updates` | Inspect automatic engine activation; `--enable` or `--disable` controls it |
+| `update` | Retry the automatic updater now; normally no manual command is needed |
 | `gate --dry-run --base origin/main --head HEAD` | Inspect routing without model review |
 | `gate --json --base origin/main --head HEAD` | Emit a structured result |
 | `watch --once --no-github` | Process the local queue without PR discovery |

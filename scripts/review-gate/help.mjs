@@ -6,6 +6,8 @@ Start here:
   rove-sentinel install --dry-run      Preview trusted policy installation
   rove-sentinel install                Install and start the local watcher
   rove-sentinel status                 Inspect health and local records
+  rove-sentinel update-check           Check for a newer stable release
+  rove-sentinel updates                Inspect automatic engine updates
 
 Review:
   gate [--base REF] [--head REF] [--branch NAME]
@@ -22,6 +24,15 @@ Operations:
   recover --reason TEXT
   uninstall [--dry-run]
   install [--dry-run] [--no-start]
+  update-check [--force] [--json] [--no-update-check]
+  updates [--enable|--disable]         Configure background engine updates
+  update                              Retry an update now (normally automatic)
+
+status and doctor include an advisory update check (cached for 24 hours).
+Use --no-update-check or ROVE_SENTINEL_UPDATE_CHECK=0 to disable network checks.
+Windows watchers update the engine automatically in separate versioned folders.
+Existing reviews finish first. Use updates --disable to keep the current engine.
+ROVE_SENTINEL_AUTO_UPDATE=0 disables background installation, separately from notices.
 
 Optional integrations:
   ledger --pr N [--write] [--heading TEXT] [--json]

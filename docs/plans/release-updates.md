@@ -1,37 +1,33 @@
-# Release discovery and update pull requests
+# Automatic engine updates
 
-Status: planned; implementation belongs to this pull request.
+Status: implementing in [Sentinel PR #6](https://github.com/jayyanez/rove-sentinel/pull/6).
+Rove's one-time launcher adoption is tracked in its private PR #535.
 
 ## Outcome
 
-Help users discover newer stable Sentinel releases and propose explicit consumer
-updates without changing the running review engine automatically.
+Sentinel discovers and installs its own stable releases in the background. Each
+release has immutable runtime files. Running agents and reviews keep their version;
+new reviews use a replacement only after the repository watcher activates it
+successfully. Different projects can activate independently and share downloads.
 
-## Delivery
+## Acceptance
 
-- Add update-check with stable-release validation, bounded network access,
-  persistent cache, offline behavior and machine-readable results.
-- Include a best-effort update notice in status and doctor, with opt-out.
-- Supply an opt-in scheduled GitHub Actions workflow that proposes a draft PR
-  updating a consumer manifest and lockfile, without executing package scripts,
-  installing a watcher, merging, or running provider reviews.
-- Preserve existing automation branches and human edits; avoid duplicate PRs.
-- Document release subscriptions, setup permissions, review and canonical
-  watcher activation, including behavior of GITHUB_TOKEN-created PR checks.
-- Cover offline, malformed-response, cache, version ordering, update preparation
-  and automation safety behavior. Run full tests, package acceptance and review.
-- Publish a new version after acceptance, then adopt it and the workflow in Rove
-  through its own planning/implementation PR and merge authorization.
+- Validate stable release metadata, expected assets, SHA-256 and engine protocol.
+- Preserve consumer dependency pins and installed project policy.
+- Bound lookup, download, worker retries and runtime retention.
+- Exclude activation while foreground reviews or watcher work are active.
+- Verify the replacement and restore the previous runtime after startup failure.
+- Retain a blocking fence and recovery record if restoration cannot be verified.
+- Show pending, active and failed states in native notifications and the CLI.
+- Support per-repository opt-out and document multi-project resource limits.
+- Pass deterministic, package, live Windows lifecycle and independent review gates.
 
-## Boundaries
+## Current evidence and next action
 
-Use public GitHub Releases as the authoritative distribution source. Do not
-send repository content or provider credentials for update discovery. Updates
-remain version-pinned and reviewed; notification failures never block reviews.
-The automation uses GitHub Actions and gh, with no external bot installation.
-Maintainers must explicitly enable Actions PR creation where required.
-
-## Next action
-
-Implement the release client and regression suite, then the opt-in consumer PR
-workflow and onboarding documentation. The existing v1.9.0 release is immutable.
+The final full suite passed 425 tests and package installation. Live Windows
+acceptance passed with two real scheduled watchers, shared verified downloads,
+independent activation, frozen-policy preservation and restoration after an
+injected startup failure. It identified two lifecycle defects now covered by
+regressions; the final suite includes those repairs. Complete independent review
+and required CI, then publish v1.10.0 and adopt its launcher in Rove with normal
+per-PR merge authorization. The v1.9.0 release stays immutable.

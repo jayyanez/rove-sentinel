@@ -84,13 +84,21 @@ export function buildInstallPlan({
   home = os.homedir(),
   uid = typeof process.getuid === 'function' ? process.getuid() : null,
   systemRoot = process.env.SystemRoot,
+  localAppData = process.env.LOCALAPPDATA,
+  autoUpdate = process.env.ROVE_SENTINEL_AUTO_UPDATE,
+  updateNotifications = process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS,
 }) {
   const cliPath = fileURLToPath(new URL('./cli.mjs', import.meta.url));
   const id = hashText(stateRoot.toLowerCase(), 8);
   const taskName = `${TASK_PREFIX}-${id}`;
   if (platform === 'win32') {
     const wrapperPath = path.win32.join(stateRoot, 'watch.cmd');
-    const wrapper = `@echo off\r\nset "ROVE_REVIEW_ALLOW_API_BILLING="\r\nset "ANTHROPIC_API_KEY="\r\nset "OPENAI_API_KEY="\r\n${[
+    const stateEnvironment = [
+      ['LOCALAPPDATA', localAppData], ['ROVE_SENTINEL_AUTO_UPDATE', autoUpdate],
+      ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications],
+    ].filter(([, value]) => value !== undefined && value !== '')
+      .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('');
+    const wrapper = `@echo off\r\n${stateEnvironment}set "ROVE_REVIEW_ALLOW_API_BILLING="\r\nset "ANTHROPIC_API_KEY="\r\nset "OPENAI_API_KEY="\r\n${[
       nodePath,
       cliPath,
       'watch',
@@ -397,7 +405,7 @@ function hooksPathIsOurs(repoRoot, value) {
   return path.resolve(repoRoot, value) === path.join(repoRoot, '.githooks');
 }
 
-export async function installGate({ repoRoot = process.cwd(), dryRun = false, start = true } = {}) {
+export async function installGate({ repoRoot = process.cwd(), dryRun = false, start = true, preservePolicy = false } = {}) {
   const context = await createGateContext(repoRoot);
   const previousDaemonActive = await assertNoOtherCheckoutDaemon(context);
   const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
@@ -414,7 +422,9 @@ export async function installGate({ repoRoot = process.cwd(), dryRun = false, st
   });
   if (plan.installRefusal) throw new Error(plan.installRefusal);
   const prerequisites = await verifyPrerequisites(context.repoRoot);
-  const policy = reviewPolicySnapshot(await readReviewPolicy(context.repoRoot));
+  const policy = preservePolicy
+    ? await policyForEngineUpgrade(context.paths)
+    : reviewPolicySnapshot(await readReviewPolicy(context.repoRoot));
   if (dryRun) return { dryRun: true, hooksPath: '.githooks', prerequisites, plan };
 
   return await executeInstallTransaction({
@@ -426,6 +436,21 @@ export async function installGate({ repoRoot = process.cwd(), dryRun = false, st
     previousDaemonActive,
     start,
   });
+}
+
+/** Upgrade executable/bundled policy only; a worktree cannot supply new project rules. */
+export async function policyForEngineUpgrade(paths) {
+  const previous = await readRequiredState(paths.policy, 'installed policy');
+  if (previous?.schemaVersion !== 1 || typeof previous.charter !== 'string' || typeof previous.lessons !== 'string'
+    || !previous.config || !previous.gateVersion || !previous.charterVersion) throw new Error('No valid installed policy to preserve.');
+  const digest = hashText([
+    `charter-version:${previous.charterVersion}`, `gate-version:${previous.gateVersion}`,
+    previous.charter, previous.lessons, JSON.stringify(previous.config),
+  ].join('\0'), 64);
+  if (digest !== previous.policyDigest) throw new Error('Installed policy is corrupt; automatic upgrade refused.');
+  const charter = previous.config.charter === null
+    ? await readFile(new URL('../../templates/charter.md', import.meta.url), 'utf8') : previous.charter;
+  return reviewPolicySnapshot({ charter, lessons: previous.lessons, config: previous.config });
 }
 
 export async function assertDefaultHookAbsent(repoRoot) {

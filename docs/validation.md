@@ -9,6 +9,33 @@ Node.js 24.18.0, Git 2.55.0.windows.3, Claude Code 2.1.283 and Codex CLI 0.154.0
 Both provider CLIs were authenticated through their required subscription paths.
 No provider credentials or private review transcripts are included here.
 
+## Release-update acceptance
+
+The 1.10.0 candidate passes 425 deterministic tests, including stable release and
+asset validation, cache/offline behavior, SHA-256 rejection, immutable runtime
+selection, active-review exclusion, rollback and recovery fencing. Multi-project
+fixtures verify independent activation with a shared runtime store. These lifecycle
+tests simulate subprocesses; they do not establish live Windows activation.
+
+Packaged installation passed. The Windows runtime smoke test created two local
+consumer repositories and real scheduled watchers, installed synthetic next-version
+archives through checksum-verified npm, held an active review lease in one project,
+and verified independent activation of the other using the shared download. It then
+released the lease and verified the first project's activation. Both pinned
+launchers selected the new engine without changing manifests or lockfiles, and an
+unapproved working-tree charter was excluded. An injected replacement startup
+failure exercised restoration of the real previous scheduler/watcher. Both fixture
+watchers were uninstalled successfully. No paid reviews or GitHub publication ran.
+
+Live testing found and fixed scheduled-task state-directory propagation and a pause
+heartbeat that was immediately overwritten during idle sleep. Regression tests
+cover both. Native notification delivery still depends on Windows settings; the
+retained CLI state is the fallback. The Windows notification API accepted the
+synthetic notification test; visual delivery under every OS notification setting
+is not claimed. The v1.9.0 acceptance below is historical.
+
+## Original v1.9.0 acceptance
+
 | Check | Observed result |
 | --- | --- |
 | Extracted regression suite plus standalone tests | 392 tests passed across 23 files |

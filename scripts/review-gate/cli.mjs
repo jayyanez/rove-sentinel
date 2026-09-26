@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
+import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
+import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
+import { registerEngineProcess } from './engine-store.mjs';
+import { updateMessage } from './update-notifications.mjs';
 
 import { runWatcher } from './daemon.mjs';
 import {
@@ -19,7 +23,7 @@ import { currentBranch, findRepoRoot, mergeBase, resolveCommit } from './git.mjs
 import { guiEvidenceRefusal } from './prepush.mjs';
 import { deferFindings } from './dispositions.mjs';
 import { buildLedgerEntries, formatLedgerResult } from './ledger.mjs';
-import { formatGateResult, runGate } from './gate.mjs';
+import { createGateContext, formatGateResult, runGate } from './gate.mjs';
 import {
   gateStatus,
   installGate,
@@ -101,6 +105,7 @@ async function main() {
   const [command = 'help', ...rest] = process.argv.slice(2);
   const { options, positional } = parseArgs(rest);
   const repoRoot = options.repo || process.cwd();
+  registerEngineProcess(GATE_VERSION, fileURLToPath(import.meta.url));
   if (options.help) {
     print(HELP);
     return;
@@ -109,12 +114,41 @@ async function main() {
     print(GATE_VERSION);
     return;
   }
+  if (['gate', 'pre-push', 'doctor'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {
+    try {
+      const context = await createGateContext(repoRoot);
+      const notice = updateMessage(await updateInformation(context.paths), path.basename(context.repoRoot));
+      if (notice) process.stderr.write(`${notice}\n`);
+    } catch { /* Notifications cannot change review behavior. */ }
+  }
+  if (command === 'update-check') {
+    const result = await checkForUpdates({ force: Boolean(options.force),
+      enabled: options['update-check'] !== false && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
+    print(options.json ? result : formatUpdateCheck(result), Boolean(options.json));
+    return;
+  }
+  if (command === 'auto-update' || command === 'update') {
+    const result = await automaticUpdate({ repoRoot, force: command === 'update' });
+    print(result, true);
+    if (['failed', 'recovery-required', 'download-failed'].includes(result.status)) process.exitCode = 1;
+    return;
+  }
+  if (command === 'updates') {
+    const context = await createGateContext(repoRoot);
+    if (options.enable && options.disable) throw new Error('Choose --enable or --disable.');
+    print(options.enable || options.disable
+      ? await configureAutomaticUpdates(context, Boolean(options.enable)) : await updateInformation(context.paths), true);
+    return;
+  }
   if (command === 'init') {
     print(await initializeRepository(repoRoot), true);
     return;
   }
   if (command === 'doctor') {
-    print(await verifyPrerequisites(await findRepoRoot(repoRoot)), true);
+    const result = await verifyPrerequisites(await findRepoRoot(repoRoot));
+    result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
+      && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
+    print(result, true);
     return;
   }
   if (command === 'gate' && options.detach) {
@@ -222,7 +256,10 @@ async function main() {
     return;
   }
   if (command === 'install') {
-    print(await installGate({ repoRoot, dryRun: options['dry-run'], start: options.start !== false }), true);
+    const result = await installGate({ repoRoot, dryRun: options['dry-run'], start: options.start !== false,
+      preservePolicy: Boolean(options['preserve-policy']) });
+    if (!options['dry-run'] && !options['preserve-policy']) await configureAutomaticUpdates(await createGateContext(repoRoot), process.env.ROVE_SENTINEL_AUTO_UPDATE !== '0', { onlyIfMissing: true });
+    print(result, true);
     return;
   }
   if (command === 'uninstall') {
@@ -230,7 +267,11 @@ async function main() {
     return;
   }
   if (command === 'status') {
-    print(await gateStatus({ repoRoot }), true);
+    const result = await gateStatus({ repoRoot });
+    result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
+      && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
+    result.engine = await updateInformation((await createGateContext(repoRoot)).paths);
+    print(result, true);
     return;
   }
   if (command === 'pause') {

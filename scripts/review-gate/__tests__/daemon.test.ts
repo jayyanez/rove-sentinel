@@ -20,9 +20,29 @@ import {
 } from '../daemon.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
-import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
 describe('review watcher heartbeat coverage', () => {
+  it('keeps the pause acknowledgement visible during the idle wait for updater handoff', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-pause-ack-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: 'None' }));
+    await atomicWriteJson(paths.paused, { reason: 'Updater handoff in progress' });
+    const pending = runWatcher({ repoRoot: process.cwd(), stateRoot, github: false,
+      recoverResources: async () => {}, recoverQueuedClaims: async () => {} });
+    try {
+      const deadline = Date.now() + 5000;
+      while (!await readJson(paths.heartbeat) && Date.now() < deadline) await sleep(20);
+      await sleep(150);
+      expect(await readJson(paths.heartbeat)).toMatchObject({ activity: 'paused' });
+    } finally {
+      const owner = await readJson(paths.lock);
+      if (owner) await atomicWriteJson(paths.stopRequest, { pid: owner.pid, ownerToken: owner.ownerToken });
+      await pending;
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it('pauses an unverified tree before request-state persistence can fail', async () => {
     const calls: string[] = [];
     const pause = vi.fn(async () => { calls.push('pause'); });

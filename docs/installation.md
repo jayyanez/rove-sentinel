@@ -2,9 +2,10 @@
 
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
-These instructions install the published
-[v1.9.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.9.0)
-and pin that version. To work on Sentinel itself, see
+These instructions pin the
+[v1.10.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.10.0)
+as an exact dependency. Confirm its archive is listed before installing.
+To work on Sentinel itself, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## What you need
@@ -40,13 +41,13 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.9.0/rove-sentinel-1.9.0.tgz
+npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.10.0/rove-sentinel-1.10.0.tgz
 ```
 
 Or with pnpm:
 
 ```powershell
-pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.9.0/rove-sentinel-1.9.0.tgz
+pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.10.0/rove-sentinel-1.10.0.tgz
 ```
 
 This is a GitHub Release archive; the instructions do not depend on an npm
@@ -115,10 +116,12 @@ Other `core.hooksPath` values are refused rather than silently overwritten.
 
 ## Upgrade or uninstall
 
-Before upgrading, let reviews finish. From the stable checkout, install an
-explicit newer release URL, inspect its release notes, and run `install` again.
-The new version and policy digest invalidate incompatible old attestations.
-Every other checkout must install the same pinned dependency.
+Windows installations enable [automatic engine updates](updates.md). Sentinel
+downloads isolated runtimes and activates them after reviews finish. The project
+dependency remains the pinned launcher; it does not require a dependency PR for
+every engine release. Inspect `updates` and `status` to see the actual runtime.
+Use `updates --disable` to retain a fixed engine. Versions before 1.10.0 need a
+one-time launcher upgrade through the project's normal dependency workflow.
 
 ```powershell
 npx --no-install rove-sentinel uninstall --dry-run

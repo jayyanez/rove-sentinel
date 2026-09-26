@@ -51,6 +51,19 @@ hook behavior, installed-policy checks and Windows lifecycle acceptance.
 Release archives and checksums are published on GitHub; consumers pin a release
 URL and lockfile integrity. See the [release plan](docs/plans/first-standalone-release.md).
 
+From 1.10.0, that pin installs the launcher. Automatic Windows updates select
+immutable managed engines independently for each repository. Read the
+[update contract](docs/updates.md) before changing that boundary. Packages declaring
+`sentinelEngineProtocol: 1` must keep the CLI version/status/install contract,
+including `install --preserve-policy`, and the repository selection format
+compatible. Do not claim protocol compatibility for a breaking update.
+
+Run `node scripts/runtime-smoke.mjs` for explicit Windows lifecycle acceptance.
+It creates synthetic local consumers and scheduled tasks, requires existing CLI
+authentication, runs no paid reviews, and removes its fixture watchers afterward.
+It uses synthetic future-version archives, not public releases. Keep its ignored
+evidence until the review is complete; an unsuccessful cleanup is unfinished work.
+
 Use English for code, comments, documentation, commits, and public discussion.
 Do not include private Rove source, private review logs or credentials in fixtures.
 By contributing, you agree that your contribution is available under this

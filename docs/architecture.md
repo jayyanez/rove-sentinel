@@ -88,6 +88,8 @@ are not evidence of live platform qualification.
 | `lint`, `guiEvidence`, `evidenceSlug` | Deterministic and optional visual-evidence checks |
 | `daemon`, `prepush`, `github` | Queue, push enforcement and eligible PR comments |
 | `storage`, `ledger`, `constants` | Records, external-review comparison and protocol limits |
+| `updates`, `automatic-updates`, `engine-store` | Release discovery, immutable shared runtimes and per-repository activation |
+| `launcher`, `maintenance`, `update-notifications` | Runtime selection, review/update exclusion and visible update state |
 
 Code lives under `scripts/review-gate/` to preserve extraction history and
 regression coverage. This directory name is internal; users invoke

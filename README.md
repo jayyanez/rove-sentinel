@@ -18,6 +18,8 @@ See the [validation record](docs/validation.md) for what was tested.
 | --- | --- |
 | Install Sentinel in your project | [Installation guide](docs/installation.md) |
 | Run your first review and handle findings | [Usage guide](docs/usage.md) |
+| Understand automatic updates | [Update guide](docs/updates.md) |
+| Use Sentinel across agents and projects | [Multiple projects](docs/multiple-projects.md) |
 | Understand requirements and limitations | [Support matrix](docs/support.md) |
 | Add your project's review rules | [Configuration](docs/configuration.md) |
 | Understand how the review works | [Architecture](docs/architecture.md) |
