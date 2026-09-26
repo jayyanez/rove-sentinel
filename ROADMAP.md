@@ -2,31 +2,33 @@
 
 ## Current status
 
-The first standalone release line is 1.9.0: engine, regression suite, onboarding
-CLI and documentation. Rove's adoption of the published package is tracked
-separately; its canonical checkout remains on the integrated gate until that
-migration is approved and merged.
+[Rove Sentinel v1.9.0](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.9.0)
+is published: engine, regression suite, onboarding CLI and documentation.
+Rove's adoption is merged. Its canonical checkout and Windows watcher use the
+pinned release, and its embedded reusable engine has been removed.
 
-## First release
+## First release — delivered
 
-The first release targets local development on Windows, with both Codex CLI
+The first release supports the qualified local workflow on Windows, with both Codex CLI
 and Claude Code installed and authenticated. The scope is a reusable review
 engine and its local workflow integration.
 
-- Extract the engine and regression tests without private Rove source or data.
-- Separate trusted project policy from engine behavior.
-- Package a Node CLI that resolves its own installation independently of Rove.
-- Preserve the required Claude Code + Codex configuration and explicit billing
+- [x] Extract the engine and regression tests without private Rove source or data.
+- [x] Separate trusted project policy from engine behavior.
+- [x] Package a Node CLI that resolves its own installation independently of Rove.
+- [x] Preserve the required Claude Code + Codex configuration and explicit billing
   boundaries.
-- Make optional executable validation lanes project-configurable and safe for
-  their input trust level.
-- Validate Windows installation, provider invocation, hooks, watcher lifecycle,
-  recovery, and cleanup outside the Rove checkout.
-- Publish an audited, versioned prerelease with licenses and dependency notices.
-- Move Rove onto an exact released version while preserving its project policy.
+- [x] Make the inherited Clippy lane opt-in through installed project policy;
+  restrict automatic review to trusted same-repository authors.
+- [x] Validate Windows installation, provider invocation, hooks, watcher lifecycle,
+  recovery, and cleanup outside the Rove checkout within the documented test scope.
+- [x] Publish an audited, versioned release with licenses and dependency notices.
+- [x] Move Rove onto an exact released version while preserving its project policy.
 
-Implementation should begin from a published extraction plan. Progress and
-acceptance evidence belong in the pull request that owns that work.
+See the [completed extraction plan](docs/plans/first-standalone-release.md),
+[validation record](docs/validation.md), and [current limitations](docs/support.md).
+Release completion does not imply universal platform qualification or defect-free
+AI review.
 
 ## Later evaluation
 
