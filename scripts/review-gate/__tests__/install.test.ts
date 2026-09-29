@@ -34,6 +34,7 @@ describe('review-gate native installer plans', () => {
 
     await expect(verifyPrerequisites('C:\\repo', {
       run,
+      config: { providers: 'both' },
       env: {
         ROVE_REVIEW_ALLOW_API_BILLING: '1',
         ANTHROPIC_API_KEY: 'anthropic-key',
@@ -71,6 +72,7 @@ describe('review-gate native installer plans', () => {
 
     await expect(verifyPrerequisites('C:\\repo', {
       run,
+      config: { providers: 'both' },
       env: {
         ROVE_REVIEW_ALLOW_API_BILLING: '1',
         ANTHROPIC_API_KEY: 'anthropic-key',

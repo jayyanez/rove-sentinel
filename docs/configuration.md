@@ -22,6 +22,8 @@ Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 | `guiEvidence` | `none` by default; `rove` enables the Rove visual-evidence contract |
 | `clippy` | Opt into executing Cargo Clippy for changed Rust files under `src-tauri` |
 | `trustedAuthors` | GitHub logins allowed for automatic same-repository PR review; empty means the repository owner |
+| `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
+| `models` | Optional per-provider `model`, `effort`, and `maxEffort`; see [models](models.md) |
 
 Paths use forward slashes and cannot be absolute or contain `..`. Unknown keys
 and invalid values are refused. A custom charter replaces the bundled prose;
@@ -49,12 +51,13 @@ cold native dependency builds can time out repeatedly; a timeout is a visible
 lane note, not proof that Rust passed. Arbitrary crate paths and custom command
 lanes are not configurable in this release.
 
-## Fixed first-release choices
+## Provider choices and fixed execution limits
 
-Claude Code and Codex are required. Provider routing, model identifiers,
-concurrency, timeouts, and convergence budgets are versioned in
-`scripts/review-gate/constants.mjs`; arbitrary provider plugins and model
-configuration are not public extension points yet. Do not set API keys to work
+At least one of Claude Code or Codex is required. Projects can choose providers,
+models and efforts through the installed configuration; [models](models.md)
+explains validation, live access probes and the defaults. Concurrency, timeouts,
+and convergence budgets remain versioned in `scripts/review-gate/constants.mjs`.
+Arbitrary provider plugins are not public extension points yet. Do not set API keys to work
 around an unsupported account: normal subscription runs scrub inherited API
 credentials, and installed watchers explicitly discard the billing override.
 

@@ -189,6 +189,7 @@ export function renderGateComment(result) {
     `- Base: \`${(identity.baseSha || '').slice(0, 12)}\``,
     `- Risk: ${result.risk || 'unknown'}`,
     `- Gate: ${identity.gateVersion || 'unknown'} / charter ${identity.charterVersion || 'unknown'}`,
+    ...(result.providerSelection?.length ? [`- Selected providers: ${result.providerSelection.join(', ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}`] : []),
     '',
     githubText(result.summary || 'No summary was produced.', LIMITS.githubSummaryChars),
   ];

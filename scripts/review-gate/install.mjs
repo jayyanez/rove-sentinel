@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS, TASK_PREFIX } from './constants.mjs';
+import { detectSubscriptions } from './subscriptions.mjs';
+import { modelSettings, validateModelClients } from './modelSettings.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from './context.mjs';
 import { detachedWatcherEnvironment, startDaemonDetached } from './daemon.mjs';
 import { createGateContext } from './gate.mjs';
@@ -172,70 +174,31 @@ async function currentHooksPath(repoRoot) {
 
 export async function verifyPrerequisites(
   repoRoot,
-  { run = runProcess, env: sourceEnvironment = process.env } = {},
+  { run = runProcess, env: sourceEnvironment = process.env, config = {} } = {},
 ) {
   const env = detachedWatcherEnvironment(sourceEnvironment);
   const probe = async (label, command, args) => {
     let result;
     try {
-      result = await run(command, args, {
-        cwd: repoRoot,
-        env,
-        timeoutMs: 30_000,
-        allowFailure: true,
-      });
+      result = await run(command, args, { cwd: repoRoot, env, timeoutMs: 30_000, allowFailure: true });
     } catch (error) {
-      throw new Error(`${label} could not be launched: ${error?.message || String(error)}`, {
-        cause: error,
-      });
+      throw new Error(`${label} could not be launched: ${error?.message || String(error)}`, { cause: error });
     }
     if (result.code !== 0) {
       const detail = (result.stderr || result.stdout || 'no diagnostic output').trim().slice(0, 1_000);
       throw new Error(`${label} failed with exit ${result.code}: ${detail}`);
     }
-    return result;
+    return (result.stdout || result.stderr).split(/\r?\n/).find(Boolean) || 'available';
   };
-  const [claudeVersion, codexVersion, gitVersion, github, claudeAuth, codexAuth] = await Promise.all([
-    probe('Claude Code version check', 'claude', ['--version']),
-    probe('Codex version check', 'codex', ['--version']),
+  const [subscriptions, git, gh] = await Promise.all([
+    detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env }),
     probe('Git version check', 'git', ['--version']),
     probe('GitHub CLI authentication check', 'gh', ['auth', 'status']),
-    probe('Claude Code authentication check', 'claude', ['auth', 'status']),
-    probe('Codex authentication check', 'codex', ['login', 'status']),
   ]);
-  let claudeStatus;
-  try {
-    claudeStatus = JSON.parse(claudeAuth.stdout);
-  } catch (error) {
-    throw new Error('Claude Code authentication status returned invalid JSON. Run `claude auth status` and update Claude Code before retrying `npx --no-install rove-sentinel install`.', {
-      cause: error,
-    });
-  }
-  if (
-    !claudeStatus ||
-    typeof claudeStatus !== 'object' ||
-    Array.isArray(claudeStatus) ||
-    typeof claudeStatus.loggedIn !== 'boolean' ||
-    typeof claudeStatus.authMethod !== 'string'
-  ) {
-    throw new Error('Claude Code authentication status returned an unexpected shape. Run `claude auth status` and update Claude Code before retrying `npx --no-install rove-sentinel install`.');
-  }
-  const codexAuthText = codexAuth.stdout || codexAuth.stderr;
-  if (!claudeStatus.loggedIn) throw new Error('Claude Code is not authenticated.');
-  if (claudeStatus.authMethod !== 'claude.ai') {
-    throw new Error('Claude Code is not authenticated through a Claude subscription.');
-  }
-  if (!/logged in/i.test(codexAuthText)) throw new Error('Codex is not authenticated.');
-  if (!/logged in using chatgpt/i.test(codexAuthText)) {
-    throw new Error('Codex is not authenticated through ChatGPT.');
-  }
-  const firstLine = (result) =>
-    (result.stdout || result.stderr).split(/\r?\n/).find(Boolean) || 'available';
+  validateModelClients(config, subscriptions);
   return {
-    claude: `${firstLine(claudeVersion)}; Claude ${claudeStatus.subscriptionType || 'subscription'}`,
-    codex: `${firstLine(codexVersion)}; ChatGPT`,
-    git: firstLine(gitVersion),
-    gh: firstLine(github),
+    ...Object.fromEntries(subscriptions.selected.map((provider) => [provider, subscriptions.availability[provider].version])),
+    git, gh, providers: subscriptions, models: modelSettings(config),
   };
 }
 
@@ -421,10 +384,10 @@ export async function installGate({ repoRoot = process.cwd(), dryRun = false, st
     stateRoot: context.stateRoot,
   });
   if (plan.installRefusal) throw new Error(plan.installRefusal);
-  const prerequisites = await verifyPrerequisites(context.repoRoot);
   const policy = preservePolicy
     ? await policyForEngineUpgrade(context.paths)
     : reviewPolicySnapshot(await readReviewPolicy(context.repoRoot));
+  const prerequisites = await verifyPrerequisites(context.repoRoot, { config: policy.config });
   if (dryRun) return { dryRun: true, hooksPath: '.githooks', prerequisites, plan };
 
   return await executeInstallTransaction({
@@ -806,6 +769,8 @@ export async function gateStatus(
     repoRoot: context.repoRoot,
     stateRoot: context.stateRoot,
     hooksPath,
+    providerRequirement: installedPolicy?.config?.providers ?? 'auto',
+    models: modelSettings(installedPolicy?.config),
     reviewTiming,
     hookInstalled: hooksPathIsOurs(context.repoRoot, hooksPath),
     heartbeat,

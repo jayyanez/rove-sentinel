@@ -232,16 +232,16 @@ describe('subscription-backed provider adapters', () => {
     expect(claude).toContain('Read,Glob,Grep');
     expect(claude).toContain('--allowedTools');
     expect(claude.slice(claude.indexOf('--model'), claude.indexOf('--model') + 2)).toEqual([
-      '--model', 'sonnet',
+      '--model', 'claude-opus-5-5',
     ]);
     expect(claude.slice(claude.indexOf('--effort'), claude.indexOf('--effort') + 2)).toEqual([
-      '--effort', 'medium',
+      '--effort', 'high',
     ]);
     expect(claude.slice(claude.indexOf('--autocompact'), claude.indexOf('--autocompact') + 2)).toEqual([
       '--autocompact', '200k',
     ]);
     expect(claude.slice(claude.indexOf('--max-budget-usd'), claude.indexOf('--max-budget-usd') + 2)).toEqual([
-      '--max-budget-usd', '1.25',
+      '--max-budget-usd', '4',
     ]);
     expect(claude.join(' ')).not.toContain('Bash');
 
@@ -264,7 +264,7 @@ describe('subscription-backed provider adapters', () => {
     expect(codex).toContain('--skip-git-repo-check');
     expect(codex).toContain('--ignore-rules');
     expect(codex.slice(codex.indexOf('--model'), codex.indexOf('--model') + 2)).toEqual([
-      '--model', 'gpt-5.6-sol',
+      '--model', 'gpt-6.1-sol',
     ]);
   });
 
@@ -324,7 +324,7 @@ describe('subscription-backed provider adapters', () => {
 
   it('salvages Claude structured output after a budget or timeout envelope', () => {
     const value = { summary: 'partial', candidates: [] };
-    expect(parseClaudeOutput(JSON.stringify({
+    expect(parseClaudeOutput(JSON.stringify({ review_complete: true,
       is_error: true,
       terminal_reason: 'budget_exhausted',
       structured_output: value,
@@ -357,10 +357,10 @@ describe('subscription-backed provider adapters', () => {
     const runner = vi.fn(async () => {
       const error = new Error('claude exited with code 1');
       error.result = {
-        stdout: JSON.stringify({
+        stdout: JSON.stringify({ review_complete: true,
           is_error: true,
           terminal_reason: 'budget_exhausted',
-          structured_output: { summary: 'salvaged', candidates: [] },
+          structured_output: { review_complete: true, summary: 'salvaged', candidates: [] },
         }),
       };
       throw error;
@@ -384,10 +384,10 @@ describe('subscription-backed provider adapters', () => {
       const error = Object.assign(new Error('claude timed out and its tree could not be verified'), {
         terminationError: { code: 'ORPHANED_PROCESS_TREE' },
         result: {
-          stdout: JSON.stringify({
+          stdout: JSON.stringify({ review_complete: true,
             is_error: true,
             terminal_reason: 'timeout',
-            structured_output: { summary: 'salvageable', candidates: [] },
+            structured_output: { review_complete: true, summary: 'salvageable', candidates: [] },
           }),
         },
       });
@@ -411,8 +411,8 @@ describe('subscription-backed provider adapters', () => {
   });
 
   it('rejects Claude output when a required read was denied', () => {
-    expect(() => parseClaudeOutput(JSON.stringify({
-      structured_output: { summary: 'empty', candidates: [] },
+    expect(() => parseClaudeOutput(JSON.stringify({ review_complete: true,
+      structured_output: { review_complete: true, summary: 'empty', candidates: [] },
       permission_denials: [{ tool_name: 'Read' }],
       terminal_reason: 'completed',
     }))).toThrow('denied 1 required tool');
@@ -456,7 +456,7 @@ describe('subscription-backed provider adapters', () => {
     const candidate = { id: 'claude-0-0' };
     const runner = vi.fn(async (_command, args) => {
       const outputPath = args[args.indexOf('--output-last-message') + 1];
-      await writeFile(outputPath, JSON.stringify({
+      await writeFile(outputPath, JSON.stringify({ review_complete: true,
         summary: 'Dismissed.',
         findings: [{
           candidate_id: candidate.id,

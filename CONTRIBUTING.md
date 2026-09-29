@@ -21,7 +21,7 @@ node scripts/review-gate/cli.mjs help
 
 The deterministic suite uses fake provider responses and temporary repositories;
 it does not require paid AI accounts. Live review and installation acceptance
-require both authenticated CLIs and GitHub CLI. Do not run live provider tests
+require at least one subscription-authenticated CLI and GitHub CLI. Do not run live provider tests
 against forks automatically with maintainer credentials.
 
 Keep changes on a branch. For a bug, add a regression that fails before the fix.

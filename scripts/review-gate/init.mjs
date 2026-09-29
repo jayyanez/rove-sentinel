@@ -29,7 +29,7 @@ export async function uninstallGeneratedHook(repoRoot) {
 export async function initializeRepository(repoRoot = process.cwd()) {
   const root = await findRepoRoot(repoRoot);
   const files = [
-    [CONFIG_FILE, `${JSON.stringify(normalizeConfig(), null, 2)}\n`],
+    [CONFIG_FILE, `${JSON.stringify(normalizeConfig({ providers: 'auto' }), null, 2)}\n`],
     ['.githooks/pre-push', HOOK],
     ['.githooks/sentinel.mjs', ADAPTER],
   ];

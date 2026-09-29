@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
+import { readReviewPolicy, loadInstalledReviewPolicy } from './context.mjs';
+import { checkModels } from './modelCheck.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
@@ -145,7 +147,18 @@ async function main() {
     return;
   }
   if (command === 'doctor') {
-    const result = await verifyPrerequisites(await findRepoRoot(repoRoot));
+    const root = await findRepoRoot(repoRoot);
+    // Desired configuration is used only for an explicit pre-install probe.
+    const context = await createGateContext(root);
+    const policy = options['project-config'] ? await readReviewPolicy(root)
+      : await loadInstalledReviewPolicy(context.paths).catch(async (error) => {
+        if (!String(error.message).includes('no installed policy snapshot')) throw error;
+        return readReviewPolicy(root);
+      });
+    const result = await verifyPrerequisites(root, { config: policy.config });
+    if (options['test-models']) result.modelChecks = await checkModels(root, {
+      config: policy.config, selected: result.providers.selected,
+    });
     result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
     print(result, true);

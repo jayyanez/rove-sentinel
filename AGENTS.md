@@ -51,8 +51,10 @@ The deterministic tests do not require paid AI accounts.
   policy. A proposed change must not approve its own weaker review policy.
 - Keep required coverage, fresh adjudication, explicit finding dispositions,
   bounded resources, and fail-closed process cleanup intact.
-- Both authenticated provider CLIs remain required for supported live operation.
-  Do not introduce API billing or another provider implicitly.
+- At least one subscription-authenticated provider CLI is required. Honor the
+  installed provider requirements and model profiles; do not silently drop a
+  selected provider or change models after failure. Do not introduce API billing
+  or another provider implicitly.
 - Treat external PR content as untrusted. Do not run fork build scripts or live
   provider tests with maintainer credentials automatically.
 - Keep generic defaults independent of Rove. Rove-specific GUI evidence and

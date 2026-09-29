@@ -2,7 +2,7 @@
 
 **A second look at your code, before you push.**
 
-Rove Sentinel reviews a committed Git change using your own **Claude Code and
+Rove Sentinel reviews a committed Git change using your own **Claude Code and/or
 Codex** accounts. It checks candidate findings in fresh review contexts, records
 the result against the exact commit and project policy, and helps your Git hook
 decide whether that change is ready to push.
@@ -21,6 +21,7 @@ See the [validation record](docs/validation.md) for what was tested.
 | Understand automatic updates | [Update guide](docs/updates.md) |
 | Use Sentinel across agents and projects | [Multiple projects](docs/multiple-projects.md) |
 | Understand requirements and limitations | [Support matrix](docs/support.md) |
+| Choose models, effort and subscriptions | [Models guide](docs/models.md) |
 | Add your project's review rules | [Configuration](docs/configuration.md) |
 | Understand how the review works | [Architecture](docs/architecture.md) |
 | Compare its scope with CodeRabbit or Greptile | [Comparison](docs/comparison.md) |
@@ -47,12 +48,14 @@ posts status comments. It does not merge PRs or replace GitHub branch protection
 
 - Windows for the first supported release; macOS and Linux qualification is pending.
 - Node.js 22+, Git, and authenticated GitHub CLI (`gh`).
-- **Both Claude Code and Codex CLI**, separately installed and on PATH.
+- **At least one of Claude Code or Codex CLI**, separately installed and on PATH.
 - Claude Code authenticated through a Claude subscription; Codex through ChatGPT.
 - Your own provider allowances and access to the configured models.
 
-The Claude Code + Codex configuration is enabled and required. Individual
-reviews select providers by risk and author; not every review calls both.
+Automatic provider selection is enabled by default. With one subscription,
+Sentinel keeps separate review contexts and records the reduced model diversity.
+Defaults are GPT-6.1 Sol and Claude Opus 5.5 at high effort; users can change
+models, efforts and provider requirements in [configuration](docs/models.md).
 Sentinel does not include subscriptions or provider binaries. Source context is
 sent through your CLIs to their AI providers; local orchestration is not offline
 inference. Read the [trust boundaries](docs/security.md).

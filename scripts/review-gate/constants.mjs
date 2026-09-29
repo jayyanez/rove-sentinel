@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.10.0';
+export const GATE_VERSION = '1.11.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -133,38 +133,15 @@ export const LIMITS = Object.freeze({
 // This profile is code-owned and therefore covered by GATE_VERSION. Do not
 // accept ambient model/effort overrides: an exact-SHA PASS must not silently
 // change strength according to whichever shell happened to launch the watcher.
-export const PROVIDER_PROFILE = Object.freeze({
-  claudeScout: Object.freeze({
-    model: 'sonnet', effort: 'low', autocompact: '200k', maxBudgetUsd: 0.75,
-  }),
-  claudeHypothesis: Object.freeze({
-    model: 'sonnet', effort: 'low', autocompact: '200k', maxBudgetUsd: 0.6,
-  }),
-  claudeReviewer: Object.freeze({
-    model: 'sonnet', effort: 'medium', autocompact: '200k', maxBudgetUsd: 1.25,
-  }),
-  claudeCoordinator: Object.freeze({
-    model: 'opus', effort: 'medium', autocompact: '200k', maxBudgetUsd: 1.5,
-  }),
-  // Coverage reviewers (v1.6.0) sweep every changed hunk with the reference
-  // map in hand; medium effort and a tighter budget keep the lane's wall-clock
-  // close to the hypothesis wave it runs alongside.
-  claudeCoverage: Object.freeze({
-    model: 'sonnet', effort: 'medium', autocompact: '200k', maxBudgetUsd: 1.0,
-  }),
-  // Shard reviewers (v1.8.0) read one bounded shard and verify it; the cheap
-  // profile keeps a wave of up to eight shards inside the hypothesis wave's
-  // wall clock.
-  claudeShard: Object.freeze({
-    model: 'sonnet', effort: 'low', autocompact: '200k', maxBudgetUsd: 0.6,
-  }),
-  codexScout: Object.freeze({ model: 'gpt-5.6-sol', effort: 'medium' }),
-  codexHypothesis: Object.freeze({ model: 'gpt-5.6-sol', effort: 'medium' }),
-  codexReviewer: Object.freeze({ model: 'gpt-5.6-sol', effort: 'high' }),
-  codexCoverage: Object.freeze({ model: 'gpt-5.6-sol', effort: 'medium' }),
-  codexShard: Object.freeze({ model: 'gpt-5.6-sol', effort: 'medium' }),
-  codexCoordinator: Object.freeze({ model: 'gpt-5.6-sol', effort: 'high' }),
-});
+export const PROVIDER_PROFILE = Object.freeze(Object.fromEntries(
+  ['Scout', 'Hypothesis', 'Reviewer', 'Coordinator', 'Coverage', 'Shard'].flatMap((role) => [
+    [`claude${role}`, Object.freeze({
+      model: 'claude-opus-5-5', effort: 'high', maxEffort: 'xhigh',
+      autocompact: '200k', maxBudgetUsd: role === 'Coordinator' ? 6 : 4,
+    })],
+    [`codex${role}`, Object.freeze({ model: 'gpt-6.1-sol', effort: 'high', maxEffort: 'xhigh' })],
+  ]),
+));
 
 export const ZERO_SHA = /^0+$/;
 
@@ -172,6 +149,8 @@ export const SCOUT_SCHEMA = Object.freeze({
   type: 'object',
   additionalProperties: false,
   properties: {
+    review_complete: { type: 'boolean' },
+    effort_request: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
     summary: { type: 'string' },
     hypotheses: {
       type: 'array',
@@ -191,13 +170,15 @@ export const SCOUT_SCHEMA = Object.freeze({
       },
     },
   },
-  required: ['summary', 'hypotheses'],
+  required: ['summary', 'hypotheses', 'effort_request', 'review_complete'],
 });
 
 export const REVIEWER_SCHEMA = Object.freeze({
   type: 'object',
   additionalProperties: false,
   properties: {
+    review_complete: { type: 'boolean' },
+    effort_request: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
     summary: { type: 'string' },
     candidates: {
       type: 'array',
@@ -232,13 +213,15 @@ export const REVIEWER_SCHEMA = Object.freeze({
       },
     },
   },
-  required: ['summary', 'candidates'],
+  required: ['summary', 'candidates', 'effort_request', 'review_complete'],
 });
 
 export const COORDINATOR_SCHEMA = Object.freeze({
   type: 'object',
   additionalProperties: false,
   properties: {
+    review_complete: { type: 'boolean' },
+    effort_request: { type: ['string', 'null'], minLength: 1, maxLength: 500 },
     summary: { type: 'string' },
     findings: {
       type: 'array',
@@ -274,7 +257,7 @@ export const COORDINATOR_SCHEMA = Object.freeze({
       },
     },
   },
-  required: ['summary', 'findings'],
+  required: ['summary', 'findings', 'effort_request', 'review_complete'],
 });
 
 export function coordinatorSchemaForCandidates(candidateIds) {

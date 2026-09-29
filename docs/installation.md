@@ -3,7 +3,7 @@
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
 These instructions pin the
-[v1.10.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.10.0)
+[v1.11.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.11.0)
 as an exact dependency. Confirm its archive is listed before installing.
 To work on Sentinel itself, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -11,8 +11,8 @@ To work on Sentinel itself, see
 ## What you need
 
 Use Windows for the first supported release. Install Node.js 22 or later,
-Git, GitHub CLI (`gh`), **Claude Code**, and **Codex CLI** separately. Both AI
-tools must be on PATH and authenticated: Claude Code through a Claude
+Git, GitHub CLI (`gh`), and at least one of **Claude Code** or **Codex CLI**
+separately. Selected AI tools must be on PATH and authenticated: Claude Code through a Claude
 subscription, Codex through ChatGPT. An API key alone does not satisfy this
 release's installation checks. Your accounts need access to the configured
 models; usage consumes your own provider allowances.
@@ -20,7 +20,7 @@ models; usage consumes your own provider allowances.
 On Windows, use native `claude.exe` and `codex.exe` launchers. The qualified
 adapter launches executables directly without a command shell; installations
 that expose only `.cmd` or `.ps1` wrappers are not supported by this release.
-Run `Get-Command claude,codex` in PowerShell and check that both resolve to
+Run `Get-Command claude,codex` in PowerShell and check that the installed providers resolve to
 executables, then run `doctor` below. This is a current portability limitation.
 
 Install the external tools using their official instructions:
@@ -41,13 +41,13 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.10.0/rove-sentinel-1.10.0.tgz
+npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.11.0/rove-sentinel-1.11.0.tgz
 ```
 
 Or with pnpm:
 
 ```powershell
-pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.10.0/rove-sentinel-1.10.0.tgz
+pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.11.0/rove-sentinel-1.11.0.tgz
 ```
 
 This is a GitHub Release archive; the instructions do not depend on an npm
@@ -66,14 +66,16 @@ npx --no-install rove-sentinel doctor
 npx --no-install rove-sentinel init
 ```
 
-`doctor` checks both CLI versions, subscription-backed authentication, Git,
+`doctor` checks available CLI versions, configured subscription requirements, Git,
 and GitHub authentication. `init` creates `.rove-sentinel.json`,
 `.githooks/pre-push`, and `.githooks/sentinel.mjs`. It preserves existing files;
 an incompatible pre-push hook requires deliberate integration.
 
 Inspect and commit these files. Start with the default configuration: the
 built-in review charter, no Rove visual rules, and no automatic Cargo builds.
-See [configuration](configuration.md) before enabling project integrations.
+See [configuration](configuration.md) before enabling project integrations, and
+[models](models.md) to choose providers, model identifiers and reasoning effort.
+The 1.11 model defaults require Codex 0.159.0+ and/or Claude Code 2.1.280+.
 
 ## 3. Install from a trusted, stable checkout
 

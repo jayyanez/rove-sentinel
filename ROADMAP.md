@@ -7,6 +7,11 @@ is published: engine, regression suite, onboarding CLI and documentation.
 Rove's adoption is merged. Its canonical checkout and Windows watcher use the
 pinned release, and its embedded reusable engine has been removed.
 
+The 1.10 launcher adds automatic engine updates. The next 1.11 change uses
+current default models, allows one subscription, and adds installed model/effort
+configuration; see [the plan](docs/plans/provider-profiles-and-single-subscription.md)
+and [the model guide](docs/models.md). It remains under review until released.
+
 ## First release — delivered
 
 The first release supports the qualified local workflow on Windows, with both Codex CLI

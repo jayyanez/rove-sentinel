@@ -73,7 +73,7 @@ a suitable isolated environment; see [security boundaries](security.md).
 
 For eligible PRs it publishes an exact-head status comment using your `gh`
 account. It does not merge PRs or create a GitHub required status check. The
-machine, watcher, network, and both authenticated CLIs must remain available.
+machine, watcher, network, and the selected authenticated CLI(s) must remain available.
 
 ## Useful commands
 
