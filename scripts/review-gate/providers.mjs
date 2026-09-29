@@ -417,7 +417,7 @@ export async function salvageProviderJson(error, { filePath } = {}) {
   throw error;
 }
 
-async function readBoundedJson(target) {
+export async function readBoundedJson(target) {
   const metadata = await stat(target);
   if (metadata.size > LIMITS.maxProcessOutputBytes) {
     throw new Error(`Structured provider output exceeded ${LIMITS.maxProcessOutputBytes} bytes.`);

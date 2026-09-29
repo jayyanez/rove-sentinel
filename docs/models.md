@@ -33,7 +33,7 @@ freezes that profile; engine updates preserve the custom configuration.
 | `providers` | `auto` (default), `both`, `claude`, or `codex` |
 | `model` | A native CLI model identifier or supported alias available to your account |
 | `effort` | Initial reasoning effort; `high` by default |
-| `maxEffort` | Highest allowed second-pass effort; `xhigh` by default, or the initial effort if that is higher |
+| `maxEffort` | Highest allowed second-pass effort; `xhigh` by default (`high` for Claude 4.6), or the initial effort if that is higher |
 
 Claude accepts `low`, `medium`, `high`, `xhigh`, and `max`, depending on the
 model. Codex can also accept `none` and `minimal` on models supporting them.

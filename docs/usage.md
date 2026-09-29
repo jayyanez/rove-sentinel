@@ -19,8 +19,10 @@ npx --no-install rove-sentinel gate --base origin/main --head HEAD --author huma
 
 Use `--author codex` or `--author claude` when that agent implemented the change.
 Without an explicit author, Sentinel infers it from supported branch prefixes
-and otherwise treats it as human-authored. Both providers remain required, but
-the selected risk and author determine which provider performs each stage.
+and otherwise treats it as human-authored. In the default `auto` mode, Sentinel
+uses the available subscription-authenticated provider(s). Risk, authorship,
+and installed provider requirements determine each stage's routing; see
+[models and subscriptions](models.md). One provider is sufficient.
 
 The result identifies the exact base and head, the policy, and a retained report.
 A successful process exits with code 0; a failed or unsuccessful review exits

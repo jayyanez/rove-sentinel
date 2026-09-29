@@ -1,6 +1,7 @@
 # Current models and a single subscription
 
-Status: implemented and verified; incumbent-engine review and CI pending.
+Status: implemented and verified locally; merge, release and activation pending.
+The PR records the current exact-head incumbent-engine review and CI results.
 
 Sentinel 1.10.0 pins Codex to GPT-5.6 Sol and uses Claude's moving Sonnet and
 Opus aliases at different effort levels. Live installation requires both
@@ -56,12 +57,18 @@ and GPT-6.1 Sol at high/xhigh with a separate Codex 0.159.0 executable. Codex
 0.154.0 rejected GPT-6.1 Sol with ChatGPT sign-in; early client-version checks now
 refuse that combination. The machine's original CLI and Rove watcher are intact.
 
-All 459 deterministic tests pass, as does isolated-consumer package installation.
+All 465 deterministic tests pass, as does isolated-consumer package installation.
 Claude-only and Codex-only native synthetic pipelines both detected and freshly
 adjudicated the introduced defect. An incomplete client trial exposed the empty
 findings/blocked-read gap; explicit completeness checks now reject that case.
 
-Next action: complete the incumbent-engine review, push, and inspect required CI.
+The first incumbent review found an omitted charter update, a legacy-Claude
+default-ceiling error, a stale usage claim and misleading uninstalled status.
+The charter and usage now match single-provider support; model and status repairs
+have regressions that failed before and passed after the fixes. Model-access
+output also uses the existing bounded structured-output reader.
+
+Next action: pass the final incumbent-engine review, push, and inspect required CI.
 Release publication and Rove activation are separate delivery steps. The current
 Rove watcher remains on 1.10; its old Codex client needs updating before the new
 default can be activated. Installation checks refuse that old-client combination.

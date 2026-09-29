@@ -26,6 +26,13 @@ describe('project model profiles and provider requirements', () => {
     } } })).toThrow(/digest/);
   });
 
+  it.each(['claude-opus-4-6', 'claude-sonnet-4-6'])('resolves a supported ceiling for %s when omitted', (model) => {
+    expect(normalizeConfig({ models: { claude: { model, effort: 'high' } } }).models.claude)
+      .toEqual({ model, effort: 'high', maxEffort: 'high' });
+    expect(normalizeConfig({ models: { claude: { model, effort: 'max' } } }).models.claude)
+      .toEqual({ model, effort: 'max', maxEffort: 'max' });
+  });
+
   it.each([
     { providers: 'anything' }, { models: [] }, { models: { other: {} } },
     { models: { claude: { model: '--invalid' } } },

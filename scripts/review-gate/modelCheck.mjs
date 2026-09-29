@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { profileFor } from './modelSettings.mjs';
-import { buildClaudeArgs, buildCodexArgs, parseClaudeOutput } from './providers.mjs';
+import { buildClaudeArgs, buildCodexArgs, parseClaudeOutput, readBoundedJson } from './providers.mjs';
 import { runProcess, subscriptionEnvironment } from './process.mjs';
 import { removeTreeWithRetries } from './cleanup.mjs';
 
@@ -26,7 +26,7 @@ export async function checkModels(repoRoot, { config = {}, selected, runner = ru
           ...profile, effort };
         const result = await runner(provider, provider === 'claude' ? buildClaudeArgs(options) : buildCodexArgs(options),
           { cwd: directory, env, timeoutMs: 60_000 });
-        const value = provider === 'claude' ? parseClaudeOutput(result.stdout) : JSON.parse(await readFile(outputPath, 'utf8'));
+        const value = provider === 'claude' ? parseClaudeOutput(result.stdout) : await readBoundedJson(outputPath);
         if (value?.ok !== true) throw new Error(`${provider} ${profile.model}/${effort} did not complete the model-access probe.`);
         checks.push({ provider, model: profile.model, effort, status: 'pass' });
       }

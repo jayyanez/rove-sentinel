@@ -16,14 +16,16 @@ export function normalizeModels(input = {}) {
     const defaults = PROVIDER_PROFILE[`${provider}Reviewer`];
     const model = settings.model ?? defaults.model;
     const effort = settings.effort ?? defaults.effort;
-    const maxEffort = settings.maxEffort ?? (EFFORTS.indexOf(effort) > EFFORTS.indexOf(defaults.maxEffort) ? effort : defaults.maxEffort);
     if (typeof model !== 'string' || model.length > 160 || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(model)) {
       throw new Error(`${provider} model must be a CLI model identifier of at most 160 characters.`);
     }
+    const legacyClaude = provider === 'claude' && /^claude-(?:opus|sonnet)-4-6(?:-|$)/.test(model);
+    const defaultCeiling = legacyClaude ? 'high' : defaults.maxEffort;
+    const maxEffort = settings.maxEffort ?? (EFFORTS.indexOf(effort) > EFFORTS.indexOf(defaultCeiling) ? effort : defaultCeiling);
     const supported = provider === 'claude' || model === 'gpt-6.1-sol'
       ? EFFORTS.slice(2) : EFFORTS;
     if (!supported.includes(effort) || !supported.includes(maxEffort)) throw new Error(`Invalid ${provider} effort or maxEffort for ${model}.`);
-    if (/^claude-(?:opus|sonnet)-4-6(?:-|$)/.test(model) && [effort, maxEffort].includes('xhigh')) {
+    if (legacyClaude && [effort, maxEffort].includes('xhigh')) {
       throw new Error(`${model} does not support xhigh; select high or max explicitly.`);
     }
     if (EFFORTS.indexOf(maxEffort) < EFFORTS.indexOf(effort)) throw new Error(`${provider} maxEffort cannot be below effort.`);
