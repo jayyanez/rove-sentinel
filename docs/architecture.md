@@ -42,9 +42,10 @@ a model understood or detected every defect. Candidate findings are independentl
 adjudicated in fresh contexts and validated against a structured schema.
 
 Author-family routing normally puts the other provider in the lead. Human
-changes use risk-based routing. The inherited `grok/` author label routes to
-Claude only; there is no Grok provider. Both installed providers remain required
-for the supported configuration.
+changes use risk-based routing. The inherited `grok/` author label prefers
+Claude; there is no Grok provider. A single authenticated provider preserves role
+counts and fresh contexts while the report records reduced model diversity.
+Installed model/effort settings and bounded escalation are described in [models](models.md).
 
 Markdownlint runs in a bounded subprocess against changed Markdown. Optional
 Clippy runs only when installed policy enables it. Tool unavailability and

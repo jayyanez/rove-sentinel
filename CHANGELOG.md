@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11.0 — configurable current models and one subscription
+
+- Default all Codex roles to GPT-6.1 Sol and all Claude roles to Opus 5.5, both
+  at high effort with bounded model-requested escalation to xhigh.
+- Support Claude-only, Codex-only, automatic, or explicitly required dual-provider
+  operation while preserving role counts, coverage and fresh adjudication.
+- Freeze custom models, initial effort and effort ceilings in installed project
+  policy. Expose profiles, provider selection and actual passes in evidence.
+- Add explicit model-access probes and early client compatibility diagnostics.
+- Refuse incomplete provider reviews rather than accepting empty findings after
+  blocked reads or an unavailable tool host.
+
 ## 1.10.0 — automatic engine updates
 
 - Add bounded, cached `update-check` and advisory notices in status/doctor, with

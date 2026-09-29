@@ -43,6 +43,8 @@ import {
   providerCleanupFailureLatched,
   resetProviderCleanupLatch,
 } from './process.mjs';
+import { detectSubscriptions } from './subscriptions.mjs';
+import { modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
 import { partitionShards, renameMapFor, renamedPaths, splitPatchByFile } from './shards.mjs';
 import { deferCommand } from './dispositions.mjs';
@@ -566,6 +568,7 @@ async function runGateWithLease({
   deterministicLanes = runDeterministicLanes,
   policy,
   stateRoot,
+  availableProviders,
 } = {}) {
   const context = await createGateContext(repoRootInput, { stateRoot });
   // Reviews are serialized (one per daemon, or one foreground run); the
@@ -636,6 +639,12 @@ async function runGateWithLease({
     changedLines: stats.changedLines,
     override: riskOverride,
   });
+  let subscriptions;
+  const selectedProviders = risk.level === 'skip' ? [] : dryRun || availableProviders !== undefined || reviewer !== runReviewer
+    ? selectProviders(reviewPolicy.config.providers ?? 'auto', availableProviders ?? ['claude', 'codex'])
+    : (subscriptions = await detectSubscriptions(context.repoRoot, { mode: reviewPolicy.config.providers ?? 'auto' })).selected;
+  if (subscriptions) validateModelClients(reviewPolicy.config, subscriptions);
+  const providerExecutions = [];
   const author = inferAuthor(branch, authorOverride);
   const lineage = convergenceLineage(identity, branch);
   const lineageReviews = risk.level === 'skip'
@@ -673,7 +682,7 @@ async function runGateWithLease({
   }
   const followUp = followUpBaseSha !== null && typeof followUpPatch === 'string';
   const round = followUp ? 'follow-up' : 'full';
-  const plan = reviewPlan(risk.level, author, { followUp });
+  const plan = reviewPlan(risk.level, author, { followUp, providers: selectedProviders });
   // Only reviews of ANCESTOR heads carry blockers into this head: after a
   // divergent force-push the abandoned side's findings are not this head's.
   const ancestorReviews = [];
@@ -749,6 +758,11 @@ async function runGateWithLease({
       plan,
     }),
     convergence,
+    providerSelection: selectedProviders,
+    providerSelectionVerified: Boolean(subscriptions),
+    modelDiversity: selectedProviders.length > 1 ? 'multiple-providers' : selectedProviders.length === 1 ? 'single-provider' : 'no-model-review',
+    modelSettings: modelSettings(reviewPolicy.config),
+    providerExecutions,
   };
 
   if (dryRun) {
@@ -769,6 +783,8 @@ async function runGateWithLease({
       summary: report.summary,
       providers: [],
       reportId: report.id,
+      providerSelection: selectedProviders,
+      modelSettings: modelSettings(reviewPolicy.config),
     });
   }
 
@@ -820,6 +836,9 @@ async function runGateWithLease({
       followUpPatch,
       followUpBaseSha,
     });
+
+    bundle.modelConfig = reviewPolicy.config;
+    bundle.providerExecutions = providerExecutions;
 
     // Deterministic lanes (v1.8.0) run alongside everything else. They can
     // only reject through the process-tree fence, which must reach the same
@@ -1329,6 +1348,8 @@ async function runGateWithLease({
     await recordLineageReview(context.paths, lineage, {
       headSha,
       reportId: report.id,
+      providerSelection: selectedProviders,
+      modelSettings: modelSettings(reviewPolicy.config),
       status,
       blockingFindings: [
         ...[...verified, ...(evidenceAccepted ? [] : native)].map((finding) => ({
@@ -1359,7 +1380,11 @@ async function runGateWithLease({
       round,
       summary,
       providers: [...new Set([...plan.reviewers, ...(usedCoordinator ? [plan.coordinator] : [])])],
+      providerExecutions,
+      modelDiversity: baseReport.modelDiversity,
       reportId: report.id,
+      providerSelection: selectedProviders,
+      modelSettings: modelSettings(reviewPolicy.config),
       lineage,
       followUpBaseSha,
       shards: report.shards,
@@ -1428,7 +1453,8 @@ export function formatGateResult(result) {
     ? `\n${pending.length} advisor${pending.length === 1 ? 'y' : 'ies'} need a fix or a recorded deferral before this head can be pushed: fix and rerun, or\n  ${deferCommand({ headSha: result.identity?.headSha, reportId: result.reportId, baseSha: result.identity?.baseSha, branch: result.lineage?.branch ?? result.branch, findingIds: pending.map((finding) => finding.candidate_id) })}`
     : '';
   const stages = formatStages(result.stages);
-  const trailer = [stages, ...dismissedLines].filter(Boolean).join('\n');
+  const selection = result.providerSelection?.length ? `Providers: ${result.providerSelection.join(' + ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}` : '';
+  const trailer = [selection, stages, ...dismissedLines].filter(Boolean).join('\n');
   if (result.status === 'pass') {
     const cache = result.cached ? ' (cached exact-SHA attestation)' : '';
     const advisories = (result.findings || []).filter((finding) => finding.disposition === 'advisory');

@@ -2,6 +2,7 @@ export const HELP = `Rove Sentinel — committed code review with Claude Code an
 
 Start here:
   rove-sentinel doctor                 Check tools and authentication
+  rove-sentinel doctor --test-models   Also test model access (uses subscription quota)
   rove-sentinel init                   Create configuration and hook adapters
   rove-sentinel install --dry-run      Preview trusted policy installation
   rove-sentinel install                Install and start the local watcher
@@ -39,7 +40,10 @@ Optional integrations:
   design-evidence [--base REF] [--head REF] [--branch NAME]
 
 Use --repo ROOT to target a checkout. Default review base: origin/main.
-Both AI CLIs must be installed and authenticated. The grok author label does
+At least one native AI CLI must be installed and subscription-authenticated.
+Configure providers and per-provider model/effort/maxEffort in .rove-sentinel.json,
+then install from your trusted stable checkout. doctor --project-config probes
+the desired configuration; plain doctor uses installed policy. The grok author label does
 not enable a Grok provider. Uncommitted changes are not reviewed.
 
 --detach starts a hidden background review and returns its PID and log path;

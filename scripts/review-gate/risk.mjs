@@ -138,6 +138,13 @@ export function reviewPlan(risk, author, options = {}) {
     throw new Error(`Unknown author family: ${author}. Expected claude, codex, grok, or human.`);
   }
   if (risk === 'skip') return decoratePlan({ reviewers: [], coordinator: null }, risk, options);
+  if (options.providers) {
+    if (!Array.isArray(options.providers) || !options.providers.length ||
+        options.providers.some((provider) => !['claude', 'codex'].includes(provider))) throw new Error('Invalid review provider set.');
+    if (new Set(options.providers).size === 1) {
+      return decoratePlan(sameFamilyPlan(options.providers[0], risk), risk, options);
+    }
+  }
   // Grok is an implementer, not a review provider. Spend only the Claude
   // subscription: same lens counts as other agent work, no Codex calls.
   if (author === 'grok') return decoratePlan(sameFamilyPlan('claude', risk), risk, options);

@@ -68,6 +68,30 @@ async function installTestPolicy(stateRoot, policy) {
   return paths;
 }
 
+describe('single-provider pipeline provenance', () => {
+  it.each(['claude', 'codex'])('routes a complete review to %s and preserves the cached provider record', async (provider) => {
+    const repository = await makeRepository();
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-one-provider-'));
+    temporaryDirectories.push(stateRoot);
+    const reviewer = vi.fn(async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed', candidates: [] }));
+    const options = { repoRoot: repository.root, stateRoot, base: repository.base,
+      head: repository.head, policy: repository.policy, author: 'human', risk: 'high',
+      availableProviders: [provider], reviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    };
+    const result = await runGate(options);
+    expect(result.status).toBe('pass');
+    expect(result.providerSelection).toEqual([provider]);
+    expect(result.modelDiversity).toBe('single-provider');
+    expect(reviewer.mock.calls.every(([call]) => call.provider === provider)).toBe(true);
+    expect(formatGateResult(result)).toContain('no cross-model diversity');
+    expect(await runGate(options)).toMatchObject({ cached: true, providerSelection: [provider] });
+    const strict = reviewPolicySnapshot({ charter: repository.policy.charter, lessons: repository.policy.lessons, config: { providers: 'both' } });
+    await expect(runGate({ ...options, policy: strict })).rejects.toThrow(/both/);
+  });
+});
+
 function git(root: string, ...args: string[]) {
   return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
 }

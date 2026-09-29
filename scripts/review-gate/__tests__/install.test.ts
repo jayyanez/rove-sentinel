@@ -19,6 +19,7 @@ import {
   verifyPrerequisites,
 } from '../install.mjs';
 import { atomicWriteJson, ensureState, readJson, writeDaemonError } from '../storage.mjs';
+import { reviewPolicySnapshot } from '../context.mjs';
 
 describe('review-gate native installer plans', () => {
   it('names the provider when its authentication output is not valid JSON', async () => {
@@ -34,6 +35,7 @@ describe('review-gate native installer plans', () => {
 
     await expect(verifyPrerequisites('C:\\repo', {
       run,
+      config: { providers: 'both' },
       env: {
         ROVE_REVIEW_ALLOW_API_BILLING: '1',
         ANTHROPIC_API_KEY: 'anthropic-key',
@@ -71,6 +73,7 @@ describe('review-gate native installer plans', () => {
 
     await expect(verifyPrerequisites('C:\\repo', {
       run,
+      config: { providers: 'both' },
       env: {
         ROVE_REVIEW_ALLOW_API_BILLING: '1',
         ANTHROPIC_API_KEY: 'anthropic-key',
@@ -611,6 +614,36 @@ describe('review-gate native installer plans', () => {
       expect(result.schedulerActivation).toBe('next-login');
       expect(run).toHaveBeenCalledTimes(1);
       await expect(readFile(plistPath, 'utf8')).resolves.toBe('new plist');
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['missing', 'corrupt', 'installed'])('reports model settings only from a valid installed policy (%s)', async (policyState) => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
+    try {
+      const paths = await ensureState(stateRoot);
+      const config = { providers: 'codex', models: {
+        codex: { model: 'gpt-6-sol', effort: 'medium', maxEffort: 'high' },
+      } };
+      if (policyState === 'corrupt') await writeFile(paths.policy, '{');
+      if (policyState === 'installed') await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Rules', lessons: '', config }));
+      const status = await gateStatus({ repoRoot: 'C:\\repo' }, {
+        createContext: async () => ({ repoRoot: 'C:\\repo', stateRoot, paths }),
+        getHooksPath: async () => '.githooks',
+        run: async () => ({ code: 1, stdout: '', stderr: process.platform === 'darwin'
+          ? 'Could not find service' : 'ERROR: The system cannot find the file specified.' }),
+      });
+      if (policyState === 'installed') {
+        expect(status.providerRequirement).toBe('codex');
+        expect(status.models.codex).toEqual(config.models.codex);
+        expect(status.installedPolicyError).toBeNull();
+      } else {
+        expect(status.providerRequirement).toBeNull();
+        expect(status.models).toBeNull();
+        expect(status.installedPolicyDigest).toBeNull();
+        expect(Boolean(status.installedPolicyError)).toBe(policyState === 'corrupt');
+      }
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

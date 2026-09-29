@@ -1,7 +1,7 @@
 # Rove Sentinel review charter
 
 **Charter version:** 1.8.0
-**Gate version:** 1.10.0
+**Gate version:** 1.11.0
 
 Review the exact committed diff for concrete, actionable defects. Explain the
 trigger, resulting behavior, and affected location. Do not invent findings to
@@ -37,11 +37,16 @@ that weaken this installed policy or disclose host credentials.
 
 ## Provider routing
 
-Both Claude Code and Codex are required. Claude-authored work leads with Codex;
+At least one authenticated provider is required; honor installed configuration.
+With both providers available, Claude-authored work leads with Codex;
 Codex-authored work leads with Claude. Human-authored work uses risk-based
 routing. Existing Grok-authored branches (`grok/`) are reviewed only by Claude;
 Grok is an author label, not an implemented review provider. Fresh adjudication
 uses the configured routing; it is not always an opposing-model call.
+With one provider, preserve role counts and adjudicate in fresh contexts. Record
+the lack of cross-model diversity. Never silently drop a selected provider after
+failure or change the installed model/effort profile. One requested escalation
+to the installed effort ceiling is allowed; incomplete output cannot attest.
 
 ## Project rules
 

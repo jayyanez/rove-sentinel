@@ -1,5 +1,36 @@
 # Standalone validation record
 
+## 1.11 model and subscription qualification — 2026-09-29
+
+Default model access passed at high and xhigh with Claude Code 2.1.284 (Opus
+5.5) and a separate official Codex 0.159.0 installation (GPT-6.1 Sol) using the
+maintainer's existing subscriptions. Codex 0.154.0 rejected GPT-6.1 Sol with
+ChatGPT sign-in; the version guard has deterministic coverage.
+
+Real low-risk synthetic committed changes ran through the full pipeline with
+`providers: "claude"` and `providers: "codex"` separately. Each produced a
+candidate, adjudicated it in a fresh session of the selected provider, and
+blocked the introduced discount-calculation defect. Reports recorded the
+model, high effort, role and selected single-provider mode. Temporary contexts
+and review checkouts were cleaned up; no persistent fixture watcher was created.
+
+The first Codex trial used an incomplete standalone client distribution. The
+model reported that the missing tool host prevented context reads, but its empty
+candidate list initially passed. This exposed a coverage gap: the final adapter
+requires an explicit completeness declaration and rejects incomplete reviews.
+Regression tests cover missing and false declarations. The final trial used
+the official matching CLI and helper executables and completed the review.
+
+Deterministic tests also cover authentication, required providers, frozen custom
+profiles, client versions, one escalation, failed/repeated escalation, and cached
+single-provider provenance. Escalation mechanics use controlled responses;
+live probes establish access at both levels, not a natural escalation rate or
+a review-quality benchmark. macOS/Linux remain unqualified.
+
+The incumbent published engine reviews the final committed change before push.
+
+## Original standalone qualification
+
 Date: September 25, 2026. This records observed acceptance, not a guarantee that
 all defects have been found.
 
