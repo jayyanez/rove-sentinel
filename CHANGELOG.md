@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.11.0 — configurable current models and one subscription (unreleased)
+## 1.11.0 — configurable current models and one subscription
 
 - Default all Codex roles to GPT-6.1 Sol and all Claude roles to Opus 5.5, both
   at high effort with bounded model-requested escalation to xhigh.
