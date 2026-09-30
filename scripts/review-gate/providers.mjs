@@ -11,7 +11,7 @@ import {
   SCOUT_SCHEMA,
 } from './constants.mjs';
 import { processTreeCleanupFailureCode, runProcess, subscriptionEnvironment } from './process.mjs';
-import { splitShardPatch } from './shards.mjs';
+import { shardTimeoutMs, splitShardPatch } from './shards.mjs';
 
 const ROLE_PROMPTS = [
   `Correctness and contracts: trace every error, refusal, cancellation, retry,
@@ -816,6 +816,7 @@ export async function runShardReviewer({
   // still present PLUS its own findings: the bound grows with the blockers
   // that live in this shard, up to the global adjudication bound.
   const bounds = { maxCandidates: shardCandidateBound(shard, priorBlocking) };
+  const timeoutMs = shardTimeoutMs(shard.patch);
   if (provider === 'claude') {
     return normalizeReviewerResult(
       await runClaudeJson({
@@ -824,7 +825,7 @@ export async function runShardReviewer({
         schema: REVIEWER_SCHEMA,
         prompt,
         profile: profileFor('claude', 'Shard', bundle.modelConfig),
-        timeoutMs: LIMITS.shardTimeoutMs,
+        timeoutMs,
         runner,
       }),
       provider,
@@ -842,7 +843,7 @@ export async function runShardReviewer({
         outputPath,
         prompt,
         profile: profileFor('codex', 'Shard', bundle.modelConfig),
-        timeoutMs: LIMITS.shardTimeoutMs,
+        timeoutMs,
         runner,
       }),
       provider,

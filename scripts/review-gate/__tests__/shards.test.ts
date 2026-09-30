@@ -7,9 +7,11 @@ import {
   metadataOnlySections,
   partitionShards,
   splitPatchByFile,
+  shardTimeoutMs,
   splitShardPatch,
   unquoteGitPath,
 } from '../shards.mjs';
+import { LIMITS } from '../constants.mjs';
 
 /** A binary section as `git diff` (without --binary) prints it. */
 function binarySection(file: string, { renamedFrom = null as string | null, added = false } = {}) {
@@ -246,6 +248,17 @@ describe('sharded coverage partition', () => {
     const wide = `diff --git a/w b/w\n+${'w'.repeat(5000)}\n+tail\n`;
     const wideParts = splitShardPatch(wide, 1024);
     expect(wideParts.map((part) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part)).join('')).toBe(wide);
+  });
+
+  it('gives a larger shard more time, a minute per step, up to the bound', () => {
+    const minute = 60 * 1000;
+    const sized = (bytes: number) => 'x'.repeat(bytes);
+    expect(shardTimeoutMs('')).toBe(LIMITS.shardTimeoutMs);
+    expect(shardTimeoutMs(sized(LIMITS.shardPartMaxBytes))).toBe(LIMITS.shardTimeoutMs);
+    expect(shardTimeoutMs(sized(LIMITS.shardPartMaxBytes + 1))).toBe(LIMITS.shardTimeoutMs + minute);
+    // A ~70 KB shard (rove #584) gets 5 + ceil(46 KB / 12 KB) = 9 minutes.
+    expect(shardTimeoutMs(sized(70 * 1024))).toBe(LIMITS.shardTimeoutMs + 4 * minute);
+    expect(shardTimeoutMs(sized(10 * 1024 * 1024))).toBe(LIMITS.shardTimeoutMaxMs);
   });
 
   it('leaves a diff of metadata-only sections without shards (the lens reviewers take it)', () => {

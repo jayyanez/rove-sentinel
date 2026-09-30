@@ -44,7 +44,9 @@ an empty file) owns no shard, because there is nothing in it to read; the review
 context lists it with its reason and old path so reviewers still check references
 to it, and the report records it. A shard larger than one read (24 KB) is
 written in parts that the reviewer reads whole, one call each, because a
-provider may elide the middle of a larger tool output. Candidate findings are independently
+provider may elide the middle of a larger tool output; its time limit grows
+with its size (5 minutes for one part, a minute per further 12 KB, at most 12).
+Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
 
 Author-family routing normally puts the other provider in the lead. Human

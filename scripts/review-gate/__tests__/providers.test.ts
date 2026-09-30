@@ -533,6 +533,10 @@ describe('subscription-backed provider adapters', () => {
       expect(prompt).toContain(`Read these ${count} files in order, each ONCE in full`);
       for (const name of partNames) expect(prompt).toContain(path.join(directory, name));
       expect(prompt).toContain('calls after the\nshard parts');
+      // The reviewer that reads every part gets the time that reading takes.
+      const { shardTimeoutMs } = await import('../shards.mjs');
+      expect(runner.mock.calls[0][2].timeoutMs).toBe(shardTimeoutMs(patch));
+      expect(shardTimeoutMs(patch)).toBeGreaterThan(LIMITS.shardTimeoutMs);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

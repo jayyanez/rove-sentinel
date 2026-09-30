@@ -8,6 +8,9 @@
   shard "read once" was never fully seen, and since 1.11.0 Codex honestly
   declared `review_complete: false` on such shards, failing large branches
   closed (rove #584 three rounds, #573 five).
+- A shard reviewer's time limit grows with its shard: 5 minutes for one part,
+  one more minute per further 12 KB, up to 12 minutes. Reading every part of a
+  ~70 KB shard took Codex past the old fixed 5 minutes.
 - A changed file with no textual hunk (binary content, a rename or copy
   without a content change, a mode change, an empty file created or deleted)
   no longer fills a review shard. Since 1.11.0 a reviewer must declare

@@ -407,3 +407,14 @@ export function splitShardPatch(patch, maxBytes = LIMITS.shardPartMaxBytes) {
 
 /** First line of a shard part that continues a file from the previous part. */
 export const CONTINUATION_PREFIX = '# Sentinel shard part continues: ';
+
+/**
+ * A shard reviewer's time limit (1.11.1): the base for a shard of one part,
+ * one more minute for each further `shardTimeoutStepBytes`, bounded by
+ * `shardTimeoutMaxMs`. Deterministic for a given patch.
+ */
+export function shardTimeoutMs(patch) {
+  const extraBytes = Math.max(0, Buffer.byteLength(String(patch || ''), 'utf8') - LIMITS.shardPartMaxBytes);
+  const extraMinutes = Math.ceil(extraBytes / LIMITS.shardTimeoutStepBytes);
+  return Math.min(LIMITS.shardTimeoutMaxMs, LIMITS.shardTimeoutMs + extraMinutes * 60 * 1000);
+}
