@@ -46,7 +46,7 @@ import {
 import { detectSubscriptions } from './subscriptions.mjs';
 import { modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
-import { partitionShards, renameMapFor, renamedPaths, splitPatchByFile } from './shards.mjs';
+import { metadataOnlySections, partitionShards, renameMapFor, renamedPaths, splitPatchByFile } from './shards.mjs';
 import { deferCommand } from './dispositions.mjs';
 import { LIMITS } from './constants.mjs';
 import {
@@ -414,7 +414,7 @@ export async function buildFailClosedError({ paths, baseReport, summary, errors,
   return wrapped;
 }
 
-function reportBase({ identity, branch, author, risk, riskReasons, files, excludedFiles, stats, plan }) {
+function reportBase({ identity, branch, author, risk, riskReasons, files, excludedFiles, metadataOnlyFiles = [], stats, plan }) {
   return {
     schemaVersion: 2,
     createdAt: new Date().toISOString(),
@@ -425,6 +425,7 @@ function reportBase({ identity, branch, author, risk, riskReasons, files, exclud
     riskReasons,
     files,
     excludedFiles,
+    metadataOnlyFiles,
     stats,
     plan,
   };
@@ -504,7 +505,13 @@ export function followUpShards({
   // A blocker's file may have been renamed by the repair: its new section
   // covers the old path, so the re-verification shard follows the rename.
   const renamedTo = new Map([...renamedPaths(patch), ...renamedPaths(followUpPatch)]);
-  const covered = new Set(incrementFiles || []);
+  // Only an increment file with a textual hunk is read by an incremental
+  // shard: a file the repair merely renamed (or that is binary) owns no
+  // shard, so a blocker in it still needs its re-verification shard.
+  const textualIncrement = new Set(splitPatchByFile(followUpPatch)
+    .filter((section) => !section.metadataReason)
+    .map((section) => section.file));
+  const covered = new Set((incrementFiles || []).filter((file) => textualIncrement.has(file)));
   const uncovered = [...new Set((priorBlocking || [])
     .map((finding) => String(finding.file || ''))
     .map((file) => (renamedTo.has(file) ? renamedTo.get(file) : file))
@@ -632,6 +639,8 @@ async function runGateWithLease({
     readPatch(context.repoRoot, baseSha, headSha),
   ]);
   const excludedFiles = excludedReviewFiles(files);
+  // Changes with no text to read own no shard; the context lists them.
+  const metadataOnlyFiles = metadataOnlySections(patch, { excludedFiles });
   const risk = classifyRisk({
     config: reviewPolicy.config,
     files,
@@ -754,6 +763,7 @@ async function runGateWithLease({
       riskReasons: risk.reasons,
       files,
       excludedFiles,
+      metadataOnlyFiles,
       stats,
       plan,
     }),
@@ -829,6 +839,7 @@ async function runGateWithLease({
       riskReasons: risk.reasons,
       files,
       excludedFiles,
+      metadataOnlyFiles,
       stats,
       patch,
       referenceMap,
@@ -998,7 +1009,8 @@ async function runGateWithLease({
     }
     const settledShards = await shardPromise;
     const settledHypotheses = await hypothesisPromise;
-    // A shard-less diff (every changed file excluded from the textual patch)
+    // A shard-less diff (every changed file excluded from the textual patch
+    // or without a textual hunk)
     // still gets the lens reviewer, so no reviewable head goes unreviewed.
     let settledLens = [];
     if (!shards.length) {

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.11.1 — changes without text own no shard
+
+- A changed file with no textual hunk (binary content, a rename or copy
+  without a content change, a mode change, an empty file created or deleted)
+  no longer fills a review shard. Since 1.11.0 a reviewer must declare
+  `review_complete`, and a shard owning ~25 unreadable binaries was reported
+  incomplete on almost every run, so branches that move or add assets failed
+  closed without findings.
+- Such files stay in the full patch and are listed, with their reason and old
+  path, in the review context every reviewer reads, so references to a moved or
+  deleted path are still checked. Reports record them as `metadataOnlyFiles`.
+  Shard coverage of every textual hunk is unchanged.
+- A follow-up round whose repair only renames a prior blocker's file gives that
+  blocker its re-verification shard, built from the branch's text of the new
+  path, instead of treating the rename as covered.
+
 ## 1.11.0 — configurable current models and one subscription
 
 - Default all Codex roles to GPT-6.1 Sol and all Claude roles to Opus 5.5, both

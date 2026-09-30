@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -25,6 +25,7 @@ import {
   atomicWriteJson,
   ensureState,
   readAttestation,
+  readReport,
   submitRequest,
   waitForResult,
 } from '../storage.mjs';
@@ -90,6 +91,60 @@ describe('single-provider pipeline provenance', () => {
     const strict = reviewPolicySnapshot({ charter: repository.policy.charter, lessons: repository.policy.lessons, config: { providers: 'both' } });
     await expect(runGate({ ...options, policy: strict })).rejects.toThrow(/both/);
   });
+});
+
+describe('changes without a textual hunk', () => {
+  it('gives binaries and pure renames no shard and lists them in the context and the report', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-metadata-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'docs', 'bugs'), { recursive: true });
+    await mkdir(path.join(root, 'static'), { recursive: true });
+    await writeFile(path.join(root, 'docs', 'shared-review-charter.md'), '# Charter\n');
+    await writeFile(path.join(root, 'docs', 'bugs', 'lessons.md'), '# Lessons\n');
+    // Not valid UTF-8, with NUL bytes: Git treats both as binary.
+    const binary = (seed: number) => Buffer.from(Array.from({ length: 512 }, (_, index) => (index * seed) % 256));
+    await writeFile(path.join(root, 'static', 'a.ogg'), binary(7));
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    await mkdir(path.join(root, 'src', 'lib'), { recursive: true });
+    await mkdir(path.join(root, 'addons'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'lib', 'example.ts'), "export const sound = 'addons/a.ogg';\n");
+    await writeFile(path.join(root, 'addons', 'picture.png'), binary(13));
+    git(root, 'mv', 'static/a.ogg', 'addons/a.ogg');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'move the sound, add a picture');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-state-'));
+    temporaryDirectories.push(stateRoot);
+    const contexts: string[] = [];
+    const reviewer = vi.fn(async ({ provider, roleIndex, bundle }) => {
+      contexts.push(await readFile(bundle.contextPath, 'utf8'));
+      return { provider, roleIndex, summary: 'Reviewed', candidates: [] };
+    });
+    const result = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'high',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['claude'], reviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    const shardCalls = reviewer.mock.calls.filter(([call]) => call.lane === 'shard');
+    expect(shardCalls.map(([call]) => call.shard.files)).toEqual([['src/lib/example.ts']]);
+    expect(contexts[0]).toContain('- addons/a.ogg (renamed without content change; renamed from static/a.ogg)');
+    expect(contexts[0]).toContain('- addons/picture.png (binary)');
+    // The public result is a projection; the stored report keeps the list.
+    const report = await readReport(await ensureState(stateRoot), result.reportId);
+    expect(report.metadataOnlyFiles).toEqual([
+      { file: 'addons/a.ogg', renamedFrom: 'static/a.ogg', reason: 'rename' },
+      { file: 'addons/picture.png', reason: 'binary' },
+    ]);
+  }, REAL_GIT_TEST_TIMEOUT);
 });
 
 function git(root: string, ...args: string[]) {
@@ -1114,6 +1169,18 @@ describe('shared review gate integration', () => {
     });
     expect(followed.flatMap((shard) => shard.files)).toEqual(['src/new.ts']);
     expect(followed.some((shard) => shard.reverify)).toBe(false);
+    // A repair that ONLY renames the blocker's file has no hunk in it, so no
+    // incremental shard reads it (1.11.1): the blocker still gets its
+    // re-verification shard, built from the branch's text of the new path.
+    const pureRename = ['diff --git a/src/old.ts b/src/new.ts', 'similarity index 100%', 'rename from src/old.ts', 'rename to src/new.ts'].join('\n');
+    const branchText = ['diff --git a/src/new.ts b/src/new.ts', 'new file mode 100644', '--- /dev/null', '+++ b/src/new.ts', '@@ -0,0 +1,1 @@', '+x'].join('\n');
+    const reverified = followUpShards({
+      followUpPatch: pureRename, patch: branchText, incrementFiles: ['src/new.ts'],
+      priorBlocking: [{ file: 'src/old.ts', title: 't', priority: 'P2' }], maxShards: 4,
+    });
+    expect(reverified.map((shard) => ({ files: shard.files, reverify: Boolean(shard.reverify) }))).toEqual([
+      { files: ['src/new.ts'], reverify: true },
+    ]);
     const { renamedPaths, renameMapFor } = await import('../shards.mjs');
     expect([...renamedPaths(renamed)]).toEqual([['src/old.ts', 'src/new.ts']]);
     // A full round (no incremental patch) still maps the branch's renames, so
@@ -1224,9 +1291,11 @@ describe('shared review gate integration', () => {
     git(repository.root, 'mv', 'src/lib/renamed.ts', 'src/lib/final.ts');
     git(repository.root, 'commit', '-m', 'rename again');
     const fourthHead = git(repository.root, 'rev-parse', 'HEAD');
+    // A pure rename owns no shard (1.11.1): the round has no shard, and its
+    // lens reviewers re-report the known defect at the new path.
     const finalReviewer = vi.fn(async ({ provider, roleIndex, shard }) => ({
       provider, roleIndex, summary: 'x',
-      candidates: shard.files.includes('src/lib/final.ts') ? [{
+      candidates: (!shard || shard.files.includes('src/lib/final.ts')) ? [{
         id: `${provider}-${roleIndex}-final`, provider, roleIndex, title: 'Other defect', priority: 'P2', confidence: 95,
         category: 'correctness', file: 'src/lib/final.ts', line: 1, scenario: 's', evidence: 'e', proposed_test: 't',
       }] : [],

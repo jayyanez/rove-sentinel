@@ -38,7 +38,11 @@ manifest; excluded binary contents are not reviewed as text.
 
 Low-risk work uses bounded shards. Medium and high risk add a scout and focused
 hypothesis reviews. Shards cover the included hunks; they do not guarantee that
-a model understood or detected every defect. Candidate findings are independently
+a model understood or detected every defect. A changed file without a textual
+hunk (binary content, a rename or copy without a content change, a mode change,
+an empty file) owns no shard, because there is nothing in it to read; the review
+context lists it with its reason and old path so reviewers still check references
+to it, and the report records it. Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
 
 Author-family routing normally puts the other provider in the lead. Human

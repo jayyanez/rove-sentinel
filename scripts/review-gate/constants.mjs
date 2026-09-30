@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.11.0';
+export const GATE_VERSION = '1.11.1';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';

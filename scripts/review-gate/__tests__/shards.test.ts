@@ -3,10 +3,25 @@ import { describe, expect, it } from 'vitest';
 import {
   addedLinesByFile,
   classifyShardFile,
+  metadataOnlySections,
   partitionShards,
   splitPatchByFile,
   unquoteGitPath,
 } from '../shards.mjs';
+
+/** A binary section as `git diff` (without --binary) prints it. */
+function binarySection(file: string, { renamedFrom = null as string | null, added = false } = {}) {
+  const from = renamedFrom ?? file;
+  return [
+    `diff --git a/${from} b/${file}`,
+    ...(renamedFrom
+      ? ['similarity index 100%', `rename from ${renamedFrom}`, `rename to ${file}`]
+      : added
+        ? ['new file mode 100644', 'index 0000000..1234567']
+        : ['index 1234567..89abcde 100644']),
+    ...(renamedFrom ? [] : [`Binary files ${added ? '/dev/null' : `a/${file}`} and b/${file} differ`]),
+  ].join('\n');
+}
 
 function fileSection(file: string, added: number, removed = 0) {
   const lines = [
@@ -79,17 +94,16 @@ describe('sharded coverage partition', () => {
   });
 
   it('bounds a shard by bytes as well as changed lines', () => {
-    // Rename-only sections carry zero changed lines but real text.
-    const patch = Array.from({ length: 1500 }, (_, index) => [
-      `diff --git a/src/old${index}.ts b/src/new${index}.ts`,
-      'similarity index 100%',
-      `rename from src/old${index}.ts`,
-      `rename to src/new${index}.ts`,
-    ].join('\n')).join('\n');
-    const shards = partitionShards(patch, { targetLines: 1, maxShards: 8 });
+    // Sections whose text is large but whose changed lines are few.
+    const patch = Array.from({ length: 1500 }, (_, index) => (
+      fileSection(`src/f${index}.ts`, 1).replace('+new 0', `+${'y'.repeat(400)}`)
+    )).join('\n');
+    const shards = partitionShards(patch, { targetLines: 5_000, maxShards: 8 });
     expect(shards.length).toBeGreaterThan(1);
     expect(shards.length).toBeLessThanOrEqual(8);
-    expect(shards.every((shard) => Buffer.byteLength(shard.patch, 'utf8') <= 64 * 1024 + 4_096)).toBe(true);
+    expect(shards.flatMap((shard) => shard.files).length).toBe(1500);
+    const evenShare = Math.ceil(Buffer.byteLength(patch, 'utf8') / 8);
+    expect(shards.every((shard) => Buffer.byteLength(shard.patch, 'utf8') <= evenShare + 4_096)).toBe(true);
     // Bytes are UTF-8 bytes, not UTF-16 code units.
     const wide = Array.from({ length: 6 }, (_, index) => fileSection(`src/w${index}.ts`, 1).replace('+new 0', `+${'界'.repeat(30_000)}`)).join('\n');
     const wideShards = partitionShards(wide, { targetLines: 500, maxShards: 8 });
@@ -122,6 +136,98 @@ describe('sharded coverage partition', () => {
     expect(first).toEqual(second);
     expect(first.flatMap((shard) => shard.files)).toEqual(['src/a.ts']);
     expect(partitionShards('')).toEqual([]);
+  });
+
+  it('gives no shard a section without a textual hunk, and lists it as metadata instead', () => {
+    // A reviewer cannot read binary content, and a pure rename or a mode
+    // change has no text at all. Owning ~25 such files per shard made 1.11
+    // reviewers declare review_complete:false on every asset-moving branch.
+    const patch = [
+      fileSection('src/a.ts', 10),
+      binarySection('assets/photo.png'),
+      binarySection('assets/new.webp', { added: true }),
+      binarySection('addons/sound/a.ogg', { renamedFrom: 'static/sound/a.ogg' }),
+      [
+        'diff --git a/src/old.ts b/src/moved.ts',
+        'similarity index 100%',
+        'rename from src/old.ts',
+        'rename to src/moved.ts',
+      ].join('\n'),
+      [
+        'diff --git a/scripts/run.sh b/scripts/run.sh',
+        'old mode 100644',
+        'new mode 100755',
+      ].join('\n'),
+      [
+        'diff --git a/docs/empty.md b/docs/empty.md',
+        'new file mode 100644',
+        'index 0000000..e69de29',
+      ].join('\n'),
+      [
+        'diff --git a/src/base.ts b/src/copy.ts',
+        'similarity index 100%',
+        'copy from src/base.ts',
+        'copy to src/copy.ts',
+      ].join('\n'),
+      fileSection('tests/visual/x-snapshots/y.png', 1),
+    ].join('\n');
+    const excludedFiles = ['tests/visual/x-snapshots/y.png'];
+    const shards = partitionShards(patch, { maxShards: 8, excludedFiles });
+    expect(shards.flatMap((shard) => shard.files)).toEqual(['src/a.ts']);
+    expect(shards[0].patch).not.toContain('Binary files');
+    expect(metadataOnlySections(patch, { excludedFiles })).toEqual([
+      { file: 'addons/sound/a.ogg', renamedFrom: 'static/sound/a.ogg', reason: 'rename' },
+      { file: 'assets/new.webp', reason: 'binary' },
+      { file: 'assets/photo.png', reason: 'binary' },
+      { file: 'docs/empty.md', reason: 'empty' },
+      { file: 'scripts/run.sh', reason: 'mode' },
+      { file: 'src/copy.ts', reason: 'copy' },
+      { file: 'src/moved.ts', renamedFrom: 'src/old.ts', reason: 'rename' },
+    ]);
+  });
+
+  it('keeps every section that has a hunk in a shard, a partial rename and a text deletion included', () => {
+    const partialRename = [
+      'diff --git a/src/before.ts b/src/after.ts',
+      'similarity index 90%',
+      'rename from src/before.ts',
+      'rename to src/after.ts',
+      '--- a/src/before.ts',
+      '+++ b/src/after.ts',
+      '@@ -1,2 +1,2 @@',
+      ' keep',
+      '-old',
+      '+new',
+    ].join('\n');
+    const deletion = [
+      'diff --git a/src/gone.ts b/src/gone.ts',
+      'deleted file mode 100644',
+      'index 1234567..0000000',
+      '--- a/src/gone.ts',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-export const gone = 1;',
+    ].join('\n');
+    const binaryRewrite = [
+      'diff --git a/assets/a.png b/assets/b.png',
+      'similarity index 60%',
+      'rename from assets/a.png',
+      'rename to assets/b.png',
+      'index 1234567..89abcde 100644',
+      'Binary files a/assets/a.png and b/assets/b.png differ',
+    ].join('\n');
+    const patch = [partialRename, deletion, binaryRewrite].join('\n');
+    const files = partitionShards(patch, { maxShards: 8 }).flatMap((shard) => shard.files).sort();
+    expect(files).toEqual(['src/after.ts', 'src/gone.ts']);
+    expect(metadataOnlySections(patch)).toEqual([
+      { file: 'assets/b.png', renamedFrom: 'assets/a.png', reason: 'binary' },
+    ]);
+  });
+
+  it('leaves a diff of metadata-only sections without shards (the lens reviewers take it)', () => {
+    const patch = [binarySection('a.png'), binarySection('b/c.ogg', { renamedFrom: 'c.ogg' })].join('\n');
+    expect(partitionShards(patch, { maxShards: 8 })).toEqual([]);
+    expect(metadataOnlySections(patch).map((entry) => entry.file)).toEqual(['a.png', 'b/c.ogg']);
   });
 
   it('gives an oversized single file its own shard instead of dropping it', () => {

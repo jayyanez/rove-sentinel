@@ -276,4 +276,48 @@ Unrelated canvas rule.
       await rm(temporaryRoot, { recursive: true, force: true });
     }
   });
+
+  it('lists the changed files without a textual hunk, with their reason and old path', async () => {
+    const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-context-metadata-'));
+    try {
+      execFileSync('git', ['-C', temporaryRoot, 'init', '-b', 'main']);
+      execFileSync('git', ['-C', temporaryRoot, 'config', 'user.email', 'test@example.com']);
+      execFileSync('git', ['-C', temporaryRoot, 'config', 'user.name', 'Test']);
+      await writeFile(path.join(temporaryRoot, 'src-example.ts'), 'export const value = 1;\n');
+      execFileSync('git', ['-C', temporaryRoot, 'add', '.']);
+      execFileSync('git', ['-C', temporaryRoot, 'commit', '-m', 'base context']);
+      const headSha = execFileSync('git', ['-C', temporaryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const bundle = await createContextBundle({
+        checkout: temporaryRoot,
+        policyRoot: temporaryRoot,
+        policy: { charter: '# Charter\n', lessons: '# Lessons\n' },
+        baseSha: headSha,
+        headSha,
+        branch: 'claude/test',
+        author: 'claude',
+        risk: 'medium',
+        riskReasons: ['test'],
+        files: ['src-example.ts', 'assets/a.png', 'addons/b.ogg'],
+        metadataOnlyFiles: [
+          { file: 'addons/b.ogg', renamedFrom: 'static/b.ogg', reason: 'rename' },
+          { file: 'assets/a.png', reason: 'binary' },
+        ],
+        stats: { additions: 1, deletions: 0 },
+        patch: '+change',
+        temporaryRoot,
+      });
+      try {
+        const context = await readFile(path.join(bundle.directory, 'review-context.md'), 'utf8');
+        expect(context).toContain('Changed files without a textual hunk: 2');
+        expect(context).toContain('## Changed files without a textual hunk');
+        expect(context).toContain('never make a\nreview incomplete');
+        expect(context).toContain('- addons/b.ogg (renamed without content change; renamed from static/b.ogg)');
+        expect(context).toContain('- assets/a.png (binary)');
+      } finally {
+        await bundle.cleanup();
+      }
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
 });
