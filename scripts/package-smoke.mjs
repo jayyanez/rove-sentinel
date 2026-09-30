@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runProcess } from './review-gate/process.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-const { mkdir } = await import('node:fs/promises');
-await mkdir(path.join(root, 'output'), { recursive: true });
-const scratch = await mkdtemp(path.join(root, 'output/package-smoke-'));
+// Outside every repository: inside this checkout, the launcher resolved the
+// source repository and ran the managed engine installed for it on this
+// machine, so `--version` reported that engine instead of the package.
+const scratch = await mkdtemp(path.join(os.tmpdir(), 'sentinel-package-smoke-'));
 const run = (command, args, cwd = scratch, extra = {}) => runProcess(command, args, {
   cwd, timeoutMs: 120_000, maxOutputBytes: 2 * 1024 * 1024, ...extra,
 });

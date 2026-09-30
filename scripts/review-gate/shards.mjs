@@ -131,6 +131,10 @@ export function splitPatchByFile(patch) {
       if (target) current.file = target;
       const renamedFrom = renameFromPath(rawLine);
       if (renamedFrom) current.renamedFrom = renamedFrom;
+      if (BINARY_MARKER.test(rawLine)) current.binary = true;
+      if (rawLine.startsWith('old mode ')) current.modeChange = true;
+      if (rawLine.startsWith('copy from ')) current.copied = true;
+      if (rawLine.startsWith('new file mode ') || rawLine.startsWith('deleted file mode ')) current.createdOrDeleted = true;
     }
     if (
       (rawLine.startsWith('+') && !rawLine.startsWith('+++')) ||
@@ -145,8 +149,47 @@ export function splitPatchByFile(patch) {
     ...(section.renamedFrom ? { renamedFrom: section.renamedFrom } : {}),
     kind: classifyShardFile(section.file),
     changedLines: section.changedLines,
+    ...(section.sawHunk ? {} : { metadataReason: metadataReason(section) }),
     text: section.lines.join('\n'),
   }));
+}
+
+// Git's summary of a binary change (`git diff` without --binary) and the
+// header of a `--binary` patch; either means there is no text to review.
+const BINARY_MARKER = /^(?:Binary files .* differ|GIT binary patch)$/;
+
+/**
+ * Why a section has no textual hunk. Such a section carries no text a
+ * reviewer can read — binary content, a rename or copy without content
+ * change, a mode change, an empty file created or deleted — so it owns no
+ * shard (1.11.1).
+ */
+function metadataReason(section) {
+  if (section.binary) return 'binary';
+  if (section.renamedFrom) return 'rename';
+  if (section.copied) return 'copy';
+  if (section.modeChange) return 'mode';
+  if (section.createdOrDeleted) return 'empty';
+  return 'other';
+}
+
+/**
+ * The changed files that have no textual hunk, in code-unit path order, with
+ * the reason and the old path of a rename. They stay in the full patch and
+ * in the review context, where every reviewer checks references to their
+ * paths; no shard owns them because there is nothing in them to read.
+ * Excluded files (visual baselines) are reported separately and left out.
+ */
+export function metadataOnlySections(patch, { excludedFiles = [] } = {}) {
+  const excluded = new Set(excludedFiles.map((file) => String(file).replace(/\\/g, '/')));
+  return splitPatchByFile(patch)
+    .filter((section) => section.metadataReason && !excluded.has(section.file))
+    .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
+    .map((section) => ({
+      file: section.file,
+      ...(section.renamedFrom ? { renamedFrom: section.renamedFrom } : {}),
+      reason: section.metadataReason,
+    }));
 }
 
 /** old path → new path for every renamed section of the patch. */
@@ -236,7 +279,8 @@ function dominantKind(files) {
  * changed lines. Files are ordered by kind (code first, docs last) and then
  * by path, so a shard groups related files, and a shard never mixes docs with
  * code when the diff has enough of each to fill separate shards. A single
- * file larger than the target gets its own shard. The result is deterministic
+ * file larger than the target gets its own shard. Sections without a textual
+ * hunk own no shard (see metadataOnlySections). The result is deterministic
  * for a given patch.
  */
 export function partitionShards(patch, {
@@ -245,8 +289,11 @@ export function partitionShards(patch, {
   excludedFiles = [],
 } = {}) {
   const excluded = new Set(excludedFiles.map((file) => String(file).replace(/\\/g, '/')));
+  // A section without a textual hunk has nothing a reviewer can read: it is
+  // listed in the review context (metadataOnlySections) instead of filling
+  // shards with files whose owner would have to report its review incomplete.
   const sections = splitPatchByFile(patch)
-    .filter((section) => !excluded.has(section.file))
+    .filter((section) => !excluded.has(section.file) && !section.metadataReason)
     .sort((a, b) => (
       // Code-unit order, never the host locale's collation: identical patch
       // bytes must always produce identical shards.
@@ -257,9 +304,9 @@ export function partitionShards(patch, {
   // Raise the target when the diff cannot fit into maxShards shards at the
   // requested size: the count stays bounded and every hunk stays covered.
   const effectiveTarget = Math.max(targetLines, Math.ceil(total / Math.max(1, maxShards)));
-  // Bytes bound a shard as well as changed lines: rename-only and binary
-  // sections carry zero changed lines but real text, and a shard exists to
-  // be read in one bounded read.
+  // Bytes bound a shard as well as changed lines: a section with few changed
+  // lines can still carry a lot of text (long lines, wide context), and a
+  // shard exists to be read in one bounded read.
   const byteLength = (text) => Buffer.byteLength(text, 'utf8');
   const baseMaxBytes = Math.max(64 * 1024, Math.ceil(byteLength(String(patch || '')) / Math.max(1, maxShards)));
   const sized = sections.map((section) => ({ section, bytes: byteLength(section.text) }));
@@ -322,4 +369,52 @@ export function partitionShards(patch, {
     changedLines: shard.changedLines,
     patch: `${shard.files.map((section) => section.text).join('\n')}\n`,
   }));
+}
+
+/**
+ * Split one shard's patch into parts a reviewer reads whole, one call each
+ * (1.11.1). Parts break between files where a file fits; a file larger than a
+ * part is split between lines, and each continuation part starts with a line
+ * naming the file it continues. A single line longer than a part keeps a part
+ * of its own. Concatenating the parts without their continuation lines gives
+ * the shard patch back.
+ */
+export function splitShardPatch(patch, maxBytes = LIMITS.shardPartMaxBytes) {
+  const text = String(patch || '');
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return [text];
+  const bytes = (value) => Buffer.byteLength(value, 'utf8');
+  const parts = [];
+  let current = '';
+  let currentFile = null;
+  const flush = () => {
+    if (current) parts.push(current);
+    current = '';
+  };
+  for (const line of text.split(/(?<=\n)/)) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = patchTargetPath(line.replace(/\r?\n$/, '')) || currentFile;
+      // Start a file on a fresh part when it would not fit whole here.
+      if (current && bytes(current) + bytes(line) > maxBytes) flush();
+    } else if (current && bytes(current) + bytes(line) > maxBytes) {
+      flush();
+      current = `${CONTINUATION_PREFIX}${currentFile || 'the previous file'} (the previous part ends inside it)\n`;
+    }
+    current += line;
+  }
+  flush();
+  return parts;
+}
+
+/** First line of a shard part that continues a file from the previous part. */
+export const CONTINUATION_PREFIX = '# Sentinel shard part continues: ';
+
+/**
+ * A shard reviewer's time limit (1.11.1): the base for a shard of one part,
+ * one more minute for each further `shardTimeoutStepBytes`, bounded by
+ * `shardTimeoutMaxMs`. Deterministic for a given patch.
+ */
+export function shardTimeoutMs(patch) {
+  const extraBytes = Math.max(0, Buffer.byteLength(String(patch || ''), 'utf8') - LIMITS.shardPartMaxBytes);
+  const extraMinutes = Math.ceil(extraBytes / LIMITS.shardTimeoutStepBytes);
+  return Math.min(LIMITS.shardTimeoutMaxMs, LIMITS.shardTimeoutMs + extraMinutes * 60 * 1000);
 }

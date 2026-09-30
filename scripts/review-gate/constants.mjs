@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.11.0';
+export const GATE_VERSION = '1.11.1';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -44,7 +44,23 @@ export const LIMITS = Object.freeze({
   shardMaxCountHigh: 8,
   shardMaxCountMedium: 4,
   shardToolCallBudget: 8,
+  // A shard is written in parts no larger than this, each read whole in one
+  // call. Codex shows at most ~10k tokens of one command's output and elides
+  // the middle of a larger one (measured 2026-09-30: a 70 KB read lost ~8k
+  // tokens), so a 70 KB shard read "once" was never fully seen by Codex.
+  shardPartMaxBytes: 24 * 1024,
+  // A shard's time grows with what it must read: the base covers one part,
+  // each further step of bytes adds a minute, up to the whole-diff reviewer's
+  // bound. A reviewer that reads every part of a ~70 KB shard needs more than
+  // the base (Codex timed out at 5 minutes on rove #584 once it read it all).
   shardTimeoutMs: 5 * 60 * 1000,
+  shardTimeoutStepBytes: 12 * 1024,
+  shardTimeoutMaxMs: 12 * 60 * 1000,
+  // How long `taskkill /t /f` may take to end a timed-out provider tree on
+  // Windows before the cleanup fence gives up. The old 2-second bound failed
+  // on a loaded host (three Codex trees in two rove #584 runs, 2026-09-30),
+  // turning a non-fatal scout timeout into a fail-closed gate.
+  taskkillTimeoutMs: 30 * 1000,
   shardMaxCandidates: 8,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.

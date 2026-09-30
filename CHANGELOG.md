@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.11.1 — every shard fully readable
+
+- A shard larger than one read is written in parts of at most 24 KB, each
+  read whole, and the prompt names every part. Codex shows at most ~10k tokens
+  of one command's output and elides the middle of a larger one: a ~70 KB
+  shard "read once" was never fully seen, and since 1.11.0 Codex honestly
+  declared `review_complete: false` on such shards, failing large branches
+  closed (rove #584 three rounds, #573 five).
+- A shard reviewer's time limit grows with its shard: 5 minutes for one part,
+  one more minute per further 12 KB, up to 12 minutes. Reading every part of a
+  ~70 KB shard took Codex past the old fixed 5 minutes.
+- On Windows, `taskkill` gets 30 seconds (was the 2-second exit grace) to end a
+  timed-out provider tree before the cleanup fence gives up. Under load a
+  timed-out Codex scout outlasted 2 seconds and the fence closed the gate over
+  a lane whose failure is otherwise not fatal.
+- A changed file with no textual hunk (binary content, a rename or copy
+  without a content change, a mode change, an empty file created or deleted)
+  no longer fills a review shard. Since 1.11.0 a reviewer must declare
+  `review_complete`, and a shard owning ~25 unreadable binaries was reported
+  incomplete on almost every run, so branches that move or add assets failed
+  closed without findings.
+- Such files stay in the full patch and are listed, with their reason and old
+  path, in the review context every reviewer reads, so references to a moved or
+  deleted path are still checked. Reports record them as `metadataOnlyFiles`.
+  Shard coverage of every textual hunk is unchanged.
+- A follow-up round whose repair only renames a prior blocker's file gives that
+  blocker its re-verification shard, built from the branch's text of the new
+  path, instead of treating the rename as covered.
+
 ## 1.11.0 — configurable current models and one subscription
 
 - Default all Codex roles to GPT-6.1 Sol and all Claude roles to Opus 5.5, both

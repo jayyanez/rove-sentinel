@@ -14,6 +14,7 @@ import {
   terminateActiveProcesses,
   terminateProcessTree,
 } from '../process.mjs';
+import { LIMITS } from '../constants.mjs';
 
 describe('bounded review subprocesses', () => {
   it('captures a successful bounded result', async () => {
@@ -236,6 +237,44 @@ describe('bounded review subprocesses', () => {
 
     await expect(pending).resolves.toBeUndefined();
     expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it('gives taskkill its own time to end a busy provider tree, separate from the exit grace', async () => {
+    // A timed-out Codex tree took taskkill longer than the 2-second grace on a
+    // loaded host, and the cleanup fence then closed the whole gate (1.11.1).
+    const child = { pid: 123, exitCode: null, signalCode: null, kill: vi.fn() };
+    const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
+    const spawnProcess = vi.fn(() => killer);
+    const pending = terminateProcessTree(child, {
+      platform: 'win32',
+      spawnProcess,
+      waitForNaturalClose: vi.fn(async () => false),
+      waitForWindowsExit: vi.fn(async () => true),
+      isWindowsProcessAlive: vi.fn(() => true),
+      graceMs: 20,
+      taskkillTimeoutMs: 2_000,
+    });
+    await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    killer.emit('exit', 0, null);
+    await expect(pending).resolves.toBeUndefined();
+    expect(killer.kill).not.toHaveBeenCalled();
+    expect(LIMITS.taskkillTimeoutMs).toBeGreaterThanOrEqual(30_000);
+  });
+
+  it('still fails closed when taskkill outlasts its own bound', async () => {
+    const child = { pid: 123, exitCode: null, signalCode: null, kill: vi.fn() };
+    const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
+    await expect(terminateProcessTree(child, {
+      platform: 'win32',
+      spawnProcess: vi.fn(() => killer),
+      waitForNaturalClose: vi.fn(async () => false),
+      isWindowsProcessAlive: vi.fn(() => true),
+      graceMs: 20,
+      taskkillTimeoutMs: 50,
+    })).rejects.toThrow('taskkill timed out');
+    expect(killer.kill).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledOnce();
   });
 
   it('verifies the Windows provider process exited after taskkill succeeds', async () => {

@@ -14,6 +14,15 @@ import { runGit } from './git.mjs';
 import { hashText, readJson } from './storage.mjs';
 import { normalizeConfig, readConfig } from './config.mjs';
 
+/** Words for shards.mjs metadataOnlySections reasons in the review context. */
+const METADATA_REASON_LABELS = {
+  binary: 'binary',
+  rename: 'renamed without content change',
+  copy: 'copied without content change',
+  mode: 'mode change',
+  empty: 'empty file created or deleted',
+};
+
 export async function readReviewHistory(checkout, headSha, files) {
   const format = '--format=%h %ad %s';
   const recent = await runGit(checkout, [
@@ -259,6 +268,7 @@ export async function createContextBundle({
   riskReasons,
   files,
   excludedFiles = [],
+  metadataOnlyFiles = [],
   stats,
   patch,
   referenceMap = '',
@@ -325,6 +335,7 @@ Risk: ${risk}
 Risk reasons: ${riskReasons.join('; ')}
 Changed files: ${files.length}
 Files excluded from the textual patch: ${excludedFiles.length}
+Changed files without a textual hunk: ${metadataOnlyFiles.length}
 Changed lines: +${stats.additions} / -${stats.deletions}
 
 ## Required sources
@@ -358,6 +369,18 @@ ${files.map((file) => `- ${file}`).join('\n')}
 
 ${excludedFiles.length
     ? excludedFiles.map((file) => `- ${file} (generated/binary visual baseline)`).join('\n')
+    : '- None'}
+
+## Changed files without a textual hunk
+
+These changes carry no text to review: binary content, a rename or copy
+without a content change, a mode change, or an empty file created or deleted. No shard
+owns them and their content is not a required read, so they never make a
+review incomplete. Their paths still matter: in the hunks you own, a reference
+to a renamed or deleted path, or to a binary whose role changed, is reviewable.
+
+${metadataOnlyFiles.length
+    ? metadataOnlyFiles.map((entry) => `- ${entry.file} (${METADATA_REASON_LABELS[entry.reason] || 'no textual hunk'}${entry.renamedFrom ? `; renamed from ${entry.renamedFrom}` : ''})`).join('\n')
     : '- None'}
 `;
 
