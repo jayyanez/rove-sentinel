@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   addedLinesByFile,
   classifyShardFile,
+  CONTINUATION_PREFIX,
   metadataOnlySections,
   partitionShards,
   splitPatchByFile,
+  splitShardPatch,
   unquoteGitPath,
 } from '../shards.mjs';
 
@@ -222,6 +224,28 @@ describe('sharded coverage partition', () => {
     expect(metadataOnlySections(patch)).toEqual([
       { file: 'assets/b.png', renamedFrom: 'assets/a.png', reason: 'binary' },
     ]);
+  });
+
+  it('splits a shard into parts that each fit one read, naming the file a part continues', () => {
+    expect(splitShardPatch('diff --git a/x b/x\n+one\n', 1024)).toEqual(['diff --git a/x b/x\n+one\n']);
+    const big = `${fileSection('src/big.ts', 200).replace(/\+new (\d+)/g, (_, index) => `+new ${index} ${'z'.repeat(40)}`)}\n`;
+    const small = `${fileSection('src/small.ts', 2)}\n`;
+    const patch = big + small;
+    const parts = splitShardPatch(patch, 4096);
+    expect(parts.length).toBeGreaterThan(2);
+    expect(parts.every((part) => Buffer.byteLength(part, 'utf8') <= 4096)).toBe(true);
+    // Only parts that begin inside a file carry the continuation line.
+    expect(parts[0].startsWith('diff --git a/src/big.ts')).toBe(true);
+    for (const part of parts.slice(1, -1)) {
+      expect(part.startsWith(`${CONTINUATION_PREFIX}src/big.ts`)).toBe(true);
+    }
+    expect(parts.some((part) => part.startsWith('diff --git a/src/small.ts') || part.includes('\ndiff --git a/src/small.ts'))).toBe(true);
+    const restored = parts.map((part) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part)).join('');
+    expect(restored).toBe(patch);
+    // A line longer than a part keeps a part of its own instead of vanishing.
+    const wide = `diff --git a/w b/w\n+${'w'.repeat(5000)}\n+tail\n`;
+    const wideParts = splitShardPatch(wide, 1024);
+    expect(wideParts.map((part) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part)).join('')).toBe(wide);
   });
 
   it('leaves a diff of metadata-only sections without shards (the lens reviewers take it)', () => {

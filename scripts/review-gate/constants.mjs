@@ -44,6 +44,11 @@ export const LIMITS = Object.freeze({
   shardMaxCountHigh: 8,
   shardMaxCountMedium: 4,
   shardToolCallBudget: 8,
+  // A shard is written in parts no larger than this, each read whole in one
+  // call. Codex shows at most ~10k tokens of one command's output and elides
+  // the middle of a larger one (measured 2026-09-30: a 70 KB read lost ~8k
+  // tokens), so a 70 KB shard read "once" was never fully seen by Codex.
+  shardPartMaxBytes: 24 * 1024,
   shardTimeoutMs: 5 * 60 * 1000,
   shardMaxCandidates: 8,
   // Adjudication runs in fresh batches of at most this many candidates so the

@@ -486,4 +486,55 @@ describe('subscription-backed provider adapters', () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it('writes a shard larger than one read in parts and names every part in the prompt', async () => {
+    // Codex shows at most ~10k tokens of one command's output: a 70 KB shard
+    // read "once" reached it with its middle elided, and since 1.11.0 it
+    // honestly answered review_complete:false on every such shard.
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'rove-review-provider-parts-'));
+    const bundle = {
+      directory,
+      contextPath: path.join(directory, 'context.md'),
+      reviewerSchemaPath: path.join(directory, 'reviewer.schema.json'),
+      async writeArtifact(name: string, text: string) {
+        const target = path.join(directory, name);
+        await writeFile(target, text);
+        return target;
+      },
+    };
+    const section = (file: string) => [
+      `diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, '@@ -0,0 +1,300 @@',
+      ...Array.from({ length: 300 }, (_, index) => `+${file} line ${index} ${'x'.repeat(60)}`),
+    ].join('\n');
+    const files = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+    const patch = `${files.map(section).join('\n')}\n`;
+    const shard = { index: 0, kind: 'code', files, changedLines: 900, patch };
+    let prompt = '';
+    const runner = vi.fn(async (_command, args) => {
+      prompt = args.at(-1);
+      await writeFile(args[args.indexOf('--output-last-message') + 1], JSON.stringify({
+        review_complete: true, effort_request: null, summary: 'Reviewed every part.', candidates: [],
+      }));
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    try {
+      const { runShardReviewer } = await import('../providers.mjs');
+      await expect(runShardReviewer({ provider: 'codex', roleIndex: 0, checkout: directory, bundle, shard, runner }))
+        .resolves.toMatchObject({ summary: 'Reviewed every part.' });
+      expect(Buffer.byteLength(patch, 'utf8')).toBeGreaterThan(LIMITS.shardPartMaxBytes);
+      const { CONTINUATION_PREFIX, splitShardPatch } = await import('../shards.mjs');
+      const count = splitShardPatch(patch).length;
+      expect(count).toBeGreaterThanOrEqual(3);
+      const partNames = Array.from({ length: count }, (_, index) => `shard-1.part-${index + 1}-of-${count}.diff`);
+      const parts = await Promise.all(partNames.map((name) => readFile(path.join(directory, name), 'utf8')));
+      expect(parts.every((part) => Buffer.byteLength(part, 'utf8') <= LIMITS.shardPartMaxBytes)).toBe(true);
+      const withoutContinuation = (part: string) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part);
+      expect(parts.map(withoutContinuation).join('')).toBe(patch);
+      expect(prompt).toContain(`Read these ${count} files in order, each ONCE in full`);
+      for (const name of partNames) expect(prompt).toContain(path.join(directory, name));
+      expect(prompt).toContain('calls after the\nshard parts');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });

@@ -370,3 +370,40 @@ export function partitionShards(patch, {
     patch: `${shard.files.map((section) => section.text).join('\n')}\n`,
   }));
 }
+
+/**
+ * Split one shard's patch into parts a reviewer reads whole, one call each
+ * (1.11.1). Parts break between files where a file fits; a file larger than a
+ * part is split between lines, and each continuation part starts with a line
+ * naming the file it continues. A single line longer than a part keeps a part
+ * of its own. Concatenating the parts without their continuation lines gives
+ * the shard patch back.
+ */
+export function splitShardPatch(patch, maxBytes = LIMITS.shardPartMaxBytes) {
+  const text = String(patch || '');
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return [text];
+  const bytes = (value) => Buffer.byteLength(value, 'utf8');
+  const parts = [];
+  let current = '';
+  let currentFile = null;
+  const flush = () => {
+    if (current) parts.push(current);
+    current = '';
+  };
+  for (const line of text.split(/(?<=\n)/)) {
+    if (line.startsWith('diff --git ')) {
+      currentFile = patchTargetPath(line.replace(/\r?\n$/, '')) || currentFile;
+      // Start a file on a fresh part when it would not fit whole here.
+      if (current && bytes(current) + bytes(line) > maxBytes) flush();
+    } else if (current && bytes(current) + bytes(line) > maxBytes) {
+      flush();
+      current = `${CONTINUATION_PREFIX}${currentFile || 'the previous file'} (the previous part ends inside it)\n`;
+    }
+    current += line;
+  }
+  flush();
+  return parts;
+}
+
+/** First line of a shard part that continues a file from the previous part. */
+export const CONTINUATION_PREFIX = '# Sentinel shard part continues: ';

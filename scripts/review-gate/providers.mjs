@@ -11,6 +11,7 @@ import {
   SCOUT_SCHEMA,
 } from './constants.mjs';
 import { processTreeCleanupFailureCode, runProcess, subscriptionEnvironment } from './process.mjs';
+import { splitShardPatch } from './shards.mjs';
 
 const ROLE_PROMPTS = [
   `Correctness and contracts: trace every error, refusal, cancellation, retry,
@@ -495,8 +496,9 @@ export function shardCandidateBound(shard, priorBlocking = []) {
 }
 
 export function shardPrompt({
-  provider, contextPath, shard, shardPath, round = 'full', priorBlocking = [], priorBlockingPath = null,
+  provider, contextPath, shard, shardPath, shardPaths = null, round = 'full', priorBlocking = [], priorBlockingPath = null,
 }) {
+  const parts = Array.isArray(shardPaths) && shardPaths.length ? shardPaths : [shardPath];
   // Only the blockers that live in THIS shard are inlined (bounded by the
   // shard's own file list); the full list is a bundle file the reviewer
   // reads, so the prompt never grows with the lineage's history.
@@ -530,7 +532,13 @@ Your entire scope is shard ${shard.index + 1} (${shard.kind}; ${shard.files.leng
 ${shard.changedLines} changed lines):
 ${shard.files.map((file) => `- ${promptSafe(file)}`).join('\n')}
 
-Read ${shardPath} ONCE in full — it is the complete set of hunks you own — then
+${parts.length === 1
+    ? `Read ${parts[0]} ONCE in full — it is the complete set of hunks you own — then`
+    : `Read these ${parts.length} files in order, each ONCE in full with a single read —
+together they are the complete set of hunks you own, split so that each part
+fits one read (a part that continues a file says so on its first line):
+${parts.map((part) => `- ${part}`).join('\n')}
+Then`}
 read ${contextPath} for the charter, reference-map.md, open-bug-briefs.md, and
 the selected bug lessons. Do not read the whole change.diff; other shards cover
 the other files. Spend your remaining reads verifying usage sites named in
@@ -546,7 +554,7 @@ evidence in changed code.${reverify}
 ${PRIORITY_GUIDANCE}
 
 Use no more than ${LIMITS.shardToolCallBudget} Read/Glob/Grep calls after the
-shard read. If you are about to hit a budget or turn limit, emit the JSON now.
+shard ${parts.length === 1 ? 'read' : 'parts'}. If you are about to hit a budget or turn limit, emit the JSON now.
 Return at most ${maxCandidates} concise candidates and the required
 JSON only.`;
 }
@@ -791,9 +799,18 @@ export async function runReviewer({
 export async function runShardReviewer({
   provider, roleIndex, checkout, bundle, shard, round = 'full', priorBlocking = [], priorBlockingPath = null, runner = runProcess,
 }) {
-  const shardPath = await bundle.writeArtifact(`shard-${shard.index + 1}.diff`, shard.patch);
+  // A shard larger than one read is written in parts (1.11.1): a single
+  // oversized file was shown to Codex with its middle elided.
+  const patchParts = splitShardPatch(shard.patch);
+  const shardPaths = [];
+  for (const [index, part] of patchParts.entries()) {
+    const name = patchParts.length === 1
+      ? `shard-${shard.index + 1}.diff`
+      : `shard-${shard.index + 1}.part-${index + 1}-of-${patchParts.length}.diff`;
+    shardPaths.push(await bundle.writeArtifact(name, part));
+  }
   const prompt = shardPrompt({
-    provider, contextPath: bundle.contextPath, shard, shardPath, round, priorBlocking, priorBlockingPath,
+    provider, contextPath: bundle.contextPath, shard, shardPaths, round, priorBlocking, priorBlockingPath,
   });
   // A shard re-verifying prior blockers may need to return every one of them
   // still present PLUS its own findings: the bound grows with the blockers

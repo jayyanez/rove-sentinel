@@ -1,7 +1,13 @@
 # Changelog
 
-## 1.11.1 — changes without text own no shard
+## 1.11.1 — every shard fully readable
 
+- A shard larger than one read is written in parts of at most 24 KB, each
+  read whole, and the prompt names every part. Codex shows at most ~10k tokens
+  of one command's output and elides the middle of a larger one: a ~70 KB
+  shard "read once" was never fully seen, and since 1.11.0 Codex honestly
+  declared `review_complete: false` on such shards, failing large branches
+  closed (rove #584 three rounds, #573 five).
 - A changed file with no textual hunk (binary content, a rename or copy
   without a content change, a mode change, an empty file created or deleted)
   no longer fills a review shard. Since 1.11.0 a reviewer must declare
