@@ -11,6 +11,10 @@
 - A shard reviewer's time limit grows with its shard: 5 minutes for one part,
   one more minute per further 12 KB, up to 12 minutes. Reading every part of a
   ~70 KB shard took Codex past the old fixed 5 minutes.
+- On Windows, `taskkill` gets 30 seconds (was the 2-second exit grace) to end a
+  timed-out provider tree before the cleanup fence gives up. Under load a
+  timed-out Codex scout outlasted 2 seconds and the fence closed the gate over
+  a lane whose failure is otherwise not fatal.
 - A changed file with no textual hunk (binary content, a rename or copy
   without a content change, a mode change, an empty file created or deleted)
   no longer fills a review shard. Since 1.11.0 a reviewer must declare

@@ -56,6 +56,11 @@ export const LIMITS = Object.freeze({
   shardTimeoutMs: 5 * 60 * 1000,
   shardTimeoutStepBytes: 12 * 1024,
   shardTimeoutMaxMs: 12 * 60 * 1000,
+  // How long `taskkill /t /f` may take to end a timed-out provider tree on
+  // Windows before the cleanup fence gives up. The old 2-second bound failed
+  // on a loaded host (three Codex trees in two rove #584 runs, 2026-09-30),
+  // turning a non-fatal scout timeout into a fail-closed gate.
+  taskkillTimeoutMs: 30 * 1000,
   shardMaxCandidates: 8,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.

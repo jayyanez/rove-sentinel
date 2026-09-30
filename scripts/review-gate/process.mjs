@@ -170,6 +170,7 @@ export async function terminateProcessTree(
     waitForNaturalClose = waitForChildClose,
     isWindowsProcessAlive = windowsProcessIsAlive,
     graceMs = 2_000,
+    taskkillTimeoutMs = LIMITS.taskkillTimeoutMs,
   } = {},
   ) {
   if (!child.pid) return;
@@ -209,7 +210,7 @@ export async function terminateProcessTree(
             killer.kill();
           } catch {}
           finish(new Error(`taskkill timed out while terminating provider process tree ${child.pid}.`));
-        }, graceMs);
+        }, taskkillTimeoutMs);
         killer.once('error', (error) => {
           finish(new Error(`Could not start taskkill for provider process tree ${child.pid}: ${error.message}`));
         });
