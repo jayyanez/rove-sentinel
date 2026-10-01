@@ -16,8 +16,8 @@ import { normalizeConfig, readConfig } from './config.mjs';
 
 /**
  * Split text into parts that are each read whole in one call (1.11.2): at
- * line boundaries, at most `maxBytes` each; a line longer than that keeps a
- * part of its own. Joining the parts gives the text back. A reviewer that
+ * line boundaries, at most `maxBytes` each; a line longer than that is cut
+ * between characters. Joining the parts gives the text back. A reviewer that
  * reads a larger file in one call may see it truncated and must then report
  * its review incomplete.
  */
@@ -26,7 +26,7 @@ export function splitTextParts(text, maxBytes = LIMITS.shardPartMaxBytes) {
   if (Buffer.byteLength(value, 'utf8') <= maxBytes) return [value];
   const parts = [];
   let current = '';
-  for (const line of value.split(/(?<=\n)/)) {
+  for (const line of value.split(/(?<=\n)/).flatMap((whole) => cutLine(whole, maxBytes))) {
     if (current && Buffer.byteLength(current, 'utf8') + Buffer.byteLength(line, 'utf8') > maxBytes) {
       parts.push(current);
       current = '';
@@ -35,6 +35,27 @@ export function splitTextParts(text, maxBytes = LIMITS.shardPartMaxBytes) {
   }
   if (current) parts.push(current);
   return parts;
+}
+
+/** A line longer than `maxBytes` cut between characters into pieces of at
+ *  most `maxBytes` UTF-8 bytes each. */
+function cutLine(line, maxBytes) {
+  if (Buffer.byteLength(line, 'utf8') <= maxBytes) return [line];
+  const pieces = [];
+  let piece = '';
+  let size = 0;
+  for (const char of line) {
+    const bytes = Buffer.byteLength(char, 'utf8');
+    if (size + bytes > maxBytes) {
+      pieces.push(piece);
+      piece = '';
+      size = 0;
+    }
+    piece += char;
+    size += bytes;
+  }
+  if (piece) pieces.push(piece);
+  return pieces;
 }
 
 /** The paths `name` is written to as `count` parts (one path when whole). */

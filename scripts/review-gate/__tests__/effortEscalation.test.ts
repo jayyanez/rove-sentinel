@@ -27,6 +27,24 @@ describe('bounded model-requested escalation', () => {
     expect(prompt).toContain('blocked, failed or came back truncated');
     expect(prompt).toContain('does not make the review\nincomplete');
   });
+  it('gives the ceiling pass the same completeness contract, assigned prior blockers included', async () => {
+    const { COMPLETENESS_CONTRACT } = await import('../providers.mjs');
+    const run = vi.fn().mockResolvedValueOnce({ review_complete: true, summary: 'p', effort_request: 'Deeper look', candidates: [] })
+      .mockResolvedValueOnce({ review_complete: true, summary: 'final', effort_request: null, candidates: [] });
+    await runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: 'assignment' });
+    expect(run.mock.calls[0][1]).toContain(COMPLETENESS_CONTRACT);
+    expect(run.mock.calls[1][1]).toContain(COMPLETENESS_CONTRACT);
+    // A prior blocker the reviewer could not re-verify must not vanish as fixed.
+    expect(COMPLETENESS_CONTRACT).toContain('the file of every prior blocker assigned to you');
+  });
+  it('counts call budgets after the required reads, for every role that has one', async () => {
+    const { hypothesisPrompt, reviewerPrompt, scoutPrompt, shardPrompt } = await import('../providers.mjs');
+    const shard = { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: '' };
+    expect(shardPrompt({ provider: 'codex', contextPath: 'ctx.md', shard, shardPath: 's.diff' })).toContain('calls after the\nshard read and the required reads');
+    expect(scoutPrompt({ provider: 'codex', contextPath: 'ctx.md', maxHypotheses: 3 })).toContain('calls beyond the required reads');
+    expect(hypothesisPrompt({ provider: 'codex', contextPath: 'ctx.md', hypothesis: { title: 't', file: 'f', line: 1, lens: 'l', claim: 'c', why: 'w' } })).toContain('calls beyond the required reads');
+    expect(reviewerPrompt({ provider: 'codex', roleIndex: 0, contextPath: 'ctx.md' })).toContain('calls beyond the required reads');
+  });
   it('tells Codex on Windows which commands its sandbox can run', async () => {
     const { codexPrompt, CODEX_WINDOWS_SHELL_NOTE } = await import('../providers.mjs');
     expect(codexPrompt('assignment', 'win32')).toBe(`assignment\n\n${CODEX_WINDOWS_SHELL_NOTE}`);

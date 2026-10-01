@@ -10,6 +10,7 @@ import {
   readOpenBugBriefs,
   reviewPolicySnapshot,
   selectReviewLessons,
+  splitTextParts,
 } from '../context.mjs';
 import { recoverStaleReviewResources } from '../git.mjs';
 
@@ -322,6 +323,19 @@ Unrelated canvas rule.
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }
+  });
+
+  it('cuts a line longer than one read between characters, never splitting a character', () => {
+    // One 30 KB line of two-byte characters, offset by one byte so a cut at
+    // exactly 24 KB would fall inside a character.
+    const text = `head\n${'a'}${'é'.repeat(15_000)}\ntail\n`;
+    const parts = splitTextParts(text, 24 * 1024);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(Buffer.byteLength(part, 'utf8')).toBeLessThanOrEqual(24 * 1024);
+      expect(Buffer.from(part, 'utf8').toString('utf8')).toBe(part);
+    }
+    expect(parts.join('')).toBe(text);
   });
 
   it('writes every required read so it fits one read, and keeps the context small however large the change', async () => {
