@@ -123,7 +123,7 @@ describe('changes without a textual hunk', () => {
     temporaryDirectories.push(stateRoot);
     const contexts: string[] = [];
     const reviewer = vi.fn(async ({ provider, roleIndex, bundle }) => {
-      contexts.push(await readFile(bundle.contextPath, 'utf8'));
+      contexts.push(await readFile(path.join(path.dirname(bundle.contextPath), 'changed-files.md'), 'utf8'));
       return { provider, roleIndex, summary: 'Reviewed', candidates: [] };
     });
     const result = await runGate({
@@ -211,6 +211,12 @@ describe('shared review gate integration', () => {
     expect(shouldSkipCoordinator([{ priority: 'P1' }], { followUp: true })).toBe(false);
     expect(shouldSkipCoordinator([{ priority: 'P3' }], { followUp: false })).toBe(false);
     expect(shouldSkipCoordinator([], { followUp: false })).toBe(true);
+    // A prior blocker re-reported as P3 is still adjudicated: skipped, it
+    // became a non-blocking advisory nobody had decided was fixed (1.11.2).
+    const priorBlocking = [{ title: 'Stale write survives', file: 'src/a.ts', priority: 'P2' }];
+    const rereported = { priority: 'P3', title: 'stale write  survives', file: 'src/a.ts' };
+    expect(shouldSkipCoordinator([rereported], { followUp: true, priorBlocking })).toBe(false);
+    expect(shouldSkipCoordinator([{ ...rereported, title: 'Another note' }], { followUp: true, priorBlocking })).toBe(true);
     expect(adjudicationBatches([1, 2, 3, 4, 5, 6, 7], 3)).toEqual([[1, 2, 3], [4, 5, 6], [7]]);
   });
 
@@ -363,6 +369,31 @@ describe('shared review gate integration', () => {
     const results = await mapWithConcurrency(tasks, (task) => task(), 3);
     expect(results).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(peak).toBeLessThanOrEqual(3);
+  });
+
+  it('sends a re-reported prior blocker to adjudication whatever its confidence', () => {
+    // A follow-up reviewer that could not settle a blocker reports it again,
+    // often with low confidence; under the 50 floor it vanished as if fixed
+    // (1.11.2 gate finding on itself).
+    const reported = (title, confidence) => ({
+      id: `id-${title}`,
+      title,
+      priority: 'P2',
+      confidence,
+      category: 'lifecycle',
+      file: 'src/lib/example.ts',
+      line: 12,
+      scenario: 'could not be verified this round',
+      evidence: 'verification command failed',
+      proposed_test: 'rerun',
+    });
+    const priorBlocking = [{ title: 'Stale write survives', file: 'src/lib/example.ts', priority: 'P2' }];
+    const kept = cleanCandidates([
+      { candidates: [reported('Stale write  survives', 30), reported('A new low-confidence guess', 30)] },
+    ], { priorBlocking });
+    expect(kept.map((candidate) => candidate.title)).toEqual(['Stale write  survives']);
+    // Without a prior blocker of that identity the floor still applies.
+    expect(cleanCandidates([{ candidates: [reported('Stale write survives', 30)] }])).toEqual([]);
   });
 
   it('merges exact duplicate candidates from independent reviewers before adjudication', () => {

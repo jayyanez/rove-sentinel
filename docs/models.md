@@ -93,9 +93,16 @@ one stage attempt can therefore spend up to twice that timeout. The existing
 single technical retry remains bounded. A failed or still-incomplete final
 pass cannot approve the review.
 
-Every provider must explicitly return `review_complete`. A blocked context read,
-missing tool host, or other incomplete assessment must return `false`; an empty
-finding list cannot substitute for completing the assigned review.
+Every provider must explicitly return `review_complete`. It is `false` when a
+required read was blocked, failed or came back truncated — the assigned diff
+(every part), a required read the review context lists, or in a follow-up round
+the file of a prior blocker assigned to the reviewer — or when no tool host was
+available. A spent verification budget or a failing verification command is not
+incompleteness. An empty finding list cannot substitute for completing the
+assigned review. The error of an incomplete review keeps the reviewer's own
+account. A follow-up reviewer omits an assigned prior blocker only when it
+verified the fix; one it could not settle is reported again, because the gate
+reads an omitted blocker as fixed.
 
 Single-provider mode preserves the risk-based role counts, shard coverage,
 scouting, separate verification and fresh adjudication contexts, cleanup fences

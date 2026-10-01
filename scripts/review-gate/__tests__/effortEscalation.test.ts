@@ -10,6 +10,79 @@ describe('bounded model-requested escalation', () => {
       .rejects.toThrow(/incomplete review/);
     expect(run).toHaveBeenCalledTimes(1);
   });
+  it('keeps the reviewer’s own account of an incomplete review, bounded and on one line', async () => {
+    // Without it, rove #584's failed shards could not be diagnosed (1.11.2).
+    const summary = `Read all eight shard parts.\nContext output was truncated. ${'x'.repeat(1_000)}`;
+    const run = vi.fn().mockResolvedValue({ review_complete: false, effort_request: null, summary, candidates: [] });
+    const error = await runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: '' }).catch((e) => e);
+    expect(error.message).toMatch(/^Provider reported an incomplete review; no PASS is permitted\. Reviewer's account: Read all eight shard parts\.\\nContext output was truncated\./);
+    expect(error.message).not.toContain('\n');
+    expect(error.message.length).toBeLessThan(600);
+  });
+  it('says what makes a review incomplete: an unread required read, never a spent verification budget', async () => {
+    const run = vi.fn().mockResolvedValue({ review_complete: true, effort_request: null, summary: 'ok', candidates: [] });
+    await runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: 'assignment' });
+    const prompt = run.mock.calls[0][1];
+    expect(prompt).toContain('every required read the context lists');
+    expect(prompt).toContain('blocked, failed or came back truncated');
+    expect(prompt).toContain('does not make the review\nincomplete');
+  });
+  it('gives the ceiling pass the same completeness contract, assigned prior blockers included', async () => {
+    const { COMPLETENESS_CONTRACT } = await import('../providers.mjs');
+    const run = vi.fn().mockResolvedValueOnce({ review_complete: true, summary: 'p', effort_request: 'Deeper look', candidates: [] })
+      .mockResolvedValueOnce({ review_complete: true, summary: 'final', effort_request: null, candidates: [] });
+    await runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: 'assignment' });
+    expect(run.mock.calls[0][1]).toContain(COMPLETENESS_CONTRACT);
+    expect(run.mock.calls[1][1]).toContain(COMPLETENESS_CONTRACT);
+    // A prior blocker the reviewer could not re-verify must not vanish as fixed.
+    expect(COMPLETENESS_CONTRACT).toContain('the file of every prior blocker assigned to you');
+  });
+  it('counts call budgets after the required reads, for every role that has one', async () => {
+    const { hypothesisPrompt, reviewerPrompt, scoutPrompt, shardPrompt } = await import('../providers.mjs');
+    const shard = { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: '' };
+    expect(shardPrompt({ provider: 'codex', contextPath: 'ctx.md', shard, shardPath: 's.diff' })).toContain('calls after the\nshard read and the required reads');
+    expect(scoutPrompt({ provider: 'codex', contextPath: 'ctx.md', maxHypotheses: 3 })).toContain('calls beyond the required reads');
+    expect(hypothesisPrompt({ provider: 'codex', contextPath: 'ctx.md', hypothesis: { title: 't', file: 'f', line: 1, lens: 'l', claim: 'c', why: 'w' } })).toContain('calls beyond the required reads');
+    expect(reviewerPrompt({ provider: 'codex', roleIndex: 0, contextPath: 'ctx.md' })).toContain('calls beyond the required reads');
+  });
+  it('keeps a prior blocker the reviewer could not settle: only a verified fix may omit it', async () => {
+    // The gate reads an assigned blocker's absence as fixed; a spent budget
+    // must not erase one (1.11.2 gate finding on itself).
+    const { COMPLETENESS_CONTRACT, PRIOR_BLOCKER_RULE, reviewerPrompt, shardPrompt } = await import('../providers.mjs');
+    const blocker = { title: 'Stale write survives', file: 'src/a.ts', priority: 'P2' };
+    const lens = reviewerPrompt({ provider: 'codex', roleIndex: 0, contextPath: 'ctx.md', round: 'follow-up', priorBlocking: [blocker] });
+    const shard = shardPrompt({
+      provider: 'codex', contextPath: 'ctx.md', shardPath: 's.diff', round: 'follow-up', priorBlocking: [blocker],
+      shard: { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: '' },
+    });
+    for (const prompt of [lens, shard]) {
+      expect(prompt).toContain(PRIOR_BLOCKER_RULE);
+      expect(prompt).not.toContain('if it is\nfixed, do not report it');
+    }
+    expect(PRIOR_BLOCKER_RULE).toContain('Omit it only\nwhen you verified at head that it is fixed');
+    expect(PRIOR_BLOCKER_RULE).toContain('your budget ran out), report it\nagain');
+    expect(COMPLETENESS_CONTRACT).toContain('report\nagain every assigned prior blocker you did not verify as fixed');
+  });
+  it('assigns the scout no part of the patch, so a large branch cannot make it incomplete', async () => {
+    // rove #584: an 8-call scout told to read a 590 KB patch reported
+    // "truncated required reads and partial patch coverage" on every run.
+    const { scoutPrompt } = await import('../providers.mjs');
+    const prompt = scoutPrompt({ provider: 'codex', contextPath: 'ctx.md', maxHypotheses: 8 });
+    expect(prompt).not.toContain('the exact patch');
+    expect(prompt).toContain('You own no part of the patch');
+    expect(prompt).toContain('at most 24 KB, read it whole');
+    expect(prompt).toContain('patch index in the changed-files.md lookup');
+    expect(prompt).toContain('at most\n400 lines per call');
+    // rove #584: Codex still called a chosen range that came back truncated incomplete.
+    expect(prompt).toContain('or a chosen range that came back\ntruncated, never makes your scouting incomplete');
+  });
+  it('tells Codex on Windows which commands its sandbox can run', async () => {
+    const { codexPrompt, CODEX_WINDOWS_SHELL_NOTE } = await import('../providers.mjs');
+    expect(codexPrompt('assignment', 'win32')).toBe(`assignment\n\n${CODEX_WINDOWS_SHELL_NOTE}`);
+    expect(codexPrompt('assignment', 'linux')).toBe('assignment');
+    expect(CODEX_WINDOWS_SHELL_NOTE).toMatch(/Get-Content/);
+    expect(CODEX_WINDOWS_SHELL_NOTE).toMatch(/git grep -n/);
+  });
   it('requires an explicit completeness declaration', async () => {
     const run = vi.fn().mockResolvedValue({ effort_request: null, candidates: [] });
     await expect(runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: '' }))

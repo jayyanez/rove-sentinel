@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.11.2 — required reads that fit, and a precise completeness contract
+
+Codex reviewers on large branches still reported reviews incomplete after
+1.11.1, and the reasons they gave (now kept in the error, see below) were
+specific: "context output was truncated", "verification reads failed within
+the eight-call budget", "PowerShell restricted method invocation and rg was
+unavailable".
+
+- The review context is small at any size: the changed-file lists move to a
+  `changed-files.md` lookup. It now separates **required reads** (charter,
+  selected lessons, open briefs — each written in parts of at most 24 KB that
+  each fit one read) from **lookups** (the reference map, the file lists, the
+  Git history, the full patch), which reviewers search instead of reading
+  whole. A 560 KB reference map was a "required" read before.
+- The completeness contract says what incomplete means: a required read (the
+  assigned diff, a required context file, or in a follow-up round the file of
+  an assigned prior blocker) that was blocked, failed or came back truncated,
+  or no tool host. Running out of the verification budget, or a verification
+  command that fails, does not make a review incomplete. Every pass gets the
+  same contract, the ceiling pass included, and call budgets count only the
+  calls after the required reads.
+- A follow-up reviewer omits an assigned prior blocker only when it verified
+  the fix. One it could not settle (a failed command, a spent budget) is
+  reported again, because the gate reads an omitted blocker as fixed. The
+  gate sends a re-reported blocker to adjudication whatever confidence or
+  priority its reviewer gave it: the 50 floor dropped it, and on a follow-up
+  a P3 label skipped adjudication and left it a non-blocking advisory. This
+  is an instruction, not a mechanical check: a reviewer that omits a blocker
+  it never examined still reads as fixed.
+- The scout owns no part of the patch: shard reviewers cover every hunk. It
+  reads a patch of at most 24 KB whole and otherwise picks files through a new
+  patch index in `changed-files.md` (each file's line range in the patch),
+  reading at most 400 lines per call; a range it chose that comes back
+  truncated never makes it incomplete.
+  An 8-call scout told to read a 590 KB patch reported "truncated required
+  reads and partial patch coverage" on every large branch. The context also
+  states the patch's size.
+- A line longer than one read is cut between characters, so no required-read
+  part exceeds 24 KB.
+- Codex on Windows is told its sandbox shell: PowerShell, possibly in
+  constrained language mode, possibly without rg — read with `Get-Content`,
+  search with `Select-String` or `git grep -n`, no .NET method calls.
+- An incomplete-review error keeps the reviewer's own account (bounded, one
+  line), so the failure can be diagnosed from the report.
+
 ## 1.11.1 — every shard fully readable
 
 - A shard larger than one read is written in parts of at most 24 KB, each

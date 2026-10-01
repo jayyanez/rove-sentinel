@@ -253,10 +253,14 @@ export function reviewerCleanupFailure(settled) {
  * IS adjudicated (v1.8.0) — the two unadjudicated cheap-follow-up P2s of the
  * 2026-09-01 audit both became CodeRabbit actionables.
  */
-export function shouldSkipCoordinator(candidates, { followUp = false } = {}) {
+export function shouldSkipCoordinator(candidates, { followUp = false, priorBlocking = [] } = {}) {
   if (!candidates.length) return true;
   if (!followUp) return false;
-  return candidates.every((candidate) => candidate.priority === 'P3');
+  // A re-reported prior blocker is adjudicated whatever priority its reviewer
+  // gave it: as an unadjudicated P3 advisory it would leave the blocking
+  // lineage without anyone deciding it is fixed (1.11.2).
+  const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
+  return candidates.every((candidate) => candidate.priority === 'P3' && !priorKeys.has(findingKey(candidate)));
 }
 
 /** Split candidates into fresh-context adjudication batches. */
@@ -296,10 +300,18 @@ export async function createGateContext(repoRootInput = process.cwd(), options =
   return { repoRoot, remote, remoteName, repository, stateRoot, paths };
 }
 
-export function cleanCandidates(reviews) {
+/**
+ * `priorBlocking`: the blockers a follow-up round re-verifies. A reviewer
+ * that could not settle one reports it again, often with low confidence; it
+ * still reaches adjudication, because the gate reads an omitted blocker as
+ * fixed and an unverified one must not vanish under the confidence floor
+ * (1.11.2).
+ */
+export function cleanCandidates(reviews, { priorBlocking = [] } = {}) {
+  const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
   const qualifying = reviews
     .flatMap((review) => review.candidates)
-    .filter((candidate) => candidate.confidence >= 50);
+    .filter((candidate) => candidate.confidence >= 50 || priorKeys.has(findingKey(candidate)));
   // Independent reviewers frequently converge on the same defect. Merging is
   // a deterministic IDENTITY merge, never a judgment call, so the key is the
   // full identity — file, integer line, priority, AND normalized title.
@@ -1119,7 +1131,7 @@ async function runGateWithLease({
     }));
     let candidates;
     try {
-      candidates = cleanCandidates(canonicalReviews);
+      candidates = cleanCandidates(canonicalReviews, { priorBlocking: priorBlockingList });
     } catch (error) {
       throw await buildFailClosedError({
         paths: context.paths,
@@ -1137,7 +1149,7 @@ async function runGateWithLease({
     }
     let adjudication = { summary: 'Independent reviewers found no candidates at confidence 50 or higher.', findings: [] };
     let usedCoordinator = false;
-    if (candidates.length && shouldSkipCoordinator(candidates, { followUp })) {
+    if (candidates.length && shouldSkipCoordinator(candidates, { followUp, priorBlocking: priorBlockingList })) {
       adjudication = {
         summary: 'Follow-up round found only P3 candidates; adjudication was skipped.',
         findings: candidates.map((candidate) => advisoryFromCandidate(
