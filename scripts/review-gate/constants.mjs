@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.11.1';
+export const GATE_VERSION = '1.11.2';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -61,6 +61,8 @@ export const LIMITS = Object.freeze({
   // on a loaded host (three Codex trees in two rove #584 runs, 2026-09-30),
   // turning a non-fatal scout timeout into a fail-closed gate.
   taskkillTimeoutMs: 30 * 1000,
+  // How much of a reviewer's own summary an incomplete-review error keeps.
+  incompleteSummaryChars: 400,
   shardMaxCandidates: 8,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.

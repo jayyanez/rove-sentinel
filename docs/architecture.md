@@ -46,6 +46,12 @@ to it, and the report records it. A shard larger than one read (24 KB) is
 written in parts that the reviewer reads whole, one call each, because a
 provider may elide the middle of a larger tool output; its time limit grows
 with its size (5 minutes for one part, a minute per further 12 KB, at most 12).
+Every reviewer reads a small context that separates required reads (the
+charter, the selected lessons and the open briefs, each in parts that fit one
+read) from lookups it searches (the reference map, the changed-file lists, the
+Git history, the full patch). A review is incomplete only when a required read
+was blocked, failed or came back truncated; a spent verification budget is not
+incompleteness, and the error keeps the reviewer's own account.
 Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
 

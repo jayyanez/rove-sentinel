@@ -10,6 +10,30 @@ describe('bounded model-requested escalation', () => {
       .rejects.toThrow(/incomplete review/);
     expect(run).toHaveBeenCalledTimes(1);
   });
+  it('keeps the reviewer’s own account of an incomplete review, bounded and on one line', async () => {
+    // Without it, rove #584's failed shards could not be diagnosed (1.11.2).
+    const summary = `Read all eight shard parts.\nContext output was truncated. ${'x'.repeat(1_000)}`;
+    const run = vi.fn().mockResolvedValue({ review_complete: false, effort_request: null, summary, candidates: [] });
+    const error = await runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: '' }).catch((e) => e);
+    expect(error.message).toMatch(/^Provider reported an incomplete review; no PASS is permitted\. Reviewer's account: Read all eight shard parts\.\\nContext output was truncated\./);
+    expect(error.message).not.toContain('\n');
+    expect(error.message.length).toBeLessThan(600);
+  });
+  it('says what makes a review incomplete: an unread required read, never a spent verification budget', async () => {
+    const run = vi.fn().mockResolvedValue({ review_complete: true, effort_request: null, summary: 'ok', candidates: [] });
+    await runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: 'assignment' });
+    const prompt = run.mock.calls[0][1];
+    expect(prompt).toContain('every required read the context lists');
+    expect(prompt).toContain('blocked, failed or came back truncated');
+    expect(prompt).toContain('does not make the review\nincomplete');
+  });
+  it('tells Codex on Windows which commands its sandbox can run', async () => {
+    const { codexPrompt, CODEX_WINDOWS_SHELL_NOTE } = await import('../providers.mjs');
+    expect(codexPrompt('assignment', 'win32')).toBe(`assignment\n\n${CODEX_WINDOWS_SHELL_NOTE}`);
+    expect(codexPrompt('assignment', 'linux')).toBe('assignment');
+    expect(CODEX_WINDOWS_SHELL_NOTE).toMatch(/Get-Content/);
+    expect(CODEX_WINDOWS_SHELL_NOTE).toMatch(/git grep -n/);
+  });
   it('requires an explicit completeness declaration', async () => {
     const run = vi.fn().mockResolvedValue({ effort_request: null, candidates: [] });
     await expect(runWithEffortEscalation({ run, profile, bundle: {}, provider: 'codex', prompt: '' }))

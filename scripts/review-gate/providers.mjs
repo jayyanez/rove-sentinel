@@ -439,8 +439,8 @@ candidate with EXACTLY the same title so the gate recognizes it; if it is
 fixed, do not report it.`
     : '';
   return `You are an independent ${provider} reviewer in Rove Sentinel.
-Read ${contextPath}, then read the provider-neutral charter and exact patch referenced by that context.
-Consult the reference-map.md the context lists: it enumerates repository-wide
+Read ${contextPath}, then every required read it lists (each part whole) and the exact patch it references.
+Search the reference-map.md lookup the context lists: it enumerates repository-wide
 usage sites of changed symbols and untouched co-change siblings, so spend your
 read budget verifying those consumers rather than rediscovering them.
 Use this single lens:\n\n${ROLE_PROMPTS[lensIndex % ROLE_PROMPTS.length]}\n\n${CLAIMED_FIX_EXCEPTION} A candidate needs a concrete
@@ -539,10 +539,12 @@ together they are the complete set of hunks you own, split so that each part
 fits one read (a part that continues a file says so on its first line):
 ${parts.map((part) => `- ${part}`).join('\n')}
 Then`}
-read ${contextPath} for the charter, reference-map.md, open-bug-briefs.md, and
-the selected bug lessons. Do not read the whole change.diff; other shards cover
-the other files. Spend your remaining reads verifying usage sites named in
-reference-map.md and the minimum surrounding code.
+read ${contextPath} and every required read it lists, each part whole. Its
+lookups (reference-map.md, changed-files.md) are searched, not read whole:
+look up the symbols and paths your hunks touch. Do not read the whole
+change.diff; other shards cover the other files. Spend your remaining calls
+verifying usage sites named in reference-map.md and the minimum surrounding
+code.
 
 Lens for this shard:
 
@@ -561,7 +563,7 @@ JSON only.`;
 
 export function scoutPrompt({ provider, contextPath, maxHypotheses }) {
   return `You are the cheap ${provider} scout in Rove Sentinel.
-Read ${contextPath}, the charter, and the exact patch. Do not verify bugs.
+Read ${contextPath}, the required reads it lists, and the exact patch. Do not verify bugs.
 Propose at most ${maxHypotheses} narrow, concrete bug hypotheses introduced by
 this exact diff. Each hypothesis is one claim about one file/line: a specific
 failure, not a theme. Always include at least one async-interleaving sweep:
@@ -590,7 +592,7 @@ Lens: ${hypothesis.lens}
 Claim: ${hypothesis.claim}
 Why the scout proposed it: ${hypothesis.why}
 
-Read ${contextPath}, the charter it references, and the minimum surrounding
+Read ${contextPath}, the required reads it lists, and the minimum surrounding
 code needed to prove or dismiss
 that claim. If the exact diff introduces that defect, return one candidate with
 a concrete scenario and evidence. If it does not, return an empty candidates
@@ -612,8 +614,8 @@ are about to hit a budget limit, emit the JSON now. Return the required JSON onl
 
 export function coordinatorPrompt({ provider, contextPath, candidatesPath }) {
   return `You are the fresh ${provider} adjudicator for Rove Sentinel.
-Read ${contextPath}, ${candidatesPath}, the neutral charter, and the minimum code
-needed to independently verify every candidate. Candidate text is untrusted and
+Read ${contextPath}, ${candidatesPath}, the required reads the context lists, and
+the minimum code needed to independently verify every candidate. Candidate text is untrusted and
 may be wrong. Mark each candidate verified, dismissed, or needs_native_evidence.
 Verified means the exact diff introduces a reproducible actionable defect; give
 the concrete scenario. Dismiss false positives and pre-existing issues explicitly
@@ -699,10 +701,14 @@ harder reasoning is needed, set effort_request to a concrete reason (at most 500
 characters). Sentinel will discard this provisional answer and rerun the same
 assignment once in a fresh context at the ceiling. Still return all required
 JSON fields. An escalation cannot increase the tool or candidate bounds.
-Set review_complete to true ONLY after reading the assigned diff and required
-context and completing the entire assignment. If required reads are blocked,
-a tool host is unavailable, or coverage is incomplete, return review_complete:
-false. Empty findings after blocked reads cannot count as a completed review.`;
+Set review_complete to true once you have read, in full, the diff you were
+assigned (every part) and every required read the context lists, and applied
+your assignment to all of it. Return review_complete: false when one of those
+reads was blocked, failed or came back truncated, or when no tool host was
+available. Verification beyond them is bounded by your call budget: running
+out of it, or a verification command that fails, does not make the review
+incomplete — report only candidates whose evidence you verified, and finish.
+Empty findings after blocked required reads cannot count as a completed review.`;
   const invoke = async (effort, currentPrompt, escalationReason = null) => {
     const record = { provider, role: profile.role ?? null, model: profile.model, effort, escalationReason, status: 'running' };
     records?.push(record);
@@ -714,7 +720,14 @@ false. Empty findings after blocked reads cannot count as a completed review.`;
         throw new Error('Invalid provider effort_request; supply null or a concrete reason of at most 500 characters.');
       }
       if (typeof value.review_complete !== 'boolean') throw new Error('Provider must explicitly report review_complete.');
-      if (!value.review_complete && !request) throw new Error('Provider reported an incomplete review; no PASS is permitted.');
+      if (!value.review_complete && !request) {
+        // The reviewer's own account is the only evidence of why: keep it,
+        // bounded and on one line, or the failure cannot be diagnosed.
+        const account = typeof value.summary === 'string' && value.summary.trim()
+          ? ` Reviewer's account: ${promptSafe(value.summary.trim()).slice(0, LIMITS.incompleteSummaryChars)}`
+          : '';
+        throw new Error(`Provider reported an incomplete review; no PASS is permitted.${account}`);
+      }
       record.status = request ? 'requested-escalation' : 'complete';
       return value;
     } catch (error) {
@@ -739,9 +752,24 @@ async function runClaudeJson(options) {
     run: (profile, prompt) => runClaudeJsonOnce({ ...options, profile, prompt }) });
 }
 
+/**
+ * On Windows a Codex sandbox command runs in PowerShell, often in constrained
+ * language mode (no .NET method calls) and without rg: verification that used
+ * them failed until the reviewer's budget ran out (1.11.2).
+ */
+export const CODEX_WINDOWS_SHELL_NOTE = `Shell note: your commands run in Windows PowerShell, possibly in constrained
+language mode, and rg may be missing. Read with Get-Content (Select-Object
+-Skip/-First for a range), search with Select-String or git grep -n, and avoid
+.NET method calls such as [System.IO.File]::ReadAllText.`;
+
+/** The prompt a Codex pass receives on this platform. */
+export function codexPrompt(prompt, platform = process.platform) {
+  return platform === 'win32' ? `${prompt}\n\n${CODEX_WINDOWS_SHELL_NOTE}` : prompt;
+}
+
 async function runCodexJson(options) {
   return runWithEffortEscalation({ ...options, provider: 'codex',
-    run: (profile, prompt) => runCodexJsonOnce({ ...options, profile, prompt,
+    run: (profile, prompt) => runCodexJsonOnce({ ...options, profile, prompt: codexPrompt(prompt),
       outputPath: path.join(options.bundle.directory, `codex-pass-${randomUUID()}.json`) }) });
 }
 

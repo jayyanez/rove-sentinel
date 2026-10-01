@@ -123,7 +123,7 @@ describe('changes without a textual hunk', () => {
     temporaryDirectories.push(stateRoot);
     const contexts: string[] = [];
     const reviewer = vi.fn(async ({ provider, roleIndex, bundle }) => {
-      contexts.push(await readFile(bundle.contextPath, 'utf8'));
+      contexts.push(await readFile(path.join(path.dirname(bundle.contextPath), 'changed-files.md'), 'utf8'));
       return { provider, roleIndex, summary: 'Reviewed', candidates: [] };
     });
     const result = await runGate({

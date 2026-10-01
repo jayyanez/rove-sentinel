@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.11.2 — required reads that fit, and a precise completeness contract
+
+Codex reviewers on large branches still reported reviews incomplete after
+1.11.1, and the reasons they gave (now kept in the error, see below) were
+specific: "context output was truncated", "verification reads failed within
+the eight-call budget", "PowerShell restricted method invocation and rg was
+unavailable".
+
+- The review context is small at any size: the changed-file lists move to a
+  `changed-files.md` lookup. It now separates **required reads** (charter,
+  selected lessons, open briefs — each written in parts of at most 24 KB that
+  each fit one read) from **lookups** (the reference map, the file lists, the
+  Git history, the full patch), which reviewers search instead of reading
+  whole. A 560 KB reference map was a "required" read before.
+- The completeness contract says what incomplete means: a required read (the
+  assigned diff or a required context file) that was blocked, failed or came
+  back truncated, or no tool host. Running out of the verification budget, or
+  a verification command that fails, does not make a review incomplete.
+- Codex on Windows is told its sandbox shell: PowerShell, possibly in
+  constrained language mode, possibly without rg — read with `Get-Content`,
+  search with `Select-String` or `git grep -n`, no .NET method calls.
+- An incomplete-review error keeps the reviewer's own account (bounded, one
+  line), so the failure can be diagnosed from the report.
+
 ## 1.11.1 — every shard fully readable
 
 - A shard larger than one read is written in parts of at most 24 KB, each

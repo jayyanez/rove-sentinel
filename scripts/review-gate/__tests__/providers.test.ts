@@ -35,7 +35,7 @@ describe('subscription-backed provider adapters', () => {
     const prompt = reviewerPrompt({
       provider: 'claude', roleIndex: 0, contextPath: 'C:\\context\\context.md',
     });
-    expect(prompt).toContain('exact patch referenced by that context');
+    expect(prompt).toContain('every required read it lists (each part whole) and the exact patch it references');
     expect(prompt).toContain('Never promote a finding merely to make it blocking');
     expect(prompt).toContain('P0 is a catastrophic security failure');
     expect(prompt).toContain('reference-map.md');
