@@ -434,9 +434,7 @@ export function reviewerPrompt({
     ? `\n\nThis is a follow-up round with no shard of its own. The previously reviewed
 head blocked on the findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}
 (${priorBlocking.length} in total). Read each one's file at head and verify whether
-the branch still has it: if it is still present, report it again as a
-candidate with EXACTLY the same title so the gate recognizes it; if it is
-fixed, do not report it.`
+the branch still has it: ${PRIOR_BLOCKER_RULE}`
     : '';
   return `You are an independent ${provider} reviewer in Rove Sentinel.
 Read ${contextPath}, then every required read it lists (each part whole) and the exact patch it references.
@@ -521,9 +519,7 @@ diff since the previously reviewed head, or the full-branch hunks of a file
 that head blocked on (a re-verification shard). That head blocked on the
 findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}${inShard.length ? `; the ones in your shard are:\n${inShard.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}` : '.'}
 ${inShardOverflow > 0 ? `- …and ${inShardOverflow} more in your shard, listed in ${priorBlockingPath || 'prior-blocking.md'}\n` : ''}For each one whose file is in your shard, verify whether the branch as it
-stands now still has it: if it is still present, report it again as a
-candidate with EXACTLY the same title so the gate recognizes it; if it is
-fixed, do not report it.${unassigned.length ? `\nThese blockers live in files no shard holds (the branch never changed
+stands now still has it: ${PRIOR_BLOCKER_RULE}${unassigned.length ? `\nThese blockers live in files no shard holds (the branch never changed
 them) and are assigned to YOU; read each file at head and re-verify it the
 same way:\n${unassigned.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
     : '';
@@ -563,7 +559,14 @@ JSON only.`;
 
 export function scoutPrompt({ provider, contextPath, maxHypotheses }) {
   return `You are the cheap ${provider} scout in Rove Sentinel.
-Read ${contextPath}, the required reads it lists, and the exact patch. Do not verify bugs.
+Read ${contextPath} and the required reads it lists. Do not verify bugs.
+You own no part of the patch: shard reviewers cover every hunk. When the patch
+the context lists is at most ${Math.round(LIMITS.shardPartMaxBytes / 1024)} KB, read it whole; otherwise use the
+patch index in the changed-files.md lookup to choose the files most likely to
+hide an introduced defect and read their sections by line range, at most
+${LIMITS.scoutRangeMaxLines} lines per call, within your budget. A range you chose is not a
+required read: partial patch coverage, or a chosen range that came back
+truncated, never makes your scouting incomplete.
 Propose at most ${maxHypotheses} narrow, concrete bug hypotheses introduced by
 this exact diff. Each hypothesis is one claim about one file/line: a specific
 failure, not a theme. Always include at least one async-interleaving sweep:
@@ -694,11 +697,24 @@ async function runCodexJsonOnce({
 
 /** One escalation per attempt; provisional output can never attest a review. */
 /**
+ * How a follow-up reviewer settles each prior blocker assigned to it
+ * (1.11.2). The gate reads a blocker's absence from a completed reviewer's
+ * candidates as fixed, so only a verified fix may omit it: one the reviewer
+ * could not settle — a failed verification command, a spent budget — is
+ * reported again and goes to adjudication like any candidate.
+ */
+export const PRIOR_BLOCKER_RULE = `if it is still present, report it again as a
+candidate with EXACTLY the same title so the gate recognizes it. Omit it only
+when you verified at head that it is fixed. When you could not settle it
+either way (a verification command failed, or your budget ran out), report it
+again with EXACTLY the same title and say so in its evidence: the gate treats
+an omitted blocker as fixed, and an unverified one must not vanish.`;
+
+/**
  * What makes a review complete (1.11.2), given to every pass, the ceiling
  * pass included. Required reads are the diff a reviewer was assigned, every
  * required read the context lists and, in a follow-up round, the files of the
- * prior blockers assigned to it: a blocker it could not re-verify must not
- * vanish as if fixed.
+ * prior blockers assigned to it.
  */
 export const COMPLETENESS_CONTRACT = `Set review_complete to true once you have read, in full, the diff you were
 assigned (every part), every required read the context lists and, in a
@@ -707,7 +723,8 @@ your assignment to all of it. Return review_complete: false when one of those
 reads was blocked, failed or came back truncated, or when no tool host was
 available. Verification beyond them is bounded by your call budget: running
 out of it, or a verification command that fails, does not make the review
-incomplete — report only candidates whose evidence you verified, and finish.
+incomplete — report only new candidates whose evidence you verified, report
+again every assigned prior blocker you did not verify as fixed, and finish.
 Empty findings after blocked required reads cannot count as a completed review.`;
 
 export async function runWithEffortEscalation({ run, profile, prompt, bundle, provider }) {

@@ -45,6 +45,37 @@ describe('bounded model-requested escalation', () => {
     expect(hypothesisPrompt({ provider: 'codex', contextPath: 'ctx.md', hypothesis: { title: 't', file: 'f', line: 1, lens: 'l', claim: 'c', why: 'w' } })).toContain('calls beyond the required reads');
     expect(reviewerPrompt({ provider: 'codex', roleIndex: 0, contextPath: 'ctx.md' })).toContain('calls beyond the required reads');
   });
+  it('keeps a prior blocker the reviewer could not settle: only a verified fix may omit it', async () => {
+    // The gate reads an assigned blocker's absence as fixed; a spent budget
+    // must not erase one (1.11.2 gate finding on itself).
+    const { COMPLETENESS_CONTRACT, PRIOR_BLOCKER_RULE, reviewerPrompt, shardPrompt } = await import('../providers.mjs');
+    const blocker = { title: 'Stale write survives', file: 'src/a.ts', priority: 'P2' };
+    const lens = reviewerPrompt({ provider: 'codex', roleIndex: 0, contextPath: 'ctx.md', round: 'follow-up', priorBlocking: [blocker] });
+    const shard = shardPrompt({
+      provider: 'codex', contextPath: 'ctx.md', shardPath: 's.diff', round: 'follow-up', priorBlocking: [blocker],
+      shard: { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: '' },
+    });
+    for (const prompt of [lens, shard]) {
+      expect(prompt).toContain(PRIOR_BLOCKER_RULE);
+      expect(prompt).not.toContain('if it is\nfixed, do not report it');
+    }
+    expect(PRIOR_BLOCKER_RULE).toContain('Omit it only\nwhen you verified at head that it is fixed');
+    expect(PRIOR_BLOCKER_RULE).toContain('your budget ran out), report it\nagain');
+    expect(COMPLETENESS_CONTRACT).toContain('report\nagain every assigned prior blocker you did not verify as fixed');
+  });
+  it('assigns the scout no part of the patch, so a large branch cannot make it incomplete', async () => {
+    // rove #584: an 8-call scout told to read a 590 KB patch reported
+    // "truncated required reads and partial patch coverage" on every run.
+    const { scoutPrompt } = await import('../providers.mjs');
+    const prompt = scoutPrompt({ provider: 'codex', contextPath: 'ctx.md', maxHypotheses: 8 });
+    expect(prompt).not.toContain('the exact patch');
+    expect(prompt).toContain('You own no part of the patch');
+    expect(prompt).toContain('at most 24 KB, read it whole');
+    expect(prompt).toContain('patch index in the changed-files.md lookup');
+    expect(prompt).toContain('at most\n400 lines per call');
+    // rove #584: Codex still called a chosen range that came back truncated incomplete.
+    expect(prompt).toContain('or a chosen range that came back\ntruncated, never makes your scouting incomplete');
+  });
   it('tells Codex on Windows which commands its sandbox can run', async () => {
     const { codexPrompt, CODEX_WINDOWS_SHELL_NOTE } = await import('../providers.mjs');
     expect(codexPrompt('assignment', 'win32')).toBe(`assignment\n\n${CODEX_WINDOWS_SHELL_NOTE}`);

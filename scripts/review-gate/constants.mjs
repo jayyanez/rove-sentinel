@@ -24,6 +24,9 @@ export const LIMITS = Object.freeze({
   maxScoutHypotheses: 8,
   reviewerToolCallBudget: 16,
   scoutToolCallBudget: 8,
+  // A patch range the scout reads in one call: ~400 diff lines stay well
+  // inside the ~38 KB a provider shows whole (1.11.2).
+  scoutRangeMaxLines: 400,
   hypothesisToolCallBudget: 6,
   coverageToolCallBudget: 12,
   scoutTimeoutMs: 6 * 60 * 1000,

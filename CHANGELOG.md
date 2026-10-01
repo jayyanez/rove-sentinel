@@ -15,9 +15,25 @@ unavailable".
   Git history, the full patch), which reviewers search instead of reading
   whole. A 560 KB reference map was a "required" read before.
 - The completeness contract says what incomplete means: a required read (the
-  assigned diff or a required context file) that was blocked, failed or came
-  back truncated, or no tool host. Running out of the verification budget, or
-  a verification command that fails, does not make a review incomplete.
+  assigned diff, a required context file, or in a follow-up round the file of
+  an assigned prior blocker) that was blocked, failed or came back truncated,
+  or no tool host. Running out of the verification budget, or a verification
+  command that fails, does not make a review incomplete. Every pass gets the
+  same contract, the ceiling pass included, and call budgets count only the
+  calls after the required reads.
+- A follow-up reviewer omits an assigned prior blocker only when it verified
+  the fix. One it could not settle (a failed command, a spent budget) is
+  reported again, because the gate reads an omitted blocker as fixed.
+- The scout owns no part of the patch: shard reviewers cover every hunk. It
+  reads a patch of at most 24 KB whole and otherwise picks files through a new
+  patch index in `changed-files.md` (each file's line range in the patch),
+  reading at most 400 lines per call; a range it chose that comes back
+  truncated never makes it incomplete.
+  An 8-call scout told to read a 590 KB patch reported "truncated required
+  reads and partial patch coverage" on every large branch. The context also
+  states the patch's size.
+- A line longer than one read is cut between characters, so no required-read
+  part exceeds 24 KB.
 - Codex on Windows is told its sandbox shell: PowerShell, possibly in
   constrained language mode, possibly without rg — read with `Get-Content`,
   search with `Select-String` or `git grep -n`, no .NET method calls.

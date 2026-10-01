@@ -48,8 +48,10 @@ provider may elide the middle of a larger tool output; its time limit grows
 with its size (5 minutes for one part, a minute per further 12 KB, at most 12).
 Every reviewer reads a small context that separates required reads (the
 charter, the selected lessons and the open briefs, each in parts that fit one
-read) from lookups it searches (the reference map, the changed-file lists, the
-Git history, the full patch). A review is incomplete when a required read was
+read) from lookups it searches (the reference map, the changed-file lists with
+a patch index of each file's line range, the Git history, the full patch). The
+scout owns no part of the patch: it reads a small patch whole and otherwise
+picks files through the index. A review is incomplete when a required read was
 blocked, failed or came back truncated (the assigned diff, a required context
 read, or in a follow-up round an assigned prior blocker's file), or when no tool
 host was available; a spent verification budget is not incompleteness, and the
@@ -71,7 +73,9 @@ bill of health. A process tree that cannot be proven terminated fails closed.
 ## Repairs and decisions
 
 Compatible reviewed ancestors permit incremental follow-up. Previous blockers
-are rechecked. New verified P0/P1 always block. P2 enforcement distinguishes
+are rechecked: a reviewer omits one only when it verified the fix, reports one
+it could not settle again, and a blocker no reviewer could be assigned is
+carried forward as still present. New verified P0/P1 always block. P2 enforcement distinguishes
 the latest repair, persistent blockers, and late discoveries outside the repair.
 The current limits are six repair rounds and two late-discovery blocking rounds.
 Budget exhaustion never silently erases a finding: eligible advisories require

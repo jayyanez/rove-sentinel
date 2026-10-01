@@ -100,7 +100,9 @@ the file of a prior blocker assigned to the reviewer — or when no tool host wa
 available. A spent verification budget or a failing verification command is not
 incompleteness. An empty finding list cannot substitute for completing the
 assigned review. The error of an incomplete review keeps the reviewer's own
-account.
+account. A follow-up reviewer omits an assigned prior blocker only when it
+verified the fix; one it could not settle is reported again, because the gate
+reads an omitted blocker as fixed.
 
 Single-provider mode preserves the risk-based role counts, shard coverage,
 scouting, separate verification and fresh adjudication contexts, cleanup fences
