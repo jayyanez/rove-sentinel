@@ -74,8 +74,10 @@ bill of health. A process tree that cannot be proven terminated fails closed.
 
 Compatible reviewed ancestors permit incremental follow-up. Previous blockers
 are rechecked: a reviewer omits one only when it verified the fix, reports one
-it could not settle again, and a blocker no reviewer could be assigned is
-carried forward as still present. New verified P0/P1 always block. P2 enforcement distinguishes
+it could not settle again (it reaches adjudication whatever confidence or
+priority the reviewer gave it), and a blocker no reviewer could be assigned is
+carried forward as still present. Omission is read as a verified fix; that
+rests on the reviewer's instruction, not on a mechanical check. New verified P0/P1 always block. P2 enforcement distinguishes
 the latest repair, persistent blockers, and late discoveries outside the repair.
 The current limits are six repair rounds and two late-discovery blocking rounds.
 Budget exhaustion never silently erases a finding: eligible advisories require

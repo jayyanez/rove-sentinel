@@ -253,10 +253,14 @@ export function reviewerCleanupFailure(settled) {
  * IS adjudicated (v1.8.0) — the two unadjudicated cheap-follow-up P2s of the
  * 2026-09-01 audit both became CodeRabbit actionables.
  */
-export function shouldSkipCoordinator(candidates, { followUp = false } = {}) {
+export function shouldSkipCoordinator(candidates, { followUp = false, priorBlocking = [] } = {}) {
   if (!candidates.length) return true;
   if (!followUp) return false;
-  return candidates.every((candidate) => candidate.priority === 'P3');
+  // A re-reported prior blocker is adjudicated whatever priority its reviewer
+  // gave it: as an unadjudicated P3 advisory it would leave the blocking
+  // lineage without anyone deciding it is fixed (1.11.2).
+  const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
+  return candidates.every((candidate) => candidate.priority === 'P3' && !priorKeys.has(findingKey(candidate)));
 }
 
 /** Split candidates into fresh-context adjudication batches. */
@@ -1145,7 +1149,7 @@ async function runGateWithLease({
     }
     let adjudication = { summary: 'Independent reviewers found no candidates at confidence 50 or higher.', findings: [] };
     let usedCoordinator = false;
-    if (candidates.length && shouldSkipCoordinator(candidates, { followUp })) {
+    if (candidates.length && shouldSkipCoordinator(candidates, { followUp, priorBlocking: priorBlockingList })) {
       adjudication = {
         summary: 'Follow-up round found only P3 candidates; adjudication was skipped.',
         findings: candidates.map((candidate) => advisoryFromCandidate(

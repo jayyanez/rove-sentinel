@@ -23,9 +23,12 @@ unavailable".
   calls after the required reads.
 - A follow-up reviewer omits an assigned prior blocker only when it verified
   the fix. One it could not settle (a failed command, a spent budget) is
-  reported again, because the gate reads an omitted blocker as fixed, and
-  the gate sends a re-reported blocker to adjudication whatever its confidence
-  (the 50 floor dropped it before).
+  reported again, because the gate reads an omitted blocker as fixed. The
+  gate sends a re-reported blocker to adjudication whatever confidence or
+  priority its reviewer gave it: the 50 floor dropped it, and on a follow-up
+  a P3 label skipped adjudication and left it a non-blocking advisory. This
+  is an instruction, not a mechanical check: a reviewer that omits a blocker
+  it never examined still reads as fixed.
 - The scout owns no part of the patch: shard reviewers cover every hunk. It
   reads a patch of at most 24 KB whole and otherwise picks files through a new
   patch index in `changed-files.md` (each file's line range in the patch),

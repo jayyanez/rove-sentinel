@@ -211,6 +211,12 @@ describe('shared review gate integration', () => {
     expect(shouldSkipCoordinator([{ priority: 'P1' }], { followUp: true })).toBe(false);
     expect(shouldSkipCoordinator([{ priority: 'P3' }], { followUp: false })).toBe(false);
     expect(shouldSkipCoordinator([], { followUp: false })).toBe(true);
+    // A prior blocker re-reported as P3 is still adjudicated: skipped, it
+    // became a non-blocking advisory nobody had decided was fixed (1.11.2).
+    const priorBlocking = [{ title: 'Stale write survives', file: 'src/a.ts', priority: 'P2' }];
+    const rereported = { priority: 'P3', title: 'stale write  survives', file: 'src/a.ts' };
+    expect(shouldSkipCoordinator([rereported], { followUp: true, priorBlocking })).toBe(false);
+    expect(shouldSkipCoordinator([{ ...rereported, title: 'Another note' }], { followUp: true, priorBlocking })).toBe(true);
     expect(adjudicationBatches([1, 2, 3, 4, 5, 6, 7], 3)).toEqual([[1, 2, 3], [4, 5, 6], [7]]);
   });
 
