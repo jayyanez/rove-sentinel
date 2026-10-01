@@ -365,6 +365,31 @@ describe('shared review gate integration', () => {
     expect(peak).toBeLessThanOrEqual(3);
   });
 
+  it('sends a re-reported prior blocker to adjudication whatever its confidence', () => {
+    // A follow-up reviewer that could not settle a blocker reports it again,
+    // often with low confidence; under the 50 floor it vanished as if fixed
+    // (1.11.2 gate finding on itself).
+    const reported = (title, confidence) => ({
+      id: `id-${title}`,
+      title,
+      priority: 'P2',
+      confidence,
+      category: 'lifecycle',
+      file: 'src/lib/example.ts',
+      line: 12,
+      scenario: 'could not be verified this round',
+      evidence: 'verification command failed',
+      proposed_test: 'rerun',
+    });
+    const priorBlocking = [{ title: 'Stale write survives', file: 'src/lib/example.ts', priority: 'P2' }];
+    const kept = cleanCandidates([
+      { candidates: [reported('Stale write  survives', 30), reported('A new low-confidence guess', 30)] },
+    ], { priorBlocking });
+    expect(kept.map((candidate) => candidate.title)).toEqual(['Stale write  survives']);
+    // Without a prior blocker of that identity the floor still applies.
+    expect(cleanCandidates([{ candidates: [reported('Stale write survives', 30)] }])).toEqual([]);
+  });
+
   it('merges exact duplicate candidates from independent reviewers before adjudication', () => {
     const candidate = (confidence, extra = {}) => ({
       id: `id-${confidence}-${Math.trunc(Math.random() * 1e6)}`,

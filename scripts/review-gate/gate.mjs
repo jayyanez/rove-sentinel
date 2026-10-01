@@ -296,10 +296,18 @@ export async function createGateContext(repoRootInput = process.cwd(), options =
   return { repoRoot, remote, remoteName, repository, stateRoot, paths };
 }
 
-export function cleanCandidates(reviews) {
+/**
+ * `priorBlocking`: the blockers a follow-up round re-verifies. A reviewer
+ * that could not settle one reports it again, often with low confidence; it
+ * still reaches adjudication, because the gate reads an omitted blocker as
+ * fixed and an unverified one must not vanish under the confidence floor
+ * (1.11.2).
+ */
+export function cleanCandidates(reviews, { priorBlocking = [] } = {}) {
+  const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
   const qualifying = reviews
     .flatMap((review) => review.candidates)
-    .filter((candidate) => candidate.confidence >= 50);
+    .filter((candidate) => candidate.confidence >= 50 || priorKeys.has(findingKey(candidate)));
   // Independent reviewers frequently converge on the same defect. Merging is
   // a deterministic IDENTITY merge, never a judgment call, so the key is the
   // full identity — file, integer line, priority, AND normalized title.
@@ -1119,7 +1127,7 @@ async function runGateWithLease({
     }));
     let candidates;
     try {
-      candidates = cleanCandidates(canonicalReviews);
+      candidates = cleanCandidates(canonicalReviews, { priorBlocking: priorBlockingList });
     } catch (error) {
       throw await buildFailClosedError({
         paths: context.paths,
