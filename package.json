@@ -20,8 +20,10 @@
     "verify:package": "node scripts/package-smoke.mjs",
     "review:gate": "node scripts/review-gate/launcher.mjs gate",
     "review:install": "node scripts/review-gate/launcher.mjs install",
-    "review:status": "node scripts/review-gate/launcher.mjs status"
+    "review:status": "node scripts/review-gate/launcher.mjs status",
+    "memory": "rove-memory"
   },
   "dependencies": { "markdownlint": "0.38.0" },
-  "devDependencies": { "vitest": "2.1.9", "typescript": "5.9.3", "@types/node": "22.19.19" }
+  "devDependencies": { "vitest": "2.1.9", "typescript": "5.9.3", "@types/node": "22.19.19", "rove-memory": "github:jayyanez/rove-memory#e97925ccf25dc2d43d7294ab1a60efbbf1a103d1" },
+  "roveMemory": { "project": "Rove Sentinel" }
 }
