@@ -97,7 +97,8 @@ configuration. Contributors without access skip this section.
   publishes and releases it. Never end a turn holding a lease.
 - Write only your own folder. Memory is advisory: Git, the code and these
   documents override it. Store only durable context — never secrets,
-  transcripts, logs, machine-local paths or private Rove material.
+  personal data, transcripts, logs, machine-local paths or private Rove
+  material.
 
 ## Documentation and distribution
 
