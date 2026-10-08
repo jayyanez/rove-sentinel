@@ -76,6 +76,30 @@ a maintainer can complete the live review. Required CI checks must pass before
 merge. Reinstallation of policy is a deliberate trusted-checkout operation,
 not a way to make a proposed policy change approve itself.
 
+## Portable memory (maintainers)
+
+Maintainers' coding agents keep durable memory about this project in a
+private repository, checked out as the ignored `.agent-memory/` folder in the
+canonical checkout, one folder per agent (`claude/`, `codex/`, …). The tool
+is [Rove Memory](https://github.com/jayyanez/rove-memory), a dev dependency run
+as `pnpm memory`; its policy is `node_modules/rove-memory/POLICY.md`. The
+memory repository's address is not published here: the owner gives it once
+per computer, and `setup` keeps it in this repository's local Git
+configuration. Contributors without access skip this section.
+
+- Session start, in every checkout and linked worktree: `pnpm install`, then
+  `pnpm memory setup --agent <id>` (the first time on a computer, add
+  `--remote <the private memory repository URL>`), then read `MEMORY.md` in
+  the agent folder it prints. If setup fails, stop and report it.
+- Every write is a lease: `pnpm memory edit --agent <id>` prints a token;
+  read the current file, then write; then
+  `pnpm memory sync --agent <id> --lease <token> --message "<id>: <summary>"`
+  publishes and releases it. Never end a turn holding a lease.
+- Write only your own folder. Memory is advisory: Git, the code and these
+  documents override it. Store only durable context — never secrets,
+  personal data, transcripts, logs, machine-local paths or private Rove
+  material.
+
 ## Documentation and distribution
 
 Update affected guides when behavior changes. Windows is the qualified platform;

@@ -15,6 +15,9 @@ importers:
       '@types/node':
         specifier: 22.19.19
         version: 22.19.19
+      rove-memory:
+        specifier: github:jayyanez/rove-memory#e97925ccf25dc2d43d7294ab1a60efbbf1a103d1
+        version: https://codeload.github.com/jayyanez/rove-memory/tar.gz/e97925ccf25dc2d43d7294ab1a60efbbf1a103d1
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -558,6 +561,12 @@ packages:
   rollup@4.63.5:
     resolution: {integrity: sha512-KRWwmNLlPw5M7HcdYfm15oBv9n9LPtjzpzCIxS/phwqvPyxHSoKX6Y2YU3pxSPfy0CLquVgsx/j/hBi6OvH1Nw==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
+    hasBin: true
+
+  rove-memory@https://codeload.github.com/jayyanez/rove-memory/tar.gz/e97925ccf25dc2d43d7294ab1a60efbbf1a103d1:
+    resolution: {gitHosted: true, integrity: sha512-taBwlDULSThTLbKdQUCQ9klMdHWMCHV1YI+4q7uB3w5pVS9C19m+enQoN69Wjfdtry1v+XZ+B9I9Hm9X6Df3uQ==, tarball: https://codeload.github.com/jayyanez/rove-memory/tar.gz/e97925ccf25dc2d43d7294ab1a60efbbf1a103d1}
+    version: 1.1.0
+    engines: {node: '>=22'}
     hasBin: true
 
   siginfo@2.0.0:
@@ -1210,6 +1219,8 @@ snapshots:
       '@rollup/rollup-win32-x64-gnu': 4.63.5
       '@rollup/rollup-win32-x64-msvc': 4.63.5
       fsevents: 2.3.3
+
+  rove-memory@https://codeload.github.com/jayyanez/rove-memory/tar.gz/e97925ccf25dc2d43d7294ab1a60efbbf1a103d1: {}
 
   siginfo@2.0.0: {}
 
