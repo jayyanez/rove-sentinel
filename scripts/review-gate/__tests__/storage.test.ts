@@ -268,7 +268,7 @@ describe('shared review local state', () => {
       headSha: 'b'.repeat(40),
       policyDigest: POLICY_DIGEST,
     });
-    const shards = { digest: { review: { provider: 'codex', roleIndex: 0, summary: 'ok', candidates: [] } } };
+    const shards = { digest: { completedAt: new Date().toISOString(), review: { provider: 'codex', roleIndex: 0, summary: 'ok', candidates: [] } } };
     const written = await writeShardCheckpoint(paths, identity, { shards, failures: { other: { shard: 2, runs: 1 } } });
     expect(await readShardCheckpoint(paths, identity)).toMatchObject({ shards, failures: { other: { shard: 2, runs: 1 } } });
     for (const changed of [
@@ -281,6 +281,16 @@ describe('shared review local state', () => {
     expect(await readShardCheckpoint(paths, identity, { now: writtenAt + LIMITS.shardCheckpointMaxAgeMs })).not.toBeNull();
     expect(await readShardCheckpoint(paths, identity, { now: writtenAt + LIMITS.shardCheckpointMaxAgeMs + 1 })).toBeNull();
     expect(await readShardCheckpoint(paths, identity, { now: writtenAt - 1 })).toBeNull();
+
+    // The day is each review's own: a failed rerun rewrites the record, and a
+    // review it carried over is no younger for that.
+    const old = new Date(writtenAt - LIMITS.shardCheckpointMaxAgeMs + 60_000).toISOString();
+    await writeShardCheckpoint(paths, identity, {
+      shards: { carried: { ...shards.digest, completedAt: old }, undated: { review: shards.digest.review }, ...shards },
+      failures: {},
+    });
+    expect(Object.keys((await readShardCheckpoint(paths, identity, { now: writtenAt + 30_000 })).shards).sort()).toEqual(['carried', 'digest']);
+    expect(Object.keys((await readShardCheckpoint(paths, identity, { now: writtenAt + 120_000 })).shards)).toEqual(['digest']);
 
     const target = path.join(paths.shardCheckpoints, attestationFileName(identity));
     await writeFile(target, JSON.stringify({ ...written, shards: ['not', 'a', 'record'], failures: null }));

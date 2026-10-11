@@ -294,7 +294,11 @@ export function boundPatchContext(patch, {
       continue;
     }
     const hunk = readHunk(lines, index, header);
-    out.push(...(hunk.items ? trimHunk(hunk.items, lines[index], header, sideBytes, floor) : lines.slice(index, hunk.end)));
+    // Never spread a hunk into a call: one added file can be more lines than
+    // an argument list holds.
+    for (const line of hunk.items ? trimHunk(hunk.items, lines[index], header, sideBytes, floor) : lines.slice(index, hunk.end)) {
+      out.push(line);
+    }
     index = hunk.end;
   }
   return out.join('\n');
@@ -389,10 +393,8 @@ function trimHunk(items, headerLine, header, sideBytes, floor) {
   let segment = null;
   const flush = () => {
     if (!segment) return;
-    result.push(
-      `@@ -${range(segment.oldStart, segment.oldCount)} +${range(segment.newStart, segment.newCount)} @@${segment.heading}`,
-      ...segment.lines,
-    );
+    result.push(`@@ -${range(segment.oldStart, segment.oldCount)} +${range(segment.newStart, segment.newCount)} @@${segment.heading}`);
+    for (const line of segment.lines) result.push(line);
     segment = null;
   };
   items.forEach((item, position) => {
@@ -411,7 +413,7 @@ function trimHunk(items, headerLine, header, sideBytes, floor) {
         segment.newStart ??= newLine;
         segment.newCount += 1;
       }
-      segment.lines.push(...item.lines);
+      for (const line of item.lines) segment.lines.push(line);
     } else {
       flush();
     }

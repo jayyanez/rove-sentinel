@@ -30,12 +30,20 @@ parts and KB, its largest file, and the reviewer's own account:
 
 - A timeout or a provider error: run `rove-sentinel doctor`, check that
   provider's CLI and sign-in, and try again later.
-- "Truncated" or "blocked" reads: a shard of several parts is already retried
-  one part per reviewer, so a repeat means a single part could not be read
-  whole. That is an engine limit, not something a rerun changes. Move the
-  largest file named in the error into a change of its own so the rest of the
-  branch can pass, and open an issue with the engine version, the retained
-  report and the reviewer's account.
+- "Truncated" or "blocked" reads: the account says which read. A reviewer
+  reports its review incomplete for a shard part and for a required context
+  read (charter, lessons, open briefs) alike, and the part-by-part retry
+  gives every part reviewer the same context.
+  - A shard part: a shard of several parts is already retried one part per
+    reviewer, so a repeat means a single part could not be read whole. That
+    is an engine limit a rerun does not change. Move the largest file named
+    in the error into a change of its own so the rest of the branch can pass.
+  - A required context read: every shard fails the same way and splitting the
+    change does not help. Check that the installed charter and lessons are
+    readable from the provider's sandbox.
+
+  Either way, open an issue with the engine version, the retained report and
+  the reviewer's account.
 
 On Windows, per-repository records live under
 `%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>` for migration

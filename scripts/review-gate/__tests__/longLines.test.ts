@@ -262,6 +262,23 @@ describe('context bounded by bytes', () => {
     expect(boundPatchContext(patch, { sideBytes: 1024 * 1024 })).toBe(patch);
   });
 
+  it('bounds a patch whose hunks are longer than an argument list', () => {
+    // A 450 KB added file made `push(...hunk)` throw RangeError (1.12.0 gate
+    // finding on itself); so did a long hunk that needed trimming.
+    const count = 200_000;
+    const added = ['diff --git a/n b/n', 'new file mode 100644', '--- /dev/null', '+++ b/n', `@@ -0,0 +1,${count} @@`,
+      ...Array.from({ length: count }, () => '+x'), ''].join('\n');
+    expect(boundPatchContext(added)).toBe(added);
+    const trimmed = boundPatchContext([...header, `@@ -1,${count + 1} +1,${count + 1} @@`,
+      ...Array.from({ length: count }, (_, index) => ` ${index}`), '-old', '+new', ''].join('\n'), { sideBytes: 1024 * 1024 * 1024 });
+    expect(trimmed.split('\n').length).toBe(count + 7);
+    const removed = [...header, `@@ -1,${count + 200} +1,200 @@`, ...Array.from({ length: 100 }, () => wide(1)),
+      ...Array.from({ length: count }, () => '-gone'), ...Array.from({ length: 100 }, () => wide(2)), ''].join('\n');
+    const bounded = boundPatchContext(removed, { sideBytes: 250, minLines: 3 }).split('\n');
+    expect(bounded[3]).toBe(`@@ -98,${count + 6} +98,6 @@`);
+    expect(bounded.length).toBe(3 + 1 + 3 + count + 3 + 1);
+  });
+
   it('keeps a hunk that starts at the first line, the no-newline marker, and text that is not a hunk', () => {
     const patch = [
       ...header,
@@ -473,7 +490,10 @@ describe('a rerun after a fail-closed round', () => {
     const report = await readReport(await ensureState(stateRoot), third.reportId);
     expect(report.reviewerSummaries.map((entry) => entry.summary)).toEqual(['Reviewed src/a.ts.', 'Reviewed src/b.ts.', 'Reviewed src/c.ts.']);
 
-    // The round ended in a report, so nothing is kept: a forced review of the head reviews every shard.
+    // The round ended in a report, so nothing is kept.
+    const { readdir } = await import('node:fs/promises');
+    expect(await readdir((await ensureState(stateRoot)).shardCheckpoints)).toEqual([]);
+    // A forced review of the head reviews every shard.
     await runGate({ ...options, force: true });
     expect(shardsOf(7)).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
   });
@@ -519,12 +539,55 @@ describe('a rerun after a fail-closed round', () => {
     expect(reviewer.mock.calls.slice(12).map(([call]) => call.shard.files[0]).sort()).toEqual(['src/a.ts', 'src/b.ts', 'src/b.ts', 'src/c.ts']);
   });
 
+  it('keeps the completed shards when the scout leaves an unverified process tree', async () => {
+    const repository = await makeThreeShardRepository();
+    const stateRoot = await temporary('sentinel-rerun-state-');
+    const reviewer = vi.fn(async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed.', candidates: [] }));
+    const options = {
+      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
+      author: 'human', risk: 'high', availableProviders: ['codex'], reviewer, coordinator: vi.fn(),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    };
+    await expect(runGate({
+      ...options,
+      scout: async () => { throw Object.assign(new Error('scout tree left behind'), { code: 'ORPHANED_PROCESS_TREE' }); },
+    })).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
+    expect(reviewer).toHaveBeenCalledTimes(3);
+    const result = await runGate({ ...options, scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }) });
+    expect(result.status).toBe('pass');
+    expect(reviewer).toHaveBeenCalledTimes(3);
+    expect(result.shards.every((entry) => entry.reused === true)).toBe(true);
+  });
+
+  it('keeps nothing when the candidate set exceeds its bound, so the rerun is not the same failure', async () => {
+    const repository = await makeThreeShardRepository();
+    const stateRoot = await temporary('sentinel-rerun-state-');
+    let flood = true;
+    const reviewer = vi.fn(async ({ provider, roleIndex, shard }) => ({
+      provider, roleIndex, summary: 'Reviewed.',
+      candidates: flood ? Array.from({ length: 20 }, (_, index) => ({
+        id: `${provider}-${roleIndex}-${index}`, title: `Finding ${roleIndex}-${index}`, priority: 'P3', confidence: 90, category: 'c',
+        file: shard.files[0], line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+      })) : [],
+    }));
+    const options = {
+      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
+      author: 'human', risk: 'high', availableProviders: ['codex'], reviewer, coordinator: vi.fn(),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    };
+    await expect(runGate(options)).rejects.toThrow(/candidate set exceeded its safe bound/);
+    flood = false;
+    expect((await runGate(options)).status).toBe('pass');
+    expect(reviewer).toHaveBeenCalledTimes(6);
+  });
+
   it('says what to do when the same shard keeps failing', () => {
     expect(shardFailureSummary({ failed: 1 })).toBe([
       '1 shard reviewer(s) failed after retry, leaving their hunks unreviewed; the gate failed closed.',
       'Rerun the gate.',
       'If the same shard fails again, another rerun alone is unlikely to pass.',
-      "Read that reviewer's account below. A timeout or a provider error: check the provider's CLI (rove-sentinel doctor) and try again later. Truncated or blocked reads that repeat are an engine limit: move the shard's largest file, named below, into a change of its own so the rest can pass, and report it with this report (docs/troubleshooting.md).",
+      "Read that reviewer's account below: it says which read failed. A timeout or a provider error: check the provider's CLI (rove-sentinel doctor) and try again later. A shard part that keeps coming back truncated is an engine limit: move the shard's largest file, named below, into a change of its own so the rest can pass. A required context read (charter, lessons, briefs) that keeps failing fails every shard the same way, and splitting the change does not help. Report either with this report (docs/troubleshooting.md).",
     ].join(' '));
     expect(shardFailureSummary({ failed: 2, kept: 6, repeated: [{ shard: 3, runs: 3 }, { shard: 5, runs: 2 }] }))
       .toContain('Shard(s) 3, 5 failed in 3 consecutive runs of this head');

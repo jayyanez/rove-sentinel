@@ -304,7 +304,9 @@ export async function clearTechnicalErrorOutcomes(paths) {
  * assignment digest (what one reviewer was given) to its review; `failures`
  * counts consecutive failed runs per assignment. An unreadable record, one
  * for another identity, or one past `shardCheckpointMaxAgeMs` reads as
- * absent: the shards are then reviewed again.
+ * absent: the shards are then reviewed again. The age bound is each review's
+ * own: a failed rerun rewrites the record, and must not make a review it
+ * carried over any younger.
  */
 export async function readShardCheckpoint(paths, identity, { now = Date.now() } = {}) {
   const target = path.join(paths.shardCheckpoints, attestationFileName(identity));
@@ -320,7 +322,15 @@ export async function readShardCheckpoint(paths, identity, { now = Date.now() } 
   const age = now - Date.parse(value.updatedAt);
   if (!Number.isFinite(age) || age < 0 || age > LIMITS.shardCheckpointMaxAgeMs) return null;
   const record = (field) => (field && typeof field === 'object' && !Array.isArray(field) ? field : {});
-  return { ...value, shards: record(value.shards), failures: record(value.failures) };
+  const fresh = (entry) => {
+    const reviewAge = now - Date.parse(entry?.completedAt);
+    return Number.isFinite(reviewAge) && reviewAge >= 0 && reviewAge <= LIMITS.shardCheckpointMaxAgeMs;
+  };
+  return {
+    ...value,
+    shards: Object.fromEntries(Object.entries(record(value.shards)).filter(([, entry]) => fresh(entry))),
+    failures: record(value.failures),
+  };
 }
 
 export async function writeShardCheckpoint(paths, identity, { shards, failures }) {

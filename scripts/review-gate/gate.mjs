@@ -382,7 +382,7 @@ export function shardFailureSummary({ failed, kept = 0, repeated = [] }) {
     repeated.length
       ? `Shard(s) ${repeated.map((entry) => entry.shard).join(', ')} failed in ${Math.max(...repeated.map((entry) => entry.runs))} consecutive runs of this head, so another rerun alone is unlikely to pass.`
       : 'If the same shard fails again, another rerun alone is unlikely to pass.',
-    "Read that reviewer's account below. A timeout or a provider error: check the provider's CLI (rove-sentinel doctor) and try again later. Truncated or blocked reads that repeat are an engine limit: move the shard's largest file, named below, into a change of its own so the rest can pass, and report it with this report (docs/troubleshooting.md).",
+    "Read that reviewer's account below: it says which read failed. A timeout or a provider error: check the provider's CLI (rove-sentinel doctor) and try again later. A shard part that keeps coming back truncated is an engine limit: move the shard's largest file, named below, into a change of its own so the rest can pass. A required context read (charter, lessons, briefs) that keeps failing fails every shard the same way, and splitting the change does not help. Report either with this report (docs/troubleshooting.md).",
   ].join(' ');
 }
 
@@ -1130,7 +1130,7 @@ async function runGateWithLease({
     const keptShards = shards.map((_, index) => keptShardReview(checkpoint?.shards[assignments[index]], shardProviders[index], index));
     const keptCount = keptShards.filter(Boolean).length;
     for (const kept of keptShards) {
-      if (kept) providerExecutions.push(...kept.executions.map((record) => ({ ...record, reused: true })));
+      for (const record of kept?.executions ?? []) providerExecutions.push({ ...record, reused: true });
     }
     progress(`Reviewing ${shards.length - keptCount} shard(s)${keptCount ? ` (${keptCount} more completed in an earlier round of this exact head and are kept)` : ''}${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
     // The prior-blocker list travels as a bundle file, never inline in the
@@ -1181,6 +1181,38 @@ async function runGateWithLease({
         : settledPending.shift()));
     });
 
+    // Saved as soon as the wave settles, before anything can fail the round
+    // closed, and removed once the round ends in a report: whatever stops it
+    // in between, the rerun starts from the shards that completed.
+    const keepCompletedShards = async (settled) => {
+      const runs = settled.map((result, index) => {
+        if (result.status === 'fulfilled') return 0;
+        const before = checkpoint?.failures[assignments[index]]?.runs;
+        return (Number.isInteger(before) && before > 0 ? before : 0) + 1;
+      });
+      if (!shards.length) return { shardRuns: runs, checkpointSaved: false };
+      const completedAt = new Date().toISOString();
+      try {
+        await writeShardCheckpoint(context.paths, identity, {
+          shards: Object.fromEntries(settled.flatMap((result, index) => (result.status === 'fulfilled'
+            ? [[assignments[index], keptShards[index] ?? {
+              review: result.value,
+              completedAt,
+              delivery: result.delivery ?? 'whole',
+              executions: shardExecutions[index].map((record) => ({ ...record })),
+            }]]
+            : []))),
+          failures: Object.fromEntries(settled.flatMap((result, index) => (result.status === 'fulfilled'
+            ? []
+            : [[assignments[index], { shard: index + 1, runs: runs[index] }]]))),
+        });
+        return { shardRuns: runs, checkpointSaved: true };
+      } catch (error) {
+        reviewerErrors.push(`The completed shard reviews could not be kept for a rerun: ${error?.message || String(error)}`);
+        return { shardRuns: runs, checkpointSaved: false };
+      }
+    };
+
     if (scoutPromise) {
       const scoutAttempt = await scoutPromise;
       if (scoutAttempt.status === 'fulfilled') {
@@ -1192,7 +1224,8 @@ async function runGateWithLease({
         // cleanup evidence is not lost.
         const scoutCleanupCode = processTreeCleanupFailureCode(scoutAttempt.reason);
         if (scoutCleanupCode) {
-          await shardPromise;
+          // The shard reviews that completed beside the scout are kept too.
+          await keepCompletedShards(await shardPromise);
           await lanesPromise;
           throw await buildFailClosedError({
             paths: context.paths,
@@ -1221,36 +1254,7 @@ async function runGateWithLease({
       }
     }
     const settledShards = await shardPromise;
-    // Saved before anything can fail the round closed, and removed once the
-    // round ends in a report: whatever stops it in between, the rerun starts
-    // from the shards that completed.
-    const shardRuns = settledShards.map((result, index) => {
-      if (result.status === 'fulfilled') return 0;
-      const before = checkpoint?.failures[assignments[index]]?.runs;
-      return (Number.isInteger(before) && before > 0 ? before : 0) + 1;
-    });
-    let checkpointSaved = false;
-    if (shards.length) {
-      const completedAt = new Date().toISOString();
-      try {
-        await writeShardCheckpoint(context.paths, identity, {
-          shards: Object.fromEntries(settledShards.flatMap((result, index) => (result.status === 'fulfilled'
-            ? [[assignments[index], keptShards[index] ?? {
-              review: result.value,
-              completedAt,
-              delivery: result.delivery ?? 'whole',
-              executions: shardExecutions[index].map((record) => ({ ...record })),
-            }]]
-            : []))),
-          failures: Object.fromEntries(settledShards.flatMap((result, index) => (result.status === 'fulfilled'
-            ? []
-            : [[assignments[index], { shard: index + 1, runs: shardRuns[index] }]]))),
-        });
-        checkpointSaved = true;
-      } catch (error) {
-        reviewerErrors.push(`The completed shard reviews could not be kept for a rerun: ${error?.message || String(error)}`);
-      }
-    }
+    const { shardRuns, checkpointSaved } = await keepCompletedShards(settledShards);
     const shardRecords = shards.map(({ index, kind, files: shardFiles, changedLines, reverify }) => ({
       index, kind, files: shardFiles.length, changedLines, provider: shardProviders[index], reverify: Boolean(reverify),
       ...(settledShards[index].delivery ? { delivery: settledShards[index].delivery } : {}),
@@ -1381,6 +1385,9 @@ async function runGateWithLease({
     try {
       candidates = cleanCandidates(canonicalReviews, { priorBlocking: priorBlockingList });
     } catch (error) {
+      // The kept reviews are what exceeded the bound: reusing them would
+      // fail every rerun the same way, so the rerun reviews afresh.
+      await removeShardCheckpoint(context.paths, identity).catch(() => {});
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,

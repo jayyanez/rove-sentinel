@@ -40,7 +40,9 @@ retry repeated the same instruction.
   blockers) and is validated like a fresh answer. Candidates are adjudicated
   afresh, the scout runs again, `--force` keeps nothing, and the report marks
   each reused shard with when it was reviewed and by which model passes. Kept
-  reviews are removed when the round ends in a report.
+  reviews are removed when the round ends in a report, and when the candidate
+  set exceeds its bound (reusing them would fail every rerun the same way).
+  The 24 hours are each review's own: a failed rerun does not renew them.
 - The fail-closed message says what a rerun costs and what to do when the same
   shard fails again, names each failed shard's size, largest file and number
   of consecutive failed runs, and describes each failure once.
