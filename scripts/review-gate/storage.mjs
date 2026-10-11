@@ -86,6 +86,7 @@ export function statePaths(root) {
     reports: path.join(root, 'reports'),
     convergence: path.join(root, 'convergence'),
     dispositions: path.join(root, 'dispositions'),
+    shardCheckpoints: path.join(root, 'shard-checkpoints'),
     events: path.join(root, 'events'),
     auditEvents: path.join(root, 'audit-events'),
     queueSubmitLock: path.join(root, 'queue-submit.lock'),
@@ -101,7 +102,7 @@ export function statePaths(root) {
 export async function ensureState(root) {
   const paths = statePaths(root);
   await Promise.all(
-    ['requests', 'claims', 'results', 'attestations', 'outcomes', 'reports', 'convergence', 'dispositions', 'events', 'auditEvents'].map((key) =>
+    ['requests', 'claims', 'results', 'attestations', 'outcomes', 'reports', 'convergence', 'dispositions', 'shardCheckpoints', 'events', 'auditEvents'].map((key) =>
       mkdir(paths[key], { recursive: true }),
     ),
   );
@@ -294,6 +295,52 @@ export async function clearTechnicalErrorOutcomes(paths) {
     removed += 1;
   }
   return removed;
+}
+
+/**
+ * The shard reviews a round completed before it failed closed (1.12.0), for
+ * the exact identity — repository, base, head, policy digest and versions —
+ * so a rerun reviews only the shards that did not complete. `shards` maps an
+ * assignment digest (what one reviewer was given) to its review; `failures`
+ * counts consecutive failed runs per assignment. An unreadable record, one
+ * for another identity, or one past `shardCheckpointMaxAgeMs` reads as
+ * absent: the shards are then reviewed again.
+ */
+export async function readShardCheckpoint(paths, identity, { now = Date.now() } = {}) {
+  const target = path.join(paths.shardCheckpoints, attestationFileName(identity));
+  let value;
+  try {
+    value = await readJson(target);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    await removeStoredJson(target);
+    return null;
+  }
+  if (!value || value.schemaVersion !== 1 || !identityMatches(value, identity)) return null;
+  const age = now - Date.parse(value.updatedAt);
+  if (!Number.isFinite(age) || age < 0 || age > LIMITS.shardCheckpointMaxAgeMs) return null;
+  const record = (field) => (field && typeof field === 'object' && !Array.isArray(field) ? field : {});
+  return { ...value, shards: record(value.shards), failures: record(value.failures) };
+}
+
+export async function writeShardCheckpoint(paths, identity, { shards, failures }) {
+  const value = {
+    schemaVersion: 1,
+    identity,
+    updatedAt: new Date().toISOString(),
+    shards,
+    failures,
+  };
+  await atomicWriteJson(path.join(paths.shardCheckpoints, attestationFileName(identity)), value);
+  await pruneDirectory(paths.shardCheckpoints, {
+    maxFiles: LIMITS.maxShardCheckpoints,
+    maxAgeMs: LIMITS.shardCheckpointMaxAgeMs,
+  });
+  return value;
+}
+
+export async function removeShardCheckpoint(paths, identity) {
+  await removeStoredJson(path.join(paths.shardCheckpoints, attestationFileName(identity)));
 }
 
 export async function writeReport(paths, report) {

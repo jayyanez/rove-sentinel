@@ -479,6 +479,18 @@ export function promptSafe(text) {
   });
 }
 
+/**
+ * Why a reviewer never reads two files in one command (1.12.0). Each part of
+ * a required read fits one tool output; two of them in one command do not,
+ * and the tool then drops the middle of what it shows. Codex read the four
+ * parts of a shard in one command on three runs in a row (boxkite,
+ * 2026-10-10) and rightly reported each review incomplete.
+ */
+export const ONE_FILE_PER_CALL = `One file per tool call: never read two of these files in one command, loop or
+pipeline. A tool shows only the start and the end of a long output and drops
+the middle, so files read together come back truncated and the review is
+incomplete.`;
+
 /** Result bound for one shard: its own findings plus every blocker it re-verifies. */
 /** The in-shard blockers this shard re-verifies (the gate pre-computes a bounded list). */
 function shardReverifyBlockers(shard, priorBlocking = []) {
@@ -523,17 +535,24 @@ stands now still has it: ${PRIOR_BLOCKER_RULE}${unassigned.length ? `\nThese blo
 them) and are assigned to YOU; read each file at head and re-verify it the
 same way:\n${unassigned.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
     : '';
+  // A shard handed over one part per reviewer (1.12.0): this reviewer owns
+  // one part, and the other parts have reviewers of their own.
+  const scope = shard.part
+    ? `part ${shard.part.index + 1} of ${shard.part.count} of shard ${shard.index + 1}`
+    : `shard ${shard.index + 1}`;
   return `You are an independent ${provider} shard reviewer in Rove Sentinel.
-Your entire scope is shard ${shard.index + 1} (${shard.kind}; ${shard.files.length} file(s),
+Your entire scope is ${scope} (${shard.kind}; ${shard.files.length} file(s),
 ${shard.changedLines} changed lines):
 ${shard.files.map((file) => `- ${promptSafe(file)}`).join('\n')}
 
 ${parts.length === 1
-    ? `Read ${parts[0]} ONCE in full — it is the complete set of hunks you own — then`
-    : `Read these ${parts.length} files in order, each ONCE in full with a single read —
-together they are the complete set of hunks you own, split so that each part
-fits one read (a part that continues a file says so on its first line):
+    ? `Read ${parts[0]} ONCE in full — it is the complete set of hunks you own${shard.part ? ' (the other parts of this shard have their own reviewers; a part that continues a file says so on its first line)' : ''} — then`
+    : `Read these ${parts.length} files in order, each ONCE in full and each with a tool
+call of its own — together they are the complete set of hunks you own, split
+so that each part fits one read (a part that continues a file says so on its
+first line):
 ${parts.map((part) => `- ${part}`).join('\n')}
+${ONE_FILE_PER_CALL}
 Then`}
 read ${contextPath} and every required read it lists, each part whole. Its
 lookups (reference-map.md, changed-files.md) are searched, not read whole:
@@ -727,6 +746,18 @@ incomplete — report only new candidates whose evidence you verified, report
 again every assigned prior blocker you did not verify as fixed, and finish.
 Empty findings after blocked required reads cannot count as a completed review.`;
 
+/**
+ * The code of the error for a reviewer that answered `review_complete: false`
+ * (1.12.0). The gate tells it from a crash or a timeout: a shard of several
+ * parts whose reviewer could not read them all is retried one part per
+ * reviewer instead of with the same instruction.
+ */
+export const INCOMPLETE_REVIEW = 'INCOMPLETE_REVIEW';
+
+export function isIncompleteReview(error) {
+  return error?.code === INCOMPLETE_REVIEW;
+}
+
 export async function runWithEffortEscalation({ run, profile, prompt, bundle, provider }) {
   const records = bundle.providerExecutions;
   const firstPrompt = `${prompt}\n\nEffort contract: this pass uses ${profile.effort}; its ceiling is ${profile.maxEffort}.
@@ -753,7 +784,9 @@ ${COMPLETENESS_CONTRACT}`;
         const account = typeof value.summary === 'string' && value.summary.trim()
           ? ` Reviewer's account: ${promptSafe(value.summary.trim()).slice(0, LIMITS.incompleteSummaryChars)}`
           : '';
-        throw new Error(`Provider reported an incomplete review; no PASS is permitted.${account}`);
+        const incomplete = new Error(`Provider reported an incomplete review; no PASS is permitted.${account}`);
+        incomplete.code = INCOMPLETE_REVIEW;
+        throw incomplete;
       }
       record.status = request ? 'requested-escalation' : 'complete';
       return value;
@@ -786,8 +819,10 @@ async function runClaudeJson(options) {
  */
 export const CODEX_WINDOWS_SHELL_NOTE = `Shell note: your commands run in Windows PowerShell, possibly in constrained
 language mode, and rg may be missing. Read with Get-Content (Select-Object
--Skip/-First for a range), search with Select-String or git grep -n, and avoid
-.NET method calls such as [System.IO.File]::ReadAllText.`;
+-Skip/-First for a range), one file per command — Get-Content with several
+paths, or a loop over them, returns one output whose middle you will not see —
+search with Select-String or git grep -n, and avoid .NET method calls such as
+[System.IO.File]::ReadAllText.`;
 
 /** The prompt a Codex pass receives on this platform. */
 export function codexPrompt(prompt, platform = process.platform) {
@@ -855,13 +890,16 @@ export async function runShardReviewer({
   provider, roleIndex, checkout, bundle, shard, round = 'full', priorBlocking = [], priorBlockingPath = null, runner = runProcess,
 }) {
   // A shard larger than one read is written in parts (1.11.1): a single
-  // oversized file was shown to Codex with its middle elided.
-  const patchParts = splitShardPatch(shard.patch);
+  // oversized file was shown to Codex with its middle elided. A shard that
+  // already is one part of another (1.12.0) is written as that part alone.
+  const patchParts = shard.part ? [shard.patch] : splitShardPatch(shard.patch);
   const shardPaths = [];
   for (const [index, part] of patchParts.entries()) {
-    const name = patchParts.length === 1
-      ? `shard-${shard.index + 1}.diff`
-      : `shard-${shard.index + 1}.part-${index + 1}-of-${patchParts.length}.diff`;
+    const name = shard.part
+      ? `shard-${shard.index + 1}.part-${shard.part.index + 1}-of-${shard.part.count}.diff`
+      : patchParts.length === 1
+        ? `shard-${shard.index + 1}.diff`
+        : `shard-${shard.index + 1}.part-${index + 1}-of-${patchParts.length}.diff`;
     shardPaths.push(await bundle.writeArtifact(name, part));
   }
   const prompt = shardPrompt({

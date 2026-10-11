@@ -90,8 +90,9 @@ most 500 characters. Sentinel discards the provisional output and starts the
 same assignment in a fresh process at `maxEffort` once. Tool, candidate and
 concurrency limits are unchanged. Each pass retains the role's bounded timeout;
 one stage attempt can therefore spend up to twice that timeout. The existing
-single technical retry remains bounded. A failed or still-incomplete final
-pass cannot approve the review.
+single technical retry remains bounded; for a shard of several parts whose
+reviewer reported its review incomplete, that retry is one fresh reviewer per
+part. A failed or still-incomplete final pass cannot approve the review.
 
 Every provider must explicitly return `review_complete`. It is `false` when a
 required read was blocked, failed or came back truncated — the assigned diff

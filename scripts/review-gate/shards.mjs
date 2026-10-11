@@ -264,6 +264,164 @@ export function addedLinesByFile(patch) {
   return result;
 }
 
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+/**
+ * Bound the context of every hunk by bytes as well as lines (1.12.0). Git
+ * gives each change `patchContextLines` lines either side whatever their
+ * length; here each side of a change run keeps the lines nearest the change
+ * up to `sideBytes`, and never fewer than `minLines`. Context between two
+ * runs that no longer meets splits the hunk, with headers recomputed, so the
+ * result is still a patch that applies. Every added and removed line is kept:
+ * only context is dropped. A hunk that already fits is returned byte for
+ * byte; one whose start moves loses Git's function heading, which named the
+ * line before the old start. Text that is not a well-formed hunk is left
+ * alone.
+ */
+export function boundPatchContext(patch, {
+  sideBytes = LIMITS.patchContextSideBytes,
+  minLines = LIMITS.patchContextMinLines,
+} = {}) {
+  const lines = String(patch ?? '').split('\n');
+  const floor = Math.max(1, minLines);
+  const out = [];
+  let index = 0;
+  while (index < lines.length) {
+    const header = HUNK_HEADER.exec(lines[index]);
+    if (!header) {
+      out.push(lines[index]);
+      index += 1;
+      continue;
+    }
+    const hunk = readHunk(lines, index, header);
+    out.push(...(hunk.items ? trimHunk(hunk.items, lines[index], header, sideBytes, floor) : lines.slice(index, hunk.end)));
+    index = hunk.end;
+  }
+  return out.join('\n');
+}
+
+/**
+ * The body of the hunk whose header is `lines[start]`, as items of one diff
+ * line each (a `\ No newline` marker stays with its line). The header's
+ * counts decide where the body ends; `items` is null when the body does not
+ * match them.
+ */
+function readHunk(lines, start, header) {
+  let oldRemaining = header[2] === undefined ? 1 : Number(header[2]);
+  let newRemaining = header[4] === undefined ? 1 : Number(header[4]);
+  const items = [];
+  let index = start + 1;
+  while (index < lines.length && (oldRemaining > 0 || newRemaining > 0)) {
+    const kind = lines[index][0];
+    if (kind === '\\' && items.length) {
+      items[items.length - 1].lines.push(lines[index]);
+    } else if (kind === ' ' && oldRemaining > 0 && newRemaining > 0) {
+      oldRemaining -= 1;
+      newRemaining -= 1;
+      items.push({ kind, lines: [lines[index]] });
+    } else if (kind === '-' && oldRemaining > 0) {
+      oldRemaining -= 1;
+      items.push({ kind, lines: [lines[index]] });
+    } else if (kind === '+' && newRemaining > 0) {
+      newRemaining -= 1;
+      items.push({ kind, lines: [lines[index]] });
+    } else {
+      return { end: index, items: null };
+    }
+    index += 1;
+  }
+  if (oldRemaining > 0 || newRemaining > 0) return { end: index, items: null };
+  if (index < lines.length && lines[index][0] === '\\' && items.length) {
+    items[items.length - 1].lines.push(lines[index]);
+    index += 1;
+  }
+  return { end: index, items };
+}
+
+function trimHunk(items, headerLine, header, sideBytes, floor) {
+  const whole = () => [headerLine, ...items.flatMap((item) => item.lines)];
+  const itemBytes = (item) => item.lines.reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8') + 1, 0);
+  // How many context items to keep, counted from the change outwards.
+  const keepCount = (stretch) => {
+    let count = 0;
+    let bytes = 0;
+    for (const item of stretch) {
+      const size = itemBytes(item);
+      if (count >= floor && bytes + size > sideBytes) break;
+      count += 1;
+      bytes += size;
+    }
+    return count;
+  };
+  const keep = items.map((item) => item.kind !== ' ');
+  const lastChange = keep.lastIndexOf(true);
+  if (lastChange === -1) return whole();
+  let from = 0;
+  while (from < items.length) {
+    if (items[from].kind !== ' ') {
+      from += 1;
+      continue;
+    }
+    let to = from;
+    while (to < items.length && items[to].kind === ' ') to += 1;
+    const stretch = items.slice(from, to);
+    // Context after a change keeps its first lines, context before one its
+    // last; a stretch between two changes keeps both ends, or all of it when
+    // the two ends meet.
+    const after = from > 0 ? keepCount(stretch) : 0;
+    const before = to <= lastChange ? keepCount([...stretch].reverse()) : 0;
+    if (after + before >= stretch.length) {
+      keep.fill(true, from, to);
+    } else {
+      keep.fill(true, from, from + after);
+      keep.fill(true, to - before, to);
+    }
+    from = to;
+  }
+  if (keep.every(Boolean)) return whole();
+  // Something was dropped, so the hunk had context, and every kept run holds
+  // at least one context line (floor >= 1): both its counts are positive and
+  // its starts are real line numbers.
+  const range = (startAt, count) => (count === 1 ? `${startAt}` : `${startAt},${count}`);
+  const result = [];
+  let oldLine = Number(header[1]);
+  let newLine = Number(header[3]);
+  let segment = null;
+  const flush = () => {
+    if (!segment) return;
+    result.push(
+      `@@ -${range(segment.oldStart, segment.oldCount)} +${range(segment.newStart, segment.newCount)} @@${segment.heading}`,
+      ...segment.lines,
+    );
+    segment = null;
+  };
+  items.forEach((item, position) => {
+    const onOld = item.kind !== '+';
+    const onNew = item.kind !== '-';
+    if (keep[position]) {
+      segment ??= {
+        oldStart: null, newStart: null, oldCount: 0, newCount: 0, lines: [],
+        heading: position === 0 ? headerLine.slice(header[0].length) : '',
+      };
+      if (onOld) {
+        segment.oldStart ??= oldLine;
+        segment.oldCount += 1;
+      }
+      if (onNew) {
+        segment.newStart ??= newLine;
+        segment.newCount += 1;
+      }
+      segment.lines.push(...item.lines);
+    } else {
+      flush();
+    }
+    if (onOld) oldLine += 1;
+    if (onNew) newLine += 1;
+  });
+  flush();
+  return result;
+}
+
 const KIND_ORDER = { code: 0, config: 1, scripts: 2, tests: 3, docs: 4 };
 
 function dominantKind(files) {
@@ -375,34 +533,113 @@ export function partitionShards(patch, {
  * Split one shard's patch into parts a reviewer reads whole, one call each
  * (1.11.1). Parts break between files where a file fits; a file larger than a
  * part is split between lines, and each continuation part starts with a line
- * naming the file it continues. A single line longer than a part keeps a part
- * of its own. Concatenating the parts without their continuation lines gives
- * the shard patch back.
+ * naming the file it continues. A single line longer than a part is cut
+ * between characters (1.12.0), each further piece opening a part that says
+ * so, so no part exceeds `maxBytes`: a line that kept a part of its own could
+ * be larger than any read. Concatenating the parts without their continuation
+ * lines gives the shard patch back.
  */
 export function splitShardPatch(patch, maxBytes = LIMITS.shardPartMaxBytes) {
+  return splitShardPatchParts(patch, maxBytes).map((part) => part.text);
+}
+
+/** The parts of `splitShardPatch`, each with the files it holds text of. */
+function splitShardPatchParts(patch, maxBytes) {
   const text = String(patch || '');
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return [text];
   const bytes = (value) => Buffer.byteLength(value, 'utf8');
+  if (bytes(text) <= maxBytes) {
+    return [{ text, files: splitPatchByFile(text).map((section) => section.file) }];
+  }
   const parts = [];
   let current = '';
+  let files = [];
   let currentFile = null;
+  let inHeader = false;
   const flush = () => {
-    if (current) parts.push(current);
+    if (current) parts.push({ text: current, files });
     current = '';
+    files = [];
   };
+  const continuation = (how) => `${CONTINUATION_PREFIX}${currentFile || 'the previous file'} (${how})\n`;
+  const withinLine = 'the previous part ends inside one of its lines, which continues here';
   for (const line of text.split(/(?<=\n)/)) {
-    if (line.startsWith('diff --git ')) {
-      currentFile = patchTargetPath(line.replace(/\r?\n$/, '')) || currentFile;
-      // Start a file on a fresh part when it would not fit whole here.
-      if (current && bytes(current) + bytes(line) > maxBytes) flush();
-    } else if (current && bytes(current) + bytes(line) > maxBytes) {
-      flush();
-      current = `${CONTINUATION_PREFIX}${currentFile || 'the previous file'} (the previous part ends inside it)\n`;
+    const startsFile = line.startsWith('diff --git ');
+    const bare = line.replace(/\r?\n$/, '');
+    if (startsFile) {
+      currentFile = patchTargetPath(bare) || currentFile;
+      inHeader = true;
+    } else if (inHeader) {
+      if (line.startsWith('@@ ')) inHeader = false;
+      // As in splitPatchByFile, `+++ b/<path>` settles a path the header
+      // leaves ambiguous, so a part names the file sharding named.
+      const target = plusPlusPlusPath(bare);
+      if (target && target !== currentFile) {
+        files = files.map((file) => (file === currentFile ? target : file));
+        currentFile = target;
+      }
     }
-    current += line;
+    const room = Math.max(1, maxBytes - bytes(continuation(withinLine)));
+    cutLine(line, room).forEach((piece, pieceIndex) => {
+      if (pieceIndex > 0) {
+        flush();
+        current = continuation(withinLine);
+      } else if (current && bytes(current) + bytes(piece) > maxBytes) {
+        flush();
+        // A file starts on a fresh part when it would not fit whole here.
+        if (!startsFile) current = continuation('the previous part ends inside it');
+      }
+      current += piece;
+      if (currentFile && !files.includes(currentFile)) files.push(currentFile);
+    });
   }
   flush();
   return parts;
+}
+
+/** A line longer than `maxBytes` cut between characters into pieces of at
+ *  most `maxBytes` UTF-8 bytes each. */
+export function cutLine(line, maxBytes) {
+  if (Buffer.byteLength(line, 'utf8') <= maxBytes) return [line];
+  const pieces = [];
+  let piece = '';
+  let size = 0;
+  for (const char of line) {
+    const bytes = Buffer.byteLength(char, 'utf8');
+    if (size + bytes > maxBytes) {
+      pieces.push(piece);
+      piece = '';
+      size = 0;
+    }
+    piece += char;
+    size += bytes;
+  }
+  if (piece) pieces.push(piece);
+  return pieces;
+}
+
+/**
+ * One shard per part of `shard` (1.12.0), for the retry that hands a shard
+ * over one part per reviewer: a reviewer given a single part cannot lose one
+ * by reading several in one command. Each prior blocker the shard re-verifies
+ * goes to exactly one part — the first that holds its file, else the first
+ * part — so a blocker missing from the merged result still means what it
+ * means for the whole shard.
+ */
+export function shardPartShards(shard, maxBytes = LIMITS.shardPartMaxBytes) {
+  const parts = splitShardPatchParts(shard.patch, maxBytes);
+  const partOf = (file) => Math.max(0, parts.findIndex((part) => part.files.includes(file)));
+  const changed = (text) => text.split('\n').filter((line) => (
+    (line.startsWith('+') && !line.startsWith('+++')) || (line.startsWith('-') && !line.startsWith('---'))
+  )).length;
+  return parts.map((part, index) => ({
+    ...shard,
+    files: part.files,
+    changedLines: changed(part.text),
+    patch: part.text,
+    part: { index, count: parts.length },
+    reverifyBlockers: (shard.reverifyBlockers || []).filter((finding) => partOf(finding.file) === index),
+    unassignedBlockers: index === 0 ? (shard.unassignedBlockers || []) : [],
+  }));
 }
 
 /** First line of a shard part that continues a file from the previous part. */

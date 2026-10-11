@@ -46,6 +46,14 @@ still check references to it, and the report records it. A shard larger than one
 written in parts that the reviewer reads whole, one call each, because a
 provider may elide the middle of a larger tool output; its time limit grows
 with its size (5 minutes for one part, a minute per further 12 KB, at most 12).
+The prompt forbids reading two parts in one command, and the engine does not
+rely on that: when the reviewer of a shard of several parts reports its review
+incomplete, the shard's one retry gives each part to a reviewer of its own,
+and the shard counts only if every part completes. A part reviewer sees its
+part, not the rest of the shard. A line longer than a part is cut across
+parts. Patch context is up to 80 lines either side of a change but at most
+4 KB (never fewer than 3 lines), so a file of very long lines gets fewer
+context lines; only context is dropped, and the patch still applies.
 Every reviewer reads a small context that separates required reads (the
 charter, the selected lessons and the open briefs, each in parts that fit one
 read) from lookups it searches (the reference map, the changed-file lists with
@@ -92,6 +100,13 @@ patch limit is 4 MiB; the hook wait bound is 120 minutes. An ordinary push may
 carry at most sixteen candidate refs and at most one that still needs review.
 The default retention is thirty days, capped at eighty attestations and fifty
 reports; audit events have separate bounds. See `constants.mjs` for all limits.
+
+A round that fails closed after some shard reviewers completed keeps their
+reviews for 24 hours under the same identity as an attestation, each under a
+digest of what that reviewer was assigned. A rerun of that exact identity
+reviews only the other shards, adjudicates every candidate afresh, and records
+which shards it reused; `--force` and a round that ends in a report keep
+nothing. A kept review is not a decision: only a completed round attests.
 
 State identity is shared by local clones of the same remote. To preserve the
 Rove migration and prevent duplicate watchers, this release retains the legacy

@@ -29,6 +29,8 @@ import { buildReferenceMap } from './refmap.mjs';
 import { runDeterministicLanes } from './lint.mjs';
 import {
   canonicalChangedPath,
+  isIncompleteReview,
+  normalizeReviewerResult,
   promptSafe,
   runCoordinator,
   runHypothesisReviewer,
@@ -46,7 +48,9 @@ import {
 import { detectSubscriptions } from './subscriptions.mjs';
 import { modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
-import { metadataOnlySections, partitionShards, renameMapFor, renamedPaths, splitPatchByFile } from './shards.mjs';
+import {
+  metadataOnlySections, partitionShards, renameMapFor, renamedPaths, shardPartShards, splitPatchByFile,
+} from './shards.mjs';
 import { deferCommand } from './dispositions.mjs';
 import { LIMITS } from './constants.mjs';
 import {
@@ -64,19 +68,23 @@ import {
   acquireDispositionLock,
   attestationIdentity,
   ensureState,
+  hashText,
   normalizeRepositoryIdentity,
   readAttestation,
   readDispositions,
   readBranchReviews,
   readLineageReviews,
   readReport,
+  readShardCheckpoint,
   recordDisposition,
   removeDisposition,
   recordLineageReview,
   removeAttestation,
+  removeShardCheckpoint,
   stateRootFor,
   writeAttestation,
   writeReport,
+  writeShardCheckpoint,
 } from './storage.mjs';
 
 export const providerTreeCleanupFailureCode = processTreeCleanupFailureCode;
@@ -178,13 +186,19 @@ export async function mapWithConcurrency(tasks, worker, concurrency = LIMITS.pro
   return await Promise.all(tasks.map((task, index) => launch.run(() => worker(task, index))));
 }
 
-export async function settleReviewersWithRetry(tasks, { concurrency = LIMITS.providerConcurrency, pool } = {}) {
+export async function settleReviewersWithRetry(tasks, {
+  concurrency = LIMITS.providerConcurrency,
+  pool,
+  // Whether a failed first attempt gets the same task again. A caller that
+  // retries another way (the shard wave) declines here and is told so.
+  shouldRetry = () => true,
+} = {}) {
   // One retry total (charter: "retried once" — two attempts, never three),
   // and a provider-tree cleanup failure halts NEW launches instead of
   // retrying: an unverified process tree must not accumulate more provider
   // processes (§5 safety fence).
   let halted = false;
-  return await mapWithConcurrency(tasks, async (task) => {
+  return await mapWithConcurrency(tasks, async (task, index) => {
     if (halted) {
       return {
         status: 'rejected',
@@ -222,6 +236,9 @@ export async function settleReviewersWithRetry(tasks, { concurrency = LIMITS.pro
       if (halted || newProcessLaunchesBlocked() || providerCleanupFailureLatched()) {
         return { status: 'rejected', reason: first, retried: false };
       }
+      if (!shouldRetry(first, index)) {
+        return { status: 'rejected', reason: first, retried: false, retryDeclined: true };
+      }
       try {
         return { status: 'fulfilled', value: await task(), retried: true };
       } catch (second) {
@@ -230,6 +247,157 @@ export async function settleReviewersWithRetry(tasks, { concurrency = LIMITS.pro
       }
     }
   }, concurrency, { pool });
+}
+
+/**
+ * The shard wave (1.12.0). A shard of several parts whose reviewer reported
+ * its review incomplete is not given the same instruction again: its one
+ * retry hands the shard over one part per reviewer, each a fresh reviewer
+ * that is given a single file to read and so cannot lose a part by reading
+ * several in one command. Every part must complete for the shard to count;
+ * the parts' candidates are merged under the shard's role. A part reviewer
+ * is not retried: the charter's two attempts per hunk hold. Any other
+ * failure, and an incomplete shard of one part, gets the ordinary retry.
+ */
+export async function settleShardWave(shards, runShard, { concurrency = LIMITS.providerConcurrency, pool } = {}) {
+  const parts = shards.map((shard) => shardPartShards(shard));
+  const settled = await settleReviewersWithRetry(
+    shards.map((shard) => () => runShard(shard)),
+    {
+      concurrency,
+      pool,
+      shouldRetry: (error, index) => !(isIncompleteReview(error) && parts[index].length > 1),
+    },
+  );
+  return await Promise.all(settled.map(async (whole, index) => {
+    if (!whole.retryDeclined) return whole;
+    const settledParts = await settleReviewersWithRetry(
+      parts[index].map((part) => () => runShard(part)),
+      { concurrency, pool, shouldRetry: () => false },
+    );
+    const delivery = 'part-by-part';
+    const failed = settledParts
+      .map((result, partIndex) => ({ result, partIndex }))
+      .filter(({ result }) => result.status !== 'fulfilled');
+    if (failed.length) {
+      // A process-tree cleanup failure keeps its own error: the fail-closed
+      // classification the watcher's pause keys on is read from it.
+      const cleanup = failed.find(({ result }) => processTreeCleanupFailureCode(result.reason));
+      if (cleanup) return { status: 'rejected', reason: cleanup.result.reason, retried: true, delivery };
+      const message = (reason) => reason?.message || String(reason);
+      return {
+        status: 'rejected',
+        reason: new Error(`${message(whole.reason)} The retry, one part per reviewer, then failed in ${failed.length} of ${settledParts.length} part(s): ${failed.map(({ result, partIndex }) => `part ${partIndex + 1}: ${message(result.reason)}`).join(' | ')}`),
+        retried: true,
+        delivery,
+      };
+    }
+    const reviews = settledParts.map((result) => result.value);
+    const { provider, roleIndex } = reviews[0];
+    return {
+      status: 'fulfilled',
+      retried: true,
+      delivery,
+      value: {
+        provider,
+        roleIndex,
+        summary: `Reviewed one part per reviewer (${reviews.length} parts) after the whole-shard review was incomplete. ${reviews.map((review, partIndex) => `Part ${partIndex + 1}: ${String(review.summary ?? '').slice(0, 600)}`).join(' ')}`,
+        // Each part numbered its candidates from zero under the same role.
+        candidates: reviews.flatMap((review) => review.candidates)
+          .map((candidate, position) => ({ ...candidate, id: `${provider}-${roleIndex}-${position}` })),
+      },
+    };
+  }));
+}
+
+/**
+ * What one shard reviewer was assigned, as a digest (1.12.0). A completed
+ * review is kept for a rerun of the same identity only under the digest of
+ * the same assignment: the same hunks, provider, round, lineage inputs and
+ * prior blockers. Charter, lessons, models and versions are bound by the
+ * identity the checkpoint is stored under.
+ */
+export function shardAssignmentDigest({
+  shard, provider, round, followUpBaseSha = null, priorBlocking = [], patchDigest, branch = null, author = null, risk = null,
+}) {
+  const blockers = (findings) => (findings || []).map((finding) => [finding.priority, finding.file, finding.title]);
+  return hashText(JSON.stringify({
+    version: 1,
+    index: shard.index,
+    kind: shard.kind,
+    files: shard.files,
+    changedLines: shard.changedLines,
+    reverify: Boolean(shard.reverify),
+    shardPatch: hashText(shard.patch, 64),
+    patchDigest,
+    provider,
+    round,
+    followUpBaseSha,
+    branch,
+    author,
+    risk,
+    priorBlocking: blockers(priorBlocking),
+    reverifyBlockers: blockers(shard.reverifyBlockers),
+    unassignedBlockers: blockers(shard.unassignedBlockers),
+  }), 40);
+}
+
+/**
+ * A kept shard review, validated the way a provider's answer is: anything
+ * that would not pass as a fresh answer from this provider reads as absent,
+ * and the shard is reviewed again.
+ */
+export function keptShardReview(entry, provider, roleIndex) {
+  const review = entry?.review;
+  if (!review || review.provider !== provider) return null;
+  try {
+    return {
+      review: normalizeReviewerResult(
+        { summary: review.summary, candidates: review.candidates },
+        provider,
+        roleIndex,
+        { maxCandidates: LIMITS.maxCandidates },
+      ),
+      completedAt: typeof entry.completedAt === 'string' ? entry.completedAt : null,
+      delivery: entry.delivery === 'part-by-part' ? 'part-by-part' : 'whole',
+      executions: Array.isArray(entry.executions) ? entry.executions.filter((record) => record && typeof record === 'object') : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The fail-closed summary for shards that failed after their retry (1.12.0):
+ * what a rerun costs now, and what to do when the same shard fails again —
+ * "Rerun the gate" alone was the only advice on a failure no rerun could fix.
+ */
+export function shardFailureSummary({ failed, kept = 0, repeated = [] }) {
+  const hours = Math.round(LIMITS.shardCheckpointMaxAgeMs / (60 * 60 * 1000));
+  return [
+    `${failed} shard reviewer(s) failed after retry, leaving their hunks unreviewed; the gate failed closed.`,
+    kept
+      ? `Rerun the gate: the ${kept} shard review(s) that completed are kept for this exact base, head and policy for ${hours} hours, so only the failed shard(s) are reviewed again.`
+      : 'Rerun the gate.',
+    repeated.length
+      ? `Shard(s) ${repeated.map((entry) => entry.shard).join(', ')} failed in ${Math.max(...repeated.map((entry) => entry.runs))} consecutive runs of this head, so another rerun alone is unlikely to pass.`
+      : 'If the same shard fails again, another rerun alone is unlikely to pass.',
+    "Read that reviewer's account below. A timeout or a provider error: check the provider's CLI (rove-sentinel doctor) and try again later. Truncated or blocked reads that repeat are an engine limit: move the shard's largest file, named below, into a change of its own so the rest can pass, and report it with this report (docs/troubleshooting.md).",
+  ].join(' ');
+}
+
+/** A failed shard as the fail-closed error names it: size, largest file, history. */
+function describeFailedShard(shard, provider, reason, runs) {
+  const kb = (text) => `${Math.max(1, Math.ceil(Buffer.byteLength(text, 'utf8') / 1024))} KB`;
+  const largest = splitPatchByFile(shard.patch)
+    .reduce((best, section) => (!best || section.text.length > best.text.length ? section : best), null);
+  const facts = [
+    shard.files.join(', '),
+    `${shardPartShards(shard).length} part(s), ${kb(shard.patch)}`,
+    ...(largest && shard.files.length > 1 ? [`largest: ${largest.file} ${kb(largest.text)}`] : []),
+    ...(runs > 1 ? [`failed in ${runs} consecutive runs of this head`] : []),
+  ];
+  return `shard ${shard.index + 1}, ${provider} shard reviewer role ${shard.index} (${facts.join('; ')}): ${reason?.message || String(reason)}`;
 }
 
 /**
@@ -643,6 +811,9 @@ async function runGateWithLease({
     }
   } else if (force && !dryRun) {
     await removeAttestation(context.paths, identity);
+    // A forced run is a fresh review: no shard review of an earlier round of
+    // this head is kept either.
+    await removeShardCheckpoint(context.paths, identity);
   }
 
   const [files, stats, patch] = await Promise.all([
@@ -948,7 +1119,20 @@ async function runGateWithLease({
       void index;
     });
     const shardProviders = shards.map((_, index) => plan.reviewers[index % plan.reviewers.length]);
-    progress(`Reviewing ${shards.length} shard(s)${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
+    // Shard reviews a round of this exact identity completed before it failed
+    // closed are kept (1.12.0): only the shards that did not complete are
+    // reviewed again. Candidates are adjudicated afresh either way.
+    const patchDigest = hashText(patch, 64);
+    const assignments = shards.map((shard, index) => shardAssignmentDigest({
+      shard, provider: shardProviders[index], round, followUpBaseSha, priorBlocking: priorBlockingList, patchDigest, branch, author, risk: risk.level,
+    }));
+    const checkpoint = force ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
+    const keptShards = shards.map((_, index) => keptShardReview(checkpoint?.shards[assignments[index]], shardProviders[index], index));
+    const keptCount = keptShards.filter(Boolean).length;
+    for (const kept of keptShards) {
+      if (kept) providerExecutions.push(...kept.executions.map((record) => ({ ...record, reused: true })));
+    }
+    progress(`Reviewing ${shards.length - keptCount} shard(s)${keptCount ? ` (${keptCount} more completed in an earlier round of this exact head and are kept)` : ''}${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
     // The prior-blocker list travels as a bundle file, never inline in the
     // provider's argument vector: fifty persisted entries would exceed the
     // Windows command-line limit and fail every shard.
@@ -967,18 +1151,35 @@ async function runGateWithLease({
         '',
       ].join('\n'))
       : null;
-    const shardTasks = shards.map((shard, index) => () => shardReviewer({
-      provider: shardProviders[index],
-      roleIndex: index,
+    // Each shard's model passes are recorded under its number, so a kept
+    // review carries its own provenance into the round that reuses it.
+    const shardExecutions = shards.map(() => []);
+    const runShard = (shard) => shardReviewer({
+      provider: shardProviders[shard.index],
+      roleIndex: shard.index,
       lane: 'shard',
       round,
       checkout: worktree.checkout,
-      bundle,
+      bundle: {
+        ...bundle,
+        providerExecutions: {
+          push(record) {
+            record.shard = shard.index + 1;
+            providerExecutions.push(record);
+            shardExecutions[shard.index].push(record);
+          },
+        },
+      },
       shard,
       priorBlocking: priorBlockingList,
       priorBlockingPath,
-    }));
-    const shardPromise = clock.time('shards', () => settleReviewersWithRetry(shardTasks, { pool }));
+    });
+    const shardPromise = clock.time('shards', async () => {
+      const settledPending = await settleShardWave(shards.filter((_, index) => !keptShards[index]), runShard, { pool });
+      return shards.map((_, index) => (keptShards[index]
+        ? { status: 'fulfilled', value: keptShards[index].review, retried: false, reused: true }
+        : settledPending.shift()));
+    });
 
     if (scoutPromise) {
       const scoutAttempt = await scoutPromise;
@@ -1020,6 +1221,41 @@ async function runGateWithLease({
       }
     }
     const settledShards = await shardPromise;
+    // Saved before anything can fail the round closed, and removed once the
+    // round ends in a report: whatever stops it in between, the rerun starts
+    // from the shards that completed.
+    const shardRuns = settledShards.map((result, index) => {
+      if (result.status === 'fulfilled') return 0;
+      const before = checkpoint?.failures[assignments[index]]?.runs;
+      return (Number.isInteger(before) && before > 0 ? before : 0) + 1;
+    });
+    let checkpointSaved = false;
+    if (shards.length) {
+      const completedAt = new Date().toISOString();
+      try {
+        await writeShardCheckpoint(context.paths, identity, {
+          shards: Object.fromEntries(settledShards.flatMap((result, index) => (result.status === 'fulfilled'
+            ? [[assignments[index], keptShards[index] ?? {
+              review: result.value,
+              completedAt,
+              delivery: result.delivery ?? 'whole',
+              executions: shardExecutions[index].map((record) => ({ ...record })),
+            }]]
+            : []))),
+          failures: Object.fromEntries(settledShards.flatMap((result, index) => (result.status === 'fulfilled'
+            ? []
+            : [[assignments[index], { shard: index + 1, runs: shardRuns[index] }]]))),
+        });
+        checkpointSaved = true;
+      } catch (error) {
+        reviewerErrors.push(`The completed shard reviews could not be kept for a rerun: ${error?.message || String(error)}`);
+      }
+    }
+    const shardRecords = shards.map(({ index, kind, files: shardFiles, changedLines, reverify }) => ({
+      index, kind, files: shardFiles.length, changedLines, provider: shardProviders[index], reverify: Boolean(reverify),
+      ...(settledShards[index].delivery ? { delivery: settledShards[index].delivery } : {}),
+      ...(keptShards[index] ? { reused: true, reviewedAt: keptShards[index].completedAt, delivery: keptShards[index].delivery } : {}),
+    }));
     const settledHypotheses = await hypothesisPromise;
     // A shard-less diff (every changed file excluded from the textual patch
     // or without a textual hunk)
@@ -1043,7 +1279,10 @@ async function runGateWithLease({
       reviewerErrors.push(...describeReviewerFailures(settledLens, plan.reviewers));
     }
     const settledReviewers = [...settledShards, ...settledHypotheses, ...settledLens];
-    reviewerErrors.push(...describeReviewerFailures(settledShards, shardProviders.map((provider) => `${provider} shard`)));
+    // A failed shard is described once, with its files and size, in the
+    // fail-closed error below; other paths keep the role line.
+    const shardFailureLines = describeReviewerFailures(settledShards, shardProviders.map((provider) => `${provider} shard`));
+    reviewerErrors.push(...shardFailureLines);
     reviewerErrors.push(...describeReviewerFailures(settledHypotheses, hypothesisProviders.map((provider) => `${provider} hypothesis`)));
     const reviews = settledReviewers.filter((result) => result.status === 'fulfilled').map((result) => result.value);
     const lanesSettled = await lanesPromise;
@@ -1074,12 +1313,21 @@ async function runGateWithLease({
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
-        summary: `${failedShards.length} shard reviewer(s) failed after retry, leaving their hunks unreviewed; the gate failed closed. Rerun the gate.`,
+        summary: shardFailureSummary({
+          failed: failedShards.length,
+          kept: checkpointSaved ? shards.length - failedShards.length : 0,
+          repeated: failedShards
+            .map(({ shard }) => ({ shard: shard.index + 1, runs: shardRuns[shard.index] }))
+            .filter((entry) => entry.runs > 1),
+        }),
         errors: [
-          ...reviewerErrors,
-          ...failedShards.map(({ result, shard }) => `shard ${shard.index + 1} (${shard.files.join(', ')}): ${result.reason?.message || String(result.reason)}`),
+          ...reviewerErrors.filter((line) => !shardFailureLines.includes(line)),
+          ...failedShards.map(({ result, shard }) => describeFailedShard(shard, shardProviders[shard.index], result.reason, shardRuns[shard.index])),
         ],
         code: reviewerCleanupFailure(settledReviewers)?.code || null,
+        extra: {
+          shards: shardRecords.map((record, index) => ({ ...record, completed: settledShards[index].status === 'fulfilled' })),
+        },
       });
     }
     if (!reviews.length) {
@@ -1348,9 +1596,7 @@ async function runGateWithLease({
       summary,
       round,
       followUpBaseSha,
-      shards: shards.map(({ index, kind, files: shardFiles, changedLines, reverify }) => ({
-        index, kind, files: shardFiles.length, changedLines, provider: shardProviders[index], reverify: Boolean(reverify),
-      })),
+      shards: shardRecords,
       deterministicLanes: lanes.lanes,
       stages,
       reviewerSummaries: reviews.map(({ provider, roleIndex, summary: reviewerSummary }) => ({
@@ -1386,6 +1632,8 @@ async function runGateWithLease({
       lateDiscoveries: resultConvergence.lateDiscoveriesUsed,
       reviewedHeads: repairRoundsUsed + 1,
     });
+    // The round ended in a report: nothing is left to resume.
+    await removeShardCheckpoint(context.paths, identity).catch(() => {});
 
     if (status !== 'pass') {
       completedResult = { ...report, reportId: report.id, scoutFailed };

@@ -258,6 +258,42 @@ describe('shared review local state', () => {
     expect(await readAttestation(paths, { ...identity, policyDigest: 'e'.repeat(64) })).toBeNull();
   });
 
+  it('keeps completed shard reviews only for the exact identity, for a day, and never from an unreadable record', async () => {
+    const { readShardCheckpoint, removeShardCheckpoint, writeShardCheckpoint } = await import('../storage.mjs');
+    const { LIMITS } = await import('../constants.mjs');
+    const paths = await ensureState(await temporaryDirectory());
+    const identity = attestationIdentity({
+      repository: 'repo',
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      policyDigest: POLICY_DIGEST,
+    });
+    const shards = { digest: { review: { provider: 'codex', roleIndex: 0, summary: 'ok', candidates: [] } } };
+    const written = await writeShardCheckpoint(paths, identity, { shards, failures: { other: { shard: 2, runs: 1 } } });
+    expect(await readShardCheckpoint(paths, identity)).toMatchObject({ shards, failures: { other: { shard: 2, runs: 1 } } });
+    for (const changed of [
+      { headSha: 'c'.repeat(40) }, { baseSha: 'c'.repeat(40) }, { policyDigest: 'e'.repeat(64) },
+      { repository: 'other' }, { gateVersion: '0.0.0' }, { charterVersion: '0.0.0' },
+    ]) {
+      expect(await readShardCheckpoint(paths, { ...identity, ...changed })).toBeNull();
+    }
+    const writtenAt = Date.parse(written.updatedAt);
+    expect(await readShardCheckpoint(paths, identity, { now: writtenAt + LIMITS.shardCheckpointMaxAgeMs })).not.toBeNull();
+    expect(await readShardCheckpoint(paths, identity, { now: writtenAt + LIMITS.shardCheckpointMaxAgeMs + 1 })).toBeNull();
+    expect(await readShardCheckpoint(paths, identity, { now: writtenAt - 1 })).toBeNull();
+
+    const target = path.join(paths.shardCheckpoints, attestationFileName(identity));
+    await writeFile(target, JSON.stringify({ ...written, shards: ['not', 'a', 'record'], failures: null }));
+    expect(await readShardCheckpoint(paths, identity)).toMatchObject({ shards: {}, failures: {} });
+    await writeFile(target, '{ truncated');
+    expect(await readShardCheckpoint(paths, identity)).toBeNull();
+    await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await writeShardCheckpoint(paths, identity, { shards, failures: {} });
+    await removeShardCheckpoint(paths, identity);
+    expect(await readShardCheckpoint(paths, identity)).toBeNull();
+  });
+
   it('reuses non-pass outcomes only for the exact review identity', async () => {
     const paths = await ensureState(await temporaryDirectory());
     const identity = attestationIdentity({

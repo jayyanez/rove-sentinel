@@ -530,13 +530,30 @@ describe('subscription-backed provider adapters', () => {
       expect(parts.every((part) => Buffer.byteLength(part, 'utf8') <= LIMITS.shardPartMaxBytes)).toBe(true);
       const withoutContinuation = (part: string) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part);
       expect(parts.map(withoutContinuation).join('')).toBe(patch);
-      expect(prompt).toContain(`Read these ${count} files in order, each ONCE in full`);
+      expect(prompt).toContain(`Read these ${count} files in order, each ONCE in full and each with a tool\ncall of its own`);
+      // Codex read all the parts in one command and saw the middle elided
+      // (boxkite, 2026-10-10): the prompt says why that loses a part.
+      expect(prompt).toContain('One file per tool call: never read two of these files in one command, loop or\npipeline.');
+      expect(prompt).toContain('drops\nthe middle, so files read together come back truncated');
+      if (process.platform === 'win32') expect(prompt).toContain('one file per command — Get-Content with several\npaths');
       for (const name of partNames) expect(prompt).toContain(path.join(directory, name));
       expect(prompt).toContain('calls after the\nshard parts');
       // The reviewer that reads every part gets the time that reading takes.
       const { shardTimeoutMs } = await import('../shards.mjs');
       expect(runner.mock.calls[0][2].timeoutMs).toBe(shardTimeoutMs(patch));
       expect(shardTimeoutMs(patch)).toBeGreaterThan(LIMITS.shardTimeoutMs);
+
+      // One part of that shard handed to a reviewer of its own (1.12.0): a
+      // single file under the part's name, and nothing to read together.
+      const { shardPartShards } = await import('../shards.mjs');
+      const second = shardPartShards(shard)[1];
+      await runShardReviewer({ provider: 'codex', roleIndex: 0, checkout: directory, bundle, shard: second, runner });
+      expect(prompt).toContain(`Your entire scope is part 2 of ${count} of shard 1 (`);
+      expect(prompt).toContain(`Read ${path.join(directory, partNames[1])} ONCE in full — it is the complete set of hunks you own (the other parts of this shard have their own reviewers`);
+      expect(prompt).not.toContain(partNames[0]);
+      expect(prompt).not.toContain('Read these');
+      expect(await readFile(path.join(directory, partNames[1]), 'utf8')).toBe(second.patch);
+      expect(runner.mock.calls[1][2].timeoutMs).toBe(LIMITS.shardTimeoutMs);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

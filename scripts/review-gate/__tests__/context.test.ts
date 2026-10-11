@@ -462,6 +462,8 @@ Unrelated canvas rule.
         }
         const joined = (await Promise.all(parts.map((part) => readFile(path.join(bundle.directory, part), 'utf8')))).join('');
         expect(joined).toBe(charter);
+        // Parts that each fit one read do not fit one read together (1.12.0).
+        expect(required).toContain('One file per tool call: never read two of these files in one command');
         // The reference map and the file lists are lookups, never required reads.
         expect(required).not.toContain('reference-map.md');
         expect(lookups).toContain(path.join(bundle.directory, 'reference-map.md'));

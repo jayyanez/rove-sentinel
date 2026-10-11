@@ -3,7 +3,7 @@
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
 These instructions pin the
-[v1.11.2 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.11.2)
+[v1.12.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.12.0)
 as an exact dependency. Confirm its archive is listed before installing.
 To work on Sentinel itself, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -41,13 +41,13 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.11.2/rove-sentinel-1.11.2.tgz
+npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.12.0/rove-sentinel-1.12.0.tgz
 ```
 
 Or with pnpm:
 
 ```powershell
-pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.11.2/rove-sentinel-1.11.2.tgz
+pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.12.0/rove-sentinel-1.12.0.tgz
 ```
 
 This is a GitHub Release archive; the instructions do not depend on an npm

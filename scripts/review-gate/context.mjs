@@ -10,8 +10,8 @@ import {
   SCOUT_SCHEMA,
 } from './constants.mjs';
 import { cleanupAfterBestEffortMarker, removeTreeWithRetries } from './cleanup.mjs';
-import { promptSafe } from './providers.mjs';
-import { splitPatchByFile } from './shards.mjs';
+import { ONE_FILE_PER_CALL, promptSafe } from './providers.mjs';
+import { cutLine, splitPatchByFile } from './shards.mjs';
 import { runGit } from './git.mjs';
 import { hashText, readJson } from './storage.mjs';
 import { normalizeConfig, readConfig } from './config.mjs';
@@ -37,27 +37,6 @@ export function splitTextParts(text, maxBytes = LIMITS.shardPartMaxBytes) {
   }
   if (current) parts.push(current);
   return parts;
-}
-
-/** A line longer than `maxBytes` cut between characters into pieces of at
- *  most `maxBytes` UTF-8 bytes each. */
-function cutLine(line, maxBytes) {
-  if (Buffer.byteLength(line, 'utf8') <= maxBytes) return [line];
-  const pieces = [];
-  let piece = '';
-  let size = 0;
-  for (const char of line) {
-    const bytes = Buffer.byteLength(char, 'utf8');
-    if (size + bytes > maxBytes) {
-      pieces.push(piece);
-      piece = '';
-      size = 0;
-    }
-    piece += char;
-    size += bytes;
-  }
-  if (piece) pieces.push(piece);
-  return pieces;
 }
 
 /**
@@ -429,7 +408,7 @@ Changed lines: +${stats.additions} / -${stats.deletions}
 ## Required reads
 
 Read each of these whole, in the order given. A file larger than one read is
-written in parts; read every part.
+written in parts; read every part. ${ONE_FILE_PER_CALL}
 
 - Provider-neutral charter: ${listed(charterPaths)}
 - Selected bug lessons: ${listed(lessonsPaths)}

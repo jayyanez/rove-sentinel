@@ -1,5 +1,21 @@
 # Standalone validation record
 
+## 1.12.0 shard parts and reruns — 2026-10-10
+
+Deterministic tests cover the context bound (the bounded patch applied to the
+base gives the head's tree), the part-by-part retry, kept shard reviews and
+the failure message. The gate-level regression uses a synthetic repository and
+a controlled provider that reads every part in one command behind an output
+limit; it is not live acceptance. It fails on 1.11.2 with the reported error.
+
+One live Codex shard role (GPT-6.1 Sol, high) ran with the candidate engine,
+outside a gate, on the consumer head that had failed closed three times: the
+shard holding the reported file (five files, 76.9 KB in four parts) completed
+on its first attempt in 94 seconds. That is one run: it shows the reworded
+instruction can be followed, not how often it is. The part-by-part retry and
+the reuse of kept shard reviews have not run against a live provider, and no
+full gate round ran with 1.12.0.
+
 ## 1.11 model and subscription qualification — 2026-09-29
 
 Default model access passed at high and xhigh with Claude Code 2.1.284 (Opus
