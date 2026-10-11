@@ -17,6 +17,34 @@ private remote URLs, and private source excerpts.
 | No GitHub PR comment | Check draft state, author allowlist, same-repository head, `gh` permissions, and watcher health |
 | Hook no longer runs | Inspect `git config --get core.hooksPath` and the committed hook adapter |
 
+## A shard reviewer failed and the gate failed closed
+
+"N shard reviewer(s) failed after retry" means the only reviewer of some hunks
+did not finish, so no PASS is possible. Rerun the gate: the shard reviews that
+completed are kept for that exact base, head and policy for 24 hours, so the
+rerun reviews only the failed shards (`--force` reviews everything again).
+
+When the message says the same shard failed in consecutive runs, another rerun
+alone is unlikely to pass. The error names the shard's files, its size in
+parts and KB, its largest file, and the reviewer's own account:
+
+- A timeout or a provider error: run `rove-sentinel doctor`, check that
+  provider's CLI and sign-in, and try again later.
+- "Truncated" or "blocked" reads: the account says which read. A reviewer
+  reports its review incomplete for a shard part and for a required context
+  read (charter, lessons, open briefs) alike, and the part-by-part retry
+  gives every part reviewer the same context.
+  - A shard part: a shard of several parts is already retried one part per
+    reviewer, so a repeat means a single part could not be read whole. That
+    is an engine limit a rerun does not change. Move the largest file named
+    in the error into a change of its own so the rest of the branch can pass.
+  - A required context read: every shard fails the same way and splitting the
+    change does not help. Check that the installed charter and lessons are
+    readable from the provider's sandbox.
+
+  Either way, open an issue with the engine version, the retained report and
+  the reviewer's account.
+
 On Windows, per-repository records live under
 `%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>` for migration
 compatibility. `status` reports the actual paths. Reports and context may contain

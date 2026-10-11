@@ -9,6 +9,7 @@ import {
 } from './cleanup.mjs';
 import { LIMITS, ZERO_SHA } from './constants.mjs';
 import { runProcess } from './process.mjs';
+import { boundPatchContext } from './shards.mjs';
 
 const REVIEW_PATCH_PATHS = [
   '--',
@@ -177,7 +178,7 @@ export async function readPatch(repoRoot, baseSha, headSha) {
       '--no-ext-diff',
       '--find-renames',
       '--find-copies',
-      '--unified=80',
+      `--unified=${LIMITS.patchContextLines}`,
       `${baseSha}...${headSha}`,
       ...REVIEW_PATCH_PATHS,
     ],
@@ -187,7 +188,10 @@ export async function readPatch(repoRoot, baseSha, headSha) {
       outputLimitMessage: `Review patch exceeded the bounded ${LIMITS.maxPatchBytes}-byte limit. Split the change or raise the limit deliberately.`,
     },
   );
-  return result.stdout;
+  // Context is bounded by bytes as well as lines: in a file of very long
+  // lines, 80 lines either side of each change is most of the patch. The
+  // 4 MiB bound above still applies to what Git wrote.
+  return boundPatchContext(result.stdout);
 }
 
 export function excludedReviewFiles(files) {

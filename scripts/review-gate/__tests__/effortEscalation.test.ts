@@ -18,6 +18,8 @@ describe('bounded model-requested escalation', () => {
     expect(error.message).toMatch(/^Provider reported an incomplete review; no PASS is permitted\. Reviewer's account: Read all eight shard parts\.\\nContext output was truncated\./);
     expect(error.message).not.toContain('\n');
     expect(error.message.length).toBeLessThan(600);
+    // The gate tells an incomplete review from a crash by this code (1.12.0).
+    expect(error.code).toBe('INCOMPLETE_REVIEW');
   });
   it('says what makes a review incomplete: an unread required read, never a spent verification budget', async () => {
     const run = vi.fn().mockResolvedValue({ review_complete: true, effort_request: null, summary: 'ok', candidates: [] });

@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.12.0 — a diff that touches a file of very long lines can be reviewed
+
+A branch that edited six lines of a file of 300-character lines failed closed
+on three runs in a row (boxkite, 2026-10-10): 80 context lines either side of
+each edit made that file's section well over 100 KB, Codex read the shard's
+parts in one command, the tool showed that output with its middle elided, and
+the reviewer rightly reported "the combined tool response was truncated". The
+retry repeated the same instruction.
+
+- The shard prompt and the review context say that each part is read with a
+  tool call of its own, never two files in one command, and why. Codex on
+  Windows is told the same for `Get-Content`. This is an instruction; the next
+  point is the mechanism.
+- A shard of several parts whose reviewer reports its review incomplete is not
+  given the same instruction again. Its one retry hands the shard over **one
+  part per reviewer**: each is a fresh reviewer given a single file, so it
+  cannot lose a part by reading several together. Every part must complete for
+  the shard to count, and a part reviewer is not retried, so no hunk gets more
+  than the two attempts the charter allows. The parts' candidates are merged
+  under the shard's role and the report marks the shard `part-by-part`. Any
+  other failure, and an incomplete shard of one part, gets the ordinary retry.
+  A part reviewer sees one part of the shard, not the shard's other files.
+- Review-patch context is bounded by bytes as well as lines: up to 80 lines
+  either side of a change, but no more than 4 KB of them, and never fewer than
+  3. Code averaging up to about 50 bytes a line keeps all 80; a file of
+  300-character lines keeps 13. Hunks whose context no longer meets are split
+  and renumbered, so the patch still applies and every added and removed line
+  is kept; a hunk whose start moved loses Git's function heading. There is no
+  cap on a file's whole section: a file with many separate edits still grows
+  with them.
+- A single line longer than one part (24 KB) is cut between characters across
+  parts that say so. It used to keep a part of its own, which could be larger
+  than any read.
+- A rerun after a fail-closed round is cheap: the shard reviews that completed
+  are kept for the exact repository, base, head, policy and versions for 24
+  hours, and the rerun reviews only the shards that did not complete. A kept
+  review is reused only for the same assignment (hunks, provider, round, prior
+  blockers) and is validated like a fresh answer. Candidates are adjudicated
+  afresh, the scout runs again, `--force` keeps nothing, and the report marks
+  each reused shard with when it was reviewed and by which model passes. Kept
+  reviews are removed when the round ends in a report, and when the candidate
+  set exceeds its bound (reusing them would fail every rerun the same way).
+  The 24 hours are each review's own: a failed rerun does not renew them.
+- The fail-closed message says what a rerun costs and what to do when the same
+  shard fails again, names each failed shard's size, largest file and number
+  of consecutive failed runs, and describes each failure once.
+
+Fail-closed is unchanged: a reviewer that could not read its assignment whole
+still never counts, whichever way the parts were handed over.
+
 ## 1.11.2 — required reads that fit, and a precise completeness contract
 
 Codex reviewers on large branches still reported reviews incomplete after

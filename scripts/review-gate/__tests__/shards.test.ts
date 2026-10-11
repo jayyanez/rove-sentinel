@@ -244,9 +244,13 @@ describe('sharded coverage partition', () => {
     expect(parts.some((part) => part.startsWith('diff --git a/src/small.ts') || part.includes('\ndiff --git a/src/small.ts'))).toBe(true);
     const restored = parts.map((part) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part)).join('');
     expect(restored).toBe(patch);
-    // A line longer than a part keeps a part of its own instead of vanishing.
-    const wide = `diff --git a/w b/w\n+${'w'.repeat(5000)}\n+tail\n`;
+    // A line longer than a part is cut between characters (1.12.0): a part
+    // of its own could be larger than any read, and was never seen whole.
+    const wide = `diff --git a/w b/w\n+${'w'.repeat(5000)}\n+tail ${'é'.repeat(900)}\n`;
     const wideParts = splitShardPatch(wide, 1024);
+    expect(wideParts.length).toBeGreaterThan(6);
+    expect(wideParts.every((part) => Buffer.byteLength(part, 'utf8') <= 1024)).toBe(true);
+    expect(wideParts[1].startsWith(`${CONTINUATION_PREFIX}w (the previous part ends inside one of its lines, which continues here)\n`)).toBe(true);
     expect(wideParts.map((part) => (part.startsWith(CONTINUATION_PREFIX) ? part.slice(part.indexOf('\n') + 1) : part)).join('')).toBe(wide);
   });
 

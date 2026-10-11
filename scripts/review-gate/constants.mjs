@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.11.2';
+export const GATE_VERSION = '1.12.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -9,6 +9,15 @@ export const LIMITS = Object.freeze({
   // reported way rather than growing the buffer until Node's heap gives out.
   maxHookInputBytes: 4 * 1024 * 1024,
   maxPatchBytes: 4 * 1024 * 1024,
+  // Context around a change run in the review patch (1.12.0): up to this many
+  // lines on each side, but no more than `patchContextSideBytes` of them, and
+  // never fewer than `patchContextMinLines`. Lines alone made six one-line
+  // edits to a file of 300-character lines a section of well over 100 KB
+  // (boxkite, 2026-10-10); 4 KB is what 80 lines of ordinary code cost, so
+  // code averaging up to ~50 bytes a line keeps all 80.
+  patchContextLines: 80,
+  patchContextSideBytes: 4 * 1024,
+  patchContextMinLines: 3,
   maxProcessOutputBytes: 2 * 1024 * 1024,
   // One committed design-review screenshot read back at head to prove it is
   // a PNG; a capture past this is refused as unreadable, never buffered whole.
@@ -64,6 +73,11 @@ export const LIMITS = Object.freeze({
   // on a loaded host (three Codex trees in two rove #584 runs, 2026-09-30),
   // turning a non-fatal scout timeout into a fail-closed gate.
   taskkillTimeoutMs: 30 * 1000,
+  // Completed shard reviews of a round that then failed closed are kept for
+  // the exact base, head and policy (1.12.0), so the rerun reviews only the
+  // shards that did not complete. Kept this long, for this many identities.
+  shardCheckpointMaxAgeMs: 24 * 60 * 60 * 1000,
+  maxShardCheckpoints: 20,
   // How much of a reviewer's own summary an incomplete-review error keeps.
   incompleteSummaryChars: 400,
   shardMaxCandidates: 8,
