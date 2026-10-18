@@ -64,7 +64,10 @@ reviewer started.
   `path:line:col` or tsc output) as `lintCommands` in installed policy, with
   the trusted checkout's `node_modules` linked in; `lintLanes` turns a
   built-in lane off, and `doctor` lists which tools the host has. A missing
-  tool is a note in the report, never a pass.
+  tool is a note in the report, never a pass. The first review on a machine
+  that lacks some of them says which and how to get them, and
+  `rove-sentinel tools --install` installs them with winget or Homebrew after
+  asking (`--yes` for an agent).
 - **The review material travels in the prompt.** Every reviewer used to spend
   its first turns reading the context, the charter, the lessons, the briefs
   and its shard, one call each, and a long tool output could come back with

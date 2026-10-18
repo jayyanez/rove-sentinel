@@ -57,13 +57,21 @@ configurable in this release; other project checkers can run as
 ## Linter lanes
 
 Sentinel runs shellcheck, actionlint, gitleaks and ruff on the changed files
-whenever they are installed on the host; `doctor` lists which are. Install
-the ones your project needs, for example on Windows:
+whenever they are installed on the host. The first review on a machine that
+lacks some of them says which, and `doctor` and `tools` always do. Sentinel
+installs them when you ask (winget on Windows, Homebrew on macOS; elsewhere it
+links each tool's instructions):
 
 ```powershell
-winget install koalaman.shellcheck rhysd.actionlint Gitleaks.Gitleaks
-pip install ruff
+npx --no-install rove-sentinel tools            # what is missing and how to get it
+npx --no-install rove-sentinel tools --install  # asks, then installs
+npx --no-install rove-sentinel tools --install --yes  # for an agent or a script
 ```
+
+The winget equivalent is
+`winget install koalaman.shellcheck rhysd.actionlint Gitleaks.Gitleaks astral-sh.ruff`.
+A running watcher finds tools winget or Homebrew just installed without a
+restart.
 
 They read the project's own configuration where the tool supports it
 (`.shellcheckrc`, `.github/actionlint.yaml`, ruff's `pyproject.toml`), except

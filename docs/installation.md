@@ -105,6 +105,14 @@ weaken the running review policy.
 it does not mean hooks-only or no background integration. For inspection without
 mutation, use `install --dry-run`.
 
+## Linter tools
+
+Sentinel's linter lanes use shellcheck, actionlint, gitleaks and ruff when
+they are installed. After installing Sentinel, run
+`npx --no-install rove-sentinel tools --install`: it lists what this machine
+lacks and installs it with winget after you confirm. The first review on a
+machine without them prints the same advice.
+
 ## Existing Git hooks
 
 Do not replace an existing hook with the generated one. Preserve its checks and

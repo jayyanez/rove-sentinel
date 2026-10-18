@@ -43,7 +43,7 @@ export function sentinelLimits() {
       {
         id: 'linters',
         limit: 'installed tools',
-        text: 'shellcheck, actionlint, gitleaks and ruff run when installed on the host (doctor lists them); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
+        text: 'shellcheck, actionlint, gitleaks and ruff run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
       },
       {
         id: 'skip',

@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, symlink, unlink, writeFile, lstat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat, symlink, unlink, writeFile, lstat } from 'node:fs/promises';
 import { realpath as realpathCallback } from 'node:fs';
 import os from 'node:os';
 import { promisify } from 'node:util';
@@ -74,7 +74,12 @@ export async function resolveExecutable(name, { env = process.env, exclude = [],
     const resolved = await realpath(directory).catch(() => path.resolve(directory));
     return platform === 'win32' ? resolved.toLowerCase() : resolved;
   }));
-  for (const directory of pathValue.split(separator)) {
+  // Where the package managers Sentinel installs with put programs, also when
+  // a long-running watcher started before they were added to PATH.
+  const managed = platform === 'win32'
+    ? [env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links') : null]
+    : platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : [];
+  for (const directory of [...pathValue.split(separator), ...managed.filter(Boolean)]) {
     if (!directory || directory === '.' || !path.isAbsolute(directory)) continue;
     const real = await realpath(directory).catch(() => null);
     if (!real) continue;
@@ -84,6 +89,12 @@ export async function resolveExecutable(name, { env = process.env, exclude = [],
       const candidate = path.join(real, platform === 'win32' && name.toLowerCase().endsWith(extension) ? name : `${name}${extension}`);
       const info = await stat(candidate).catch(() => null);
       if (info?.isFile()) return candidate;
+      // A Windows app execution alias (winget in WindowsApps) cannot be
+      // stat'ed, but it is listed in its directory and starts normally.
+      if (!info && platform === 'win32' && /[\\/]windowsapps$/i.test(real)) {
+        const listed = await readdir(real).catch(() => []);
+        if (listed.some((entry) => entry.toLowerCase() === path.basename(candidate).toLowerCase())) return candidate;
+      }
     }
   }
   return null;
