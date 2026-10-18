@@ -831,3 +831,45 @@ describe('reference map: C-family signatures and escaped triple quotes (1.13.0 s
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+describe('reference map: C signatures with default arguments or a return type of their own line (1.13.0 follow-up)', () => {
+  const sorted = (values: string[]) => [...values].sort();
+  const changed = (file: string, ...lines: string[]) => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -1,${lines.filter((line) => !line.startsWith('+')).length} +1,${lines.filter((line) => !line.startsWith('-')).length} @@`,
+    ...lines,
+  ].join('\n');
+
+  it('extracts a definition whose parameters have default values', () => {
+    const cpp = changed('src/ledger.cpp',
+      '-int round_cents(double value, int places = 2) {',
+      '+long round_cents(double value, int places = 2, bool bankers = false) {',
+      '+  int total = sum_lines(lines);');
+    expect(extractChangedSymbols(cpp).symbols).toEqual(['round_cents']);
+  });
+
+  it('extracts GNU-style definitions whose return type has a line of its own', () => {
+    const c = changed('src/money.c',
+      '+static int',
+      '+calculate_total (int count)',
+      '+{',
+      '+  return count;',
+      '+}',
+      '-struct invoice *',
+      '-load_invoice (const char *path,',
+      '-              int flags)',
+      '+MODULE_LICENSE("GPL");',
+      '+  indented_call (value);');
+    expect(sorted(extractChangedSymbols(c).symbols)).toEqual(sorted(['calculate_total', 'load_invoice']));
+    // Java keeps one-line signatures only.
+    expect(extractChangedSymbols(changed('src/A.java', '+compute (value)')).symbols).toEqual([]);
+  });
+
+  it('says in the generated map that declarations come from line patterns', async () => {
+    const run = async () => ({ code: 1, stdout: '', stderr: '' });
+    const map = await buildReferenceMap({ checkout: os.tmpdir(), headSha: 'a'.repeat(40), patch: '', files: [], run });
+    expect(map).toContain('declarations are found by line patterns, not a parser');
+  });
+});

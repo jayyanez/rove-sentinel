@@ -13,7 +13,8 @@ reviewer started.
   `requirements.txt` or an MDX page (which carries JSX) was pushed with a skip
   attestation and no model call. Only Markdown, reStructuredText and AsciiDoc
   are prose now. Their reviewer applies the documentation lens, except to
-  dependency `.txt` manifests, which get the configuration lens.
+  `CMakeLists.txt` and dependency `.txt` manifests, which get the
+  configuration lens.
 - **CI workflows and database migrations are high risk.**
   `.github/workflows/`, `.gitlab-ci.yml` and `migrations/` directories join
   the high-risk paths: they run with repository secrets or change persisted
@@ -28,7 +29,8 @@ reviewer started.
 - **The reference map covers more languages.** Declarations are extracted from
   Python, Ruby, PHP, Java, Kotlin, Scala, C#, Swift and C/C++ as well as
   JavaScript/TypeScript, Svelte, Rust and Go, including return-typed C, C++,
-  Java and C# functions without a modifier. The lexer drops `#` comments and
+  Java and C# functions without a modifier (and C/C++ definitions whose return
+  type has a line of its own). The lexer drops `#` comments and
   multi-line triple-quoted strings (honouring escapes where the language does)
   where those languages have them. It is still a line lexer, not a parser.
 - **Reviewers see the change's stated intent.** The review context quotes the
