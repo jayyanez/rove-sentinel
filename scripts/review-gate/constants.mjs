@@ -27,6 +27,12 @@ export const LIMITS = Object.freeze({
   maxProcessStderrBytes: 256 * 1024,
   maxCandidates: 50,
   maxReviewerCandidates: 12,
+  // Candidates below this confidence do not reach adjudication. They are no
+  // longer discarded without trace (1.13.0): up to `maxReportedLowConfidence`
+  // of them are kept in the report, so a defect an external reviewer later
+  // raises can be told apart as "seen and held back" or "never seen".
+  candidateConfidenceFloor: 50,
+  maxReportedLowConfidence: 40,
   // Hypothesis reviewers stay narrow: one primary claim plus up to three
   // same-class siblings observed in code they already read (v1.6.0).
   maxHypothesisCandidates: 4,
@@ -111,6 +117,8 @@ export const LIMITS = Object.freeze({
   refMapMaxReferenceLines: 240,
   refMapMaxRefsPerSymbol: 12,
   refMapMaxHitsPerSymbol: 200,
+  // Git processes the map runs at once (1.13.0); its sweeps are read-only.
+  refMapGitConcurrency: 8,
   // Co-change sibling mining bounds (v1.6.0).
   coChangeScannedFiles: 20,
   coChangeCommitsPerFile: 30,
@@ -121,6 +129,10 @@ export const LIMITS = Object.freeze({
   openBriefsMaxIndexed: 40,
   openBriefsMaxInlined: 4,
   openBriefsMaxCharsEach: 6_000,
+  // The change's own commit messages, inlined into the review context
+  // (1.13.0) so every reviewer sees the stated intent without a read.
+  intentMaxCommits: 30,
+  intentMaxBytes: 4 * 1024,
   providerRetryLimit: 1,
   // One active high-risk review plus one queued review can each consume the
   // full reviewer + coordinator budget. Keep the hook bound above that total.

@@ -584,17 +584,70 @@ describe('reference map: whole-file lexing knows where a hunk starts (#474 revie
       `--- a/src/${name}.ts`,
       `+++ b/src/${name}.ts`,
     ].join('\n')).join('\n');
-    const allowances: number[] = [];
-    const run = async (_checkout: string, _args: string[], options: { maxOutputBytes: number }) => {
-      allowances.push(options.maxOutputBytes);
-      // Multibyte text: 4 characters, 10 UTF-8 bytes.
-      return { code: 0, stdout: 'éé€€', stderr: '' };
+    // Every blob is reported as 10 bytes: multibyte text of 4 characters.
+    const calls: Array<{ args: string[]; input: string; binary?: boolean }> = [];
+    const run = async (_checkout: string, args: string[], options: { input: string; binary?: boolean }) => {
+      calls.push({ args, input: options.input, binary: options.binary });
+      const oids = options.input.trim().split('\n');
+      if (args[1] === '--batch-check') {
+        return { code: 0, stdout: oids.map((oid) => `${oid}abc blob 10`).join('\n'), stderr: '' };
+      }
+      return {
+        code: 0,
+        stdout: Buffer.concat(oids.map((oid) => Buffer.from(`${oid} blob 10\néé€€\n`))),
+        stderr: '',
+      };
+    };
+    const sources = await readChangedSources(os.tmpdir(), patch, run, { maxBlobBytes: 12, maxTotalBytes: 25 });
+    // Two processes however many blobs (1.13.0), sizes first.
+    expect(calls.map((call) => call.args[1])).toEqual(['--batch-check', '--batch']);
+    expect(calls[1].binary).toBe(true);
+    // Bytes, not characters: 10 + 10 leaves 5, so the third and every later
+    // blob is not read; only the selected blobs' contents are requested.
+    expect(calls[1].input.trim().split('\n')).toHaveLength(2);
+    expect([...sources.keys()]).toEqual(['1111111', '4444444']);
+    expect(sources.get('1111111')).toBe('éé€€');
+  });
+
+  it('skips a blob over its own bound and still reads the later ones that fit', async () => {
+    const patch = ['a', 'b'].map((name, index) => [
+      `diff --git a/src/${name}.ts b/src/${name}.ts`,
+      `index ${String(index + 1).repeat(7)}..0000000 100644`,
+      `--- a/src/${name}.ts`,
+      `+++ b/src/${name}.ts`,
+    ].join('\n')).join('\n');
+    const sizes = new Map([['1111111', 9], ['2222222', 3]]);
+    const run = async (_checkout: string, args: string[], options: { input: string }) => {
+      const oids = options.input.trim().split('\n');
+      if (args[1] === '--batch-check') return { code: 0, stdout: oids.map((oid) => `${oid} blob ${sizes.get(oid)}`).join('\n'), stderr: '' };
+      return { code: 0, stdout: Buffer.concat(oids.map((oid) => Buffer.from(`${oid} blob 3\nabc\n`))), stderr: '' };
     };
     const sources = await readChangedSources(os.tmpdir(), patch, run, { maxBlobBytes: 8, maxTotalBytes: 25 });
-    // Bytes, not characters: 10 + 10 leaves 5 for the third read, and the
-    // fourth is never started.
-    expect(allowances).toEqual([8, 8, 5]);
-    expect(sources.size).toBe(3);
+    expect([...sources.entries()]).toEqual([['2222222', 'abc']]);
+  });
+
+  it('reads every changed blob of a real repository in one batch', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-refmap-batch-'));
+    temporaryDirectories.push(root);
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'config', 'core.autocrlf', 'false');
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'a.ts'), 'export const a = "é";\n');
+    await writeFile(path.join(root, 'src', 'b.ts'), 'export const b = 1;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const baseSha = git(root, 'rev-parse', 'HEAD');
+    await writeFile(path.join(root, 'src', 'a.ts'), 'export const a = "é€";\nexport function added() {}\n');
+    await writeFile(path.join(root, 'src', 'b.ts'), 'export const b = 2;\n');
+    git(root, 'commit', '-am', 'change');
+    const headSha = git(root, 'rev-parse', 'HEAD');
+    const patch = git(root, 'diff', `${baseSha}...${headSha}`);
+    const sources = await readChangedSources(root, patch);
+    expect(sources.size).toBe(4);
+    expect([...sources.values()]).toContain('export const a = "é€";\nexport function added() {}\n');
+    expect([...sources.values()]).toContain('export const b = 1;\n');
   });
 
   it('builds the map from a real repository: prose deep inside a comment is not a symbol', async () => {
@@ -621,5 +674,32 @@ describe('reference map: whole-file lexing knows where a hunk starts (#474 revie
     const map = await buildReferenceMap({ checkout: root, headSha, patch, files: ['src/note.ts'] });
     expect(map).toContain('`addedForReal`');
     expect(map).not.toContain('`Customers`');
+  });
+});
+
+describe('reference map: parallel sweeps render as if run in order (1.13.0)', () => {
+  it('applies the reference-line budget in symbol order whichever sweep finishes first', async () => {
+    const names = Array.from({ length: 30 }, (_, index) => `sweptName${String(index).padStart(2, '0')}`);
+    const patch = ['--- a/src/x.ts', '+++ b/src/x.ts', ...names.map((name) => `+export function ${name}() {}`)].join('\n');
+    let inFlight = 0;
+    let peak = 0;
+    const run = async (_checkout: string, args: string[]) => {
+      if (args[0] !== 'grep') return { code: 1, stdout: '', stderr: '' };
+      const symbol = args[args.indexOf('-e') + 1];
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      // Later symbols finish first.
+      await new Promise((resolve) => setTimeout(resolve, 2 * (30 - names.indexOf(symbol))));
+      inFlight -= 1;
+      const lines = Array.from({ length: 12 }, (_, index) => `${'a'.repeat(40)}:src/use-${index}.ts:${index + 1}:${symbol}()`);
+      return { code: 0, stdout: lines.join('\n'), stderr: '' };
+    };
+    const map = await buildReferenceMap({ checkout: os.tmpdir(), headSha: 'a'.repeat(40), patch, files: ['src/x.ts'], run });
+    // 240 reference lines at 12 a symbol: the first 20 are listed, in order.
+    const listed = [...map.matchAll(/^### `(sweptName\d+)` — 12 reference\(s\), 12 outside the diff$/gm)].map((match) => match[1]);
+    expect(listed).toEqual(names.slice(0, 20));
+    expect(map).toContain(`truncated the sweep before these extracted symbols: ${names.slice(20).map((name) => `\`${name}\``).join(', ')}`);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
   });
 });

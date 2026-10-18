@@ -11,6 +11,7 @@ import {
   adjudicationBatches,
   cleanCandidates,
   createGateContext,
+  lowConfidenceCandidates,
   describeReviewerFailures,
   formatGateResult,
   providerTreeCleanupFailureCode,
@@ -91,6 +92,45 @@ describe('single-provider pipeline provenance', () => {
     const strict = reviewPolicySnapshot({ charter: repository.policy.charter, lessons: repository.policy.lessons, config: { providers: 'both' } });
     await expect(runGate({ ...options, policy: strict })).rejects.toThrow(/both/);
   });
+});
+
+describe('recall evidence in a completed review (1.13.0)', () => {
+  it('keeps held-back candidates in the report and gives every reviewer the stated intent and the reference map', async () => {
+    const repository = await makeRepository();
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-recall-evidence-'));
+    temporaryDirectories.push(stateRoot);
+    const seen: Array<{ context: string; map: string }> = [];
+    const reviewer = vi.fn(async ({ provider, roleIndex, bundle }) => {
+      seen.push({
+        context: await readFile(bundle.contextPath, 'utf8'),
+        map: await readFile(path.join(path.dirname(bundle.contextPath), 'reference-map.md'), 'utf8'),
+      });
+      return {
+        provider,
+        roleIndex,
+        summary: 'Reviewed',
+        candidates: [{
+          id: `${provider}-${roleIndex}-0`, provider, roleIndex, title: 'Answer may be stale', priority: 'P2', confidence: 35,
+          category: 'state', file: 'src/lib/example.ts', line: 1, scenario: 'a guess', evidence: 'weak', proposed_test: 'none',
+        }],
+      };
+    });
+    const result = await runGate({
+      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
+      author: 'human', risk: 'low', availableProviders: ['claude'], reviewer,
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0].context).toMatch(/## Stated intent of this change\n[\s\S]*^> [0-9a-f]{7,} change$/m);
+    expect(seen[0].map).toContain('### `answer`');
+    const report = await readReport(await ensureState(stateRoot), result.reportId);
+    expect(report.lowConfidenceCandidates).toMatchObject({
+      total: seen.length,
+      candidates: [{ title: 'Answer may be stale', confidence: 35, file: 'src/lib/example.ts' }],
+    });
+    expect(report.findings).toEqual([]);
+  }, REAL_GIT_TEST_TIMEOUT);
 });
 
 describe('changes without a textual hunk', () => {
@@ -394,6 +434,25 @@ describe('shared review gate integration', () => {
     expect(kept.map((candidate) => candidate.title)).toEqual(['Stale write  survives']);
     // Without a prior blocker of that identity the floor still applies.
     expect(cleanCandidates([{ candidates: [reported('Stale write survives', 30)] }])).toEqual([]);
+  });
+
+  it('keeps the candidates held back under the confidence floor as a bounded report record (1.13.0)', () => {
+    const reported = (title: string, confidence: number, id: string) => ({
+      id, provider: 'codex', title, priority: 'P2', confidence, category: 'lifecycle',
+      file: 'src/lib/example.ts', line: 12, scenario: 's'.repeat(900), evidence: 'e', proposed_test: 't',
+    });
+    const priorBlocking = [{ title: 'Stale write survives', file: 'src/lib/example.ts', priority: 'P2' }];
+    const held = lowConfidenceCandidates([
+      { candidates: [reported('Stale write survives', 20, 'a'), reported('Low guess', 30, 'b'), reported('Kept', 70, 'c')] },
+      { candidates: [reported('Lower guess', 10, 'd')] },
+    ], { priorBlocking });
+    // A prior blocker is adjudicated whatever its confidence, and a candidate
+    // at or above the floor is adjudicated: neither is "held back".
+    expect(held.total).toBe(2);
+    expect(held.candidates.map((candidate) => [candidate.id, candidate.confidence])).toEqual([['b', 30], ['d', 10]]);
+    expect(held.candidates[0].scenario).toHaveLength(600);
+    expect(lowConfidenceCandidates([{ candidates: [reported('x', 1, 'a'), reported('y', 2, 'b')] }], { max: 1 }))
+      .toMatchObject({ total: 2, candidates: [{ id: 'b' }] });
   });
 
   it('merges exact duplicate candidates from independent reviewers before adjudication', () => {

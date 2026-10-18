@@ -479,7 +479,7 @@ export function cleanCandidates(reviews, { priorBlocking = [] } = {}) {
   const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
   const qualifying = reviews
     .flatMap((review) => review.candidates)
-    .filter((candidate) => candidate.confidence >= 50 || priorKeys.has(findingKey(candidate)));
+    .filter((candidate) => candidate.confidence >= LIMITS.candidateConfidenceFloor || priorKeys.has(findingKey(candidate)));
   // Independent reviewers frequently converge on the same defect. Merging is
   // a deterministic IDENTITY merge, never a judgment call, so the key is the
   // full identity — file, integer line, priority, AND normalized title.
@@ -511,6 +511,35 @@ export function cleanCandidates(reviews, { priorBlocking = [] } = {}) {
     throw new Error(`Independent reviewers produced ${candidates.length} qualifying candidates; the bounded adjudication limit is ${LIMITS.maxCandidates}. The gate refuses to drop candidates or attest an incomplete review.`);
   }
   return candidates;
+}
+
+/**
+ * The candidates `cleanCandidates` holds back under the confidence floor
+ * (1.13.0), as a bounded report record. They are evidence for recall
+ * analysis only: nothing here is adjudicated, enforced or shown as a finding.
+ */
+export function lowConfidenceCandidates(reviews, {
+  priorBlocking = [], max = LIMITS.maxReportedLowConfidence,
+} = {}) {
+  const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
+  const held = reviews
+    .flatMap((review) => review.candidates)
+    .filter((candidate) => candidate.confidence < LIMITS.candidateConfidenceFloor && !priorKeys.has(findingKey(candidate)))
+    .sort((a, b) => b.confidence - a.confidence || String(a.id).localeCompare(String(b.id)));
+  return {
+    total: held.length,
+    candidates: held.slice(0, Math.max(0, max)).map((candidate) => ({
+      id: candidate.id,
+      provider: candidate.provider,
+      title: candidate.title,
+      priority: candidate.priority,
+      confidence: candidate.confidence,
+      category: candidate.category,
+      file: candidate.file,
+      line: candidate.line,
+      scenario: String(candidate.scenario ?? '').slice(0, 600),
+    })),
+  };
 }
 
 function assertAdjudicationCoverage(candidates, adjudication) {
@@ -983,7 +1012,21 @@ async function runGateWithLease({
 
   const clock = createStageClock();
   progress(`Preparing isolated ${headSha.slice(0, 12)} review (${risk.level} risk, ${round} round).`);
-  const worktree = await createDetachedWorktree(context.repoRoot, headSha);
+  // The reference map reads Git objects only (`git grep <head>`, `log`,
+  // `cat-file`), never working-tree files, so it is built from the
+  // repository while the review checkout is created (1.13.0). It degrades to
+  // an explicit placeholder rather than failing the review.
+  const referenceMapPromise = clock.time('reference-map', () => buildReferenceMap({
+    checkout: context.repoRoot, headSha, patch, files,
+  }).catch(() => ''));
+  let worktree;
+  try {
+    worktree = await createDetachedWorktree(context.repoRoot, headSha);
+  } catch (error) {
+    // Its Git processes end before the failure is reported.
+    await referenceMapPromise;
+    throw error;
+  }
   let bundle;
   let operationError;
   let completedResult;
@@ -994,22 +1037,13 @@ async function runGateWithLease({
     // reviewer would otherwise have to spend its small read budget on. Both
     // degrade to an explicit placeholder rather than failing the review.
     progress('Building deterministic reference map and invariant context.');
-    let referenceMap = '';
     let openBriefs = '';
-    await clock.time('reference-map', async () => {
-      try {
-        referenceMap = await buildReferenceMap({
-          checkout: worktree.checkout, headSha, patch, files,
-        });
-      } catch {
-        referenceMap = '';
-      }
-      try {
-        openBriefs = await readOpenBugBriefs(worktree.checkout, files);
-      } catch {
-        openBriefs = '';
-      }
-    });
+    try {
+      openBriefs = await readOpenBugBriefs(worktree.checkout, files);
+    } catch {
+      openBriefs = '';
+    }
+    const referenceMap = await referenceMapPromise;
     bundle = await createContextBundle({
       checkout: worktree.checkout,
       policyRoot: context.repoRoot,
@@ -1402,7 +1436,8 @@ async function runGateWithLease({
         },
       });
     }
-    let adjudication = { summary: 'Independent reviewers found no candidates at confidence 50 or higher.', findings: [] };
+    const heldBack = lowConfidenceCandidates(canonicalReviews, { priorBlocking: priorBlockingList });
+    let adjudication = { summary: `Independent reviewers found no candidates at confidence ${LIMITS.candidateConfidenceFloor} or higher.`, findings: [] };
     let usedCoordinator = false;
     if (candidates.length && shouldSkipCoordinator(candidates, { followUp, priorBlocking: priorBlockingList })) {
       adjudication = {
@@ -1613,6 +1648,7 @@ async function runGateWithLease({
       })),
       errors: reviewerErrors,
       findings: enforcedFindings,
+      lowConfidenceCandidates: heldBack,
       actionableCount: verified.length + (evidenceAccepted ? 0 : native.length),
       advisoryCount: advisories.length,
       nativeEvidence: evidenceAccepted ? nativeEvidence.trim() : null,

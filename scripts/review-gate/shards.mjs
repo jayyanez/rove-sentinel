@@ -14,6 +14,9 @@ const DOC_FILE = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__|fixtures)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i;
 const SCRIPT_FILE = /^(?:scripts|\.githooks|\.github|src-tauri\/launch-shim|src-tauri\/resources|sidecar)\//i;
 const CONFIG_FILE = /\.(?:json|jsonc|ya?ml|toml|lock|conf|ini)$/i;
+// Plain-text build and dependency inputs (1.13.0): reviewed with the config
+// lens, not as prose.
+const TEXT_MANIFEST = /(?:^|\/)(?:CMakeLists|(?:requirements|constraints)(?:[-_.][^/]*)?)\.txt$/i;
 
 /** Lens family a shard reviewer applies; decided by the dominant file kind. */
 export function classifyShardFile(file) {
@@ -21,6 +24,7 @@ export function classifyShardFile(file) {
   // Location wins over extension: a Markdown fixture under tests/ is test
   // material and gets the tests lens, not the docs one.
   if (TEST_FILE.test(normalized)) return 'tests';
+  if (TEXT_MANIFEST.test(normalized)) return 'config';
   if (DOC_FILE.test(normalized)) return 'docs';
   if (SCRIPT_FILE.test(normalized)) return 'scripts';
   if (CONFIG_FILE.test(normalized)) return 'config';

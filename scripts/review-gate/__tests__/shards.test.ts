@@ -53,6 +53,10 @@ describe('sharded coverage partition', () => {
     expect(classifyShardFile('src-tauri/launch-shim/src/bin/rove_agent_hook.rs')).toBe('scripts');
     expect(classifyShardFile('src-tauri/resources/agent-notifications/global/pi.js')).toBe('scripts');
     expect(classifyShardFile('src-tauri/permissions/default.toml')).toBe('config');
+    expect(classifyShardFile('CMakeLists.txt')).toBe('config');
+    expect(classifyShardFile('native/CMakeLists.txt')).toBe('config');
+    expect(classifyShardFile('requirements-dev.txt')).toBe('config');
+    expect(classifyShardFile('docs/notes.txt')).toBe('docs');
   });
 
   it('splits a patch into per-file sections with changed-line counts', () => {

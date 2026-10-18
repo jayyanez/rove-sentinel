@@ -109,6 +109,26 @@ describe('review gate recall ledger', () => {
     expect(gateVerdictFor(null, { file: 'a.ts' }).saw).toBe('nothing');
   });
 
+  it('tells a candidate held back under the confidence floor from one never seen (1.13.0)', () => {
+    const report = {
+      findings: [{ file: 'a.ts', title: 'Advisory', priority: 'P3', enforcement: 'advisory', disposition: 'verified' }],
+      lowConfidenceCandidates: {
+        total: 2,
+        candidates: [
+          { file: 'a.ts', title: 'Maybe stale', priority: 'P2', confidence: 40, line: 3 },
+          { file: 'e.ts', title: 'Maybe racy', priority: 'P2', confidence: 30, line: null },
+        ],
+      },
+    };
+    expect(gateVerdictFor(report, { file: 'e.ts' })).toEqual({
+      saw: 'below-floor',
+      matches: [{ title: 'Maybe racy [confidence 30]', priority: 'P2', saw: 'below-floor', line: null }],
+    });
+    // A finding that reached adjudication still outranks a held-back guess.
+    expect(gateVerdictFor(report, { file: 'a.ts' }).saw).toBe('advisory');
+    expect(gateVerdictFor(report, { file: 'a.ts' }).matches.map((match) => match.saw)).toEqual(['advisory', 'below-floor']);
+  });
+
   it('renders rows with TODO cells, a blocker hint, and an idempotent marker', () => {
     const rows = renderRows(7, [
       { id: 5, file: 'a.ts', line: 3, title: 'T', severity: 'major', verdict: { saw: 'nothing', matches: [] } },

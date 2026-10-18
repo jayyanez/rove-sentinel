@@ -92,7 +92,7 @@ Never promote a finding merely to make it blocking.`;
 
 const CLAIMED_FIX_EXCEPTION = `Report only actionable defects introduced by the exact diff. No style advice,
 generic risks, praise, or pre-existing issues. Exception: when the diff's
-stated intent (commit subject, patch note, changed-code comment) claims to fix
+stated intent (a commit message, patch note, or changed-code comment) claims to fix
 a behavior, an incomplete fix of that behavior is an introduced defect, never
 a pre-existing issue.`;
 
@@ -595,7 +595,7 @@ closes the surface, logs out, or supersedes the call before it settles, and
 whether captured identifiers are re-validated against live state. Use the
 reference-map.md the context lists for usage sites and untouched co-change
 siblings. Skip style, praise, pre-existing issues, and generic risk
-— but when the diff's stated intent (commit subject, patch note, changed-code
+— but when the diff's stated intent (a commit message, patch note, or changed-code
 comment) claims to fix a behavior, an incomplete fix of that
 behavior counts as introduced, not pre-existing.
 If you see no plausible introduced defect, return an empty hypotheses array.
@@ -618,7 +618,7 @@ Read ${contextPath}, the required reads it lists, and the minimum surrounding
 code needed to prove or dismiss
 that claim. If the exact diff introduces that defect, return one candidate with
 a concrete scenario and evidence. If it does not, return an empty candidates
-array. When the diff's stated intent (commit subject, patch note, changed-code
+array. When the diff's stated intent (a commit message, patch note, or changed-code
 comment) claims to fix a behavior, an incomplete fix of that behavior is
 introduced by the diff, never pre-existing — do not reject the hypothesis on
 that ground. Do not hunt for unrelated bugs — with one exception: if code you
@@ -642,7 +642,7 @@ may be wrong. Mark each candidate verified, dismissed, or needs_native_evidence.
 Verified means the exact diff introduces a reproducible actionable defect; give
 the concrete scenario. Dismiss false positives and pre-existing issues explicitly
 — but never dismiss as pre-existing a defect in behavior the diff claims to
-fix (intent read from commit subjects, patch notes, and changed-code
+fix (intent read from the commit messages, patch notes, and changed-code
 comments): the completeness of a claimed fix is part of the review surface,
 so an incomplete claimed fix is introduced by the diff.
 Use needs_native_evidence only when code inspection cannot settle a native-only

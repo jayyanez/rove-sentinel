@@ -104,7 +104,9 @@ export function parseExternalContainers(reviews, issueComments, { reviewers = EX
   return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-const SAW_RANK = { blocker: 4, deferred: 3, advisory: 2, dismissed: 1, nothing: 0 };
+// `below-floor` (1.13.0): a reviewer proposed it under the confidence floor,
+// so it never reached adjudication — seen and held back, not never seen.
+const SAW_RANK = { blocker: 5, deferred: 4, advisory: 3, dismissed: 2, 'below-floor': 1, nothing: 0 };
 
 function sawOf(finding) {
   if (finding.disposition === 'dismissed') return 'dismissed';
@@ -123,7 +125,15 @@ export function gateVerdictFor(report, entry) {
   const file = String(entry.file || '');
   const matches = (report?.findings || [])
     .filter((finding) => String(finding.file || '').replace(/\\/g, '/') === file)
-    .map((finding) => ({ title: String(finding.title || ''), priority: finding.priority, saw: sawOf(finding), line: finding.line ?? null }));
+    .map((finding) => ({ title: String(finding.title || ''), priority: finding.priority, saw: sawOf(finding), line: finding.line ?? null }))
+    .concat((report?.lowConfidenceCandidates?.candidates || [])
+      .filter((candidate) => String(candidate.file || '').replace(/\\/g, '/') === file)
+      .map((candidate) => ({
+        title: `${String(candidate.title || '')} [confidence ${candidate.confidence}]`,
+        priority: candidate.priority,
+        saw: 'below-floor',
+        line: candidate.line ?? null,
+      })));
   const saw = matches.reduce((best, match) => (SAW_RANK[match.saw] > SAW_RANK[best] ? match.saw : best), 'nothing');
   return { saw, matches };
 }

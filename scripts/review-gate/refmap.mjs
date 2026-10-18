@@ -475,6 +475,26 @@ export function codeFileBlobs(patch, { maxBlobs = REF_MAP_MAX_SOURCE_BLOBS } = {
   return blobs.slice(0, maxBlobs);
 }
 
+/**
+ * Run `worker` over `items` with at most `concurrency` in flight, results in
+ * input order (1.13.0). The map's Git sweeps used to run one process at a
+ * time: ~80 ms of process start each on Windows, 12-15 seconds per review
+ * spent before any reviewer could start.
+ */
+export async function mapBounded(items, worker, concurrency = LIMITS.refMapGitConcurrency) {
+  const results = new Array(items.length);
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await worker(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, lane));
+  return results;
+}
+
 function sweepFailureReason(message) {
   const text = String(message || 'unknown failure').replace(/\s+/g, ' ').trim();
   return text.length > 200 ? `${text.slice(0, 199)}…` : text;
@@ -540,35 +560,48 @@ export async function coChangedSiblings(checkout, headSha, files, {
   // would double-count every sibling it carries.
   const countedCommits = new Set();
   let sweepFailures = 0;
-  for (const file of files.slice(0, maxFiles)) {
-    let output;
+  const scanned = files.slice(0, maxFiles);
+  // Two passes because git rejects --follow together with --full-diff:
+  // first the commits touching the file ACROSS RENAMES, then each commit's
+  // full file list (a plain `log -- file` would filter the listing down to
+  // the file itself, hiding co-changes). Exit codes are checked: a failed
+  // sweep is MISSING evidence, never rendered as a genuine absence of
+  // siblings. Both passes run in parallel (1.13.0); which commits each file
+  // contributes is decided in file order in between. A commit belongs to the
+  // first file that lists it, even when that file's listing then fails (the
+  // failure is counted and reported).
+  const logs = await mapBounded(scanned, async (file) => {
     try {
-      // Two passes because git rejects --follow together with --full-diff:
-      // first the commits touching the file ACROSS RENAMES, then each
-      // commit's full file list (a plain `log -- file` would filter the
-      // listing down to the file itself, hiding co-changes). Exit codes are
-      // checked: a failed sweep is MISSING evidence, never rendered as a
-      // genuine absence of siblings.
       const logResult = await runGit(checkout, [
         'log', '--follow', '--format=%H', '-n', String(commitsPerFile), headSha, '--', file,
       ], { allowFailure: true, result: true, latchCleanupFailure: false });
-      if (logResult.code !== 0) {
-        sweepFailures += 1;
-        continue;
-      }
-      const commits = logResult.stdout.split(/\r?\n/).filter(Boolean)
-        .filter((sha) => !countedCommits.has(sha));
-      if (!commits.length) continue;
+      return logResult.code === 0 ? logResult.stdout.split(/\r?\n/).filter(Boolean) : null;
+    } catch {
+      return null;
+    }
+  });
+  const assigned = logs.map((commits) => {
+    if (commits === null) {
+      sweepFailures += 1;
+      return [];
+    }
+    const fresh = commits.filter((sha) => !countedCommits.has(sha));
+    for (const sha of fresh) countedCommits.add(sha);
+    return fresh;
+  });
+  const listings = await mapBounded(assigned, async (commits) => {
+    if (!commits.length) return '';
+    try {
       const showResult = await runGit(checkout, [
         'show', '--name-only', '--format=%x00', ...commits,
       ], { allowFailure: true, result: true, latchCleanupFailure: false });
-      if (showResult.code !== 0) {
-        sweepFailures += 1;
-        continue;
-      }
-      for (const sha of commits) countedCommits.add(sha);
-      output = showResult.stdout;
+      return showResult.code === 0 ? showResult.stdout : null;
     } catch {
+      return null;
+    }
+  });
+  for (const output of listings) {
+    if (output === null) {
       sweepFailures += 1;
       continue;
     }
@@ -606,47 +639,109 @@ export async function readChangedSources(checkout, patch, run = runGit, {
   maxTotalBytes = REF_MAP_MAX_SOURCE_BYTES,
 } = {}) {
   const sources = new Map();
+  const blobs = codeFileBlobs(patch);
+  if (!blobs.length) return sources;
+  const quiet = { allowFailure: true, result: true, latchCleanupFailure: false };
+  // Two Git processes for every blob (1.13.0), not one per blob: sizes first,
+  // then the contents of the blobs that fit. Each blob may use only what the
+  // total still allows, in patch order, so the aggregate bound holds in
+  // bytes, exactly as when every blob was read on its own.
+  let sizes;
+  try {
+    const check = await run(checkout, ['cat-file', '--batch-check'], {
+      ...quiet, input: `${blobs.join('\n')}\n`, maxOutputBytes: blobs.length * 128,
+    });
+    if (check.code !== 0 || typeof check.stdout !== 'string') return sources;
+    const lines = check.stdout.split(/\r?\n/).filter(Boolean);
+    if (lines.length !== blobs.length) return sources;
+    sizes = lines.map((line) => {
+      const match = /^([0-9a-f]+) blob (\d+)$/.exec(line.trim());
+      return match ? { oid: match[1], size: Number(match[2]) } : null;
+    });
+  } catch {
+    return sources;
+  }
+  const selected = [];
   let total = 0;
-  for (const blob of codeFileBlobs(patch)) {
-    // Each read may use only what the total still allows, so the aggregate
-    // bound holds in bytes, not just in the number of reads started.
+  for (const [index, blob] of blobs.entries()) {
     const allowance = Math.min(maxBlobBytes, maxTotalBytes - total);
     if (allowance <= 0) break;
-    try {
-      const result = await run(checkout, ['cat-file', '-p', blob], {
-        allowFailure: true,
-        result: true,
-        maxOutputBytes: allowance,
-        latchCleanupFailure: false,
-      });
-      if (result.code === 0 && typeof result.stdout === 'string') {
-        sources.set(blob, result.stdout);
-        total += Buffer.byteLength(result.stdout, 'utf8');
-      }
-    } catch {
-      // Unreadable or over its allowance: that file uses the hunk lexer.
+    const entry = sizes[index];
+    // Unreadable, not a blob, or over its allowance: that file uses the hunk lexer.
+    if (!entry || entry.size > allowance) continue;
+    selected.push({ blob, ...entry });
+    total += entry.size;
+  }
+  if (!selected.length) return sources;
+  try {
+    const result = await run(checkout, ['cat-file', '--batch'], {
+      ...quiet,
+      binary: true,
+      input: `${selected.map((entry) => entry.oid).join('\n')}\n`,
+      maxOutputBytes: total + selected.length * 128,
+    });
+    if (result.code !== 0 || !Buffer.isBuffer(result.stdout)) return sources;
+    const output = result.stdout;
+    let offset = 0;
+    for (const entry of selected) {
+      const newline = output.indexOf(0x0a, offset);
+      if (newline < 0) break;
+      const header = /^([0-9a-f]+) blob (\d+)$/.exec(output.toString('utf8', offset, newline));
+      if (!header || header[1] !== entry.oid || Number(header[2]) !== entry.size) break;
+      const start = newline + 1;
+      sources.set(entry.blob, output.toString('utf8', start, start + entry.size));
+      offset = start + entry.size + 1;
     }
+  } catch {
+    // Every file uses the hunk lexer.
   }
   return sources;
 }
 
+/**
+ * One symbol's sweep reduced to what the map renders: its hit count, how many
+ * hits lie outside the diff, and the first lines it may list. A sweep of a
+ * common symbol can return megabytes; only this much of it is kept while the
+ * other sweeps run.
+ */
+async function sweepSymbol(checkout, headSha, symbol, changed, run) {
+  const { lines, failed, reason } = await referencesForSymbol(checkout, headSha, symbol, run);
+  if (failed) return { failed, reason };
+  const crossFile = lines.filter((line) => {
+    const file = line.split(':')[0];
+    return file && !changed.has(file);
+  });
+  return {
+    failed: false,
+    count: lines.length,
+    crossFileCount: crossFile.length,
+    candidates: (crossFile.length ? crossFile : lines).slice(0, LIMITS.refMapMaxRefsPerSymbol),
+  };
+}
+
 export async function buildReferenceMap({ checkout, headSha, patch, files, run = runGit }) {
+  const changed = new Set(files);
+  // The co-change sweep needs nothing from the symbol sweep: both run at once.
+  const coChange = coChangedSiblings(checkout, headSha, files);
   const sources = await readChangedSources(checkout, patch, run);
   const { symbols, omitted, unverified } = extractChangedSymbols(patch, { sources });
   const unverifiedSymbols = new Set(unverified);
-  const changed = new Set(files);
+  // Every extracted symbol is swept in parallel (1.13.0); the reference-line
+  // budget is then applied in symbol order, exactly as when they were swept
+  // one at a time, so the map does not depend on which sweep finished first.
+  const sweeps = await mapBounded(symbols, (symbol) => sweepSymbol(checkout, headSha, symbol, changed, run));
   const sections = [];
   const unswept = [];
   const failedSweeps = [];
   let usedReferenceLines = 0;
-  for (const symbol of symbols) {
+  for (const [symbolIndex, symbol] of symbols.entries()) {
     if (usedReferenceLines >= LIMITS.refMapMaxReferenceLines) {
       // Truncation must be explicit: an evidence file that simply stops
       // reads as complete coverage.
       unswept.push(symbol);
       continue;
     }
-    const { lines, failed, reason } = await referencesForSymbol(checkout, headSha, symbol, run);
+    const { failed, reason, count, crossFileCount, candidates } = sweeps[symbolIndex];
     if (failed) {
       // A failed sweep is missing evidence, not absent references — it must
       // be reported, or the map reads as complete.
@@ -656,19 +751,15 @@ export async function buildReferenceMap({ checkout, headSha, patch, files, run =
     const caveat = unverifiedSymbols.has(symbol)
       ? '\n\nUNVERIFIED symbol: read without its file\'s full text (past the source-read bounds or unreadable), so it may be comment or string prose rather than a declaration.'
       : '';
-    if (lines.length > LIMITS.refMapMaxHitsPerSymbol) {
-      sections.push(`### \`${symbol}\`\n\n${lines.length} references — too common to enumerate; treat every consumer as unverified.${caveat}`);
+    if (count > LIMITS.refMapMaxHitsPerSymbol) {
+      sections.push(`### \`${symbol}\`\n\n${count} references — too common to enumerate; treat every consumer as unverified.${caveat}`);
       continue;
     }
-    const crossFile = lines.filter((line) => {
-      const file = line.split(':')[0];
-      return file && !changed.has(file);
-    });
     const budget = Math.max(0, LIMITS.refMapMaxReferenceLines - usedReferenceLines);
-    const listed = (crossFile.length ? crossFile : lines).slice(0, Math.min(budget, LIMITS.refMapMaxRefsPerSymbol));
+    const listed = candidates.slice(0, Math.min(budget, LIMITS.refMapMaxRefsPerSymbol));
     usedReferenceLines += listed.length;
     sections.push([
-      `### \`${symbol}\` — ${lines.length} reference(s), ${crossFile.length} outside the diff${caveat}`,
+      `### \`${symbol}\` — ${count} reference(s), ${crossFileCount} outside the diff${caveat}`,
       '',
       ...(listed.length ? listed.map((line) => `- ${line}`) : ['- (no references found)']),
     ].join('\n'));
@@ -686,7 +777,7 @@ export async function buildReferenceMap({ checkout, headSha, patch, files, run =
     }
     sections.push(`### TRUNCATED\n\nThis map is NOT complete: ${parts.join('; ')}. Search those symbols manually before treating their consumers as verified.`);
   }
-  const { siblings, sweepFailures } = await coChangedSiblings(checkout, headSha, files);
+  const { siblings, sweepFailures } = await coChange;
   return `# Reference map (deterministic, generated at review time)
 
 Symbols declared or removed by this diff, with every repository reference at

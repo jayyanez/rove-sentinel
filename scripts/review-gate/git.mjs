@@ -24,6 +24,7 @@ export async function runGit(repoRoot, args, options = {}) {
     timeoutMs: 120_000,
     maxOutputBytes: options.maxOutputBytes ?? LIMITS.maxPatchBytes + 64 * 1024,
     allowFailure: options.allowFailure,
+    input: options.input,
     allowDuringShutdown: options.allowDuringShutdown,
     outputLimitMessage: options.outputLimitMessage,
     binary: options.binary,
