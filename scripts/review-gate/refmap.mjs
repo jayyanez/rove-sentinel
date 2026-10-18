@@ -47,8 +47,9 @@ const DECLARATION_PATTERNS = [
   /\bfn\s+([a-z_]\w{2,})/g,
   /\b(?:struct|enum|trait)\s+([A-Z]\w{2,})/g,
   // Go functions and methods; Swift functions (with generic parameters).
-  // Generic parameters: Swift's <T>, Go's [T any].
-  /\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w{2,})\s*(?:<[^>]*>|\[[^\]]*\])?\s*\(/g,
+  // Generic parameters: Swift's <T>, Go's [T any], whose constraints may
+  // hold one level of brackets ([S ~[]E, E any], [M ~map[K]V, K comparable]).
+  /\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w{2,})\s*(?:<[^>]*>|\[(?:[^[\]]|\[[^[\]]*\])*\])?\s*\(/g,
   // Python, Ruby and Scala definitions; Kotlin functions (1.13.0).
   /\bdef\s+(?:self\.)?([A-Za-z_]\w{2,})/g,
   /\bfun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?([A-Za-z_]\w{2,})\s*\(/g,

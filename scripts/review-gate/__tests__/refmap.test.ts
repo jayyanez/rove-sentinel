@@ -943,4 +943,14 @@ describe('reference map: Go generic functions (CodeRabbit on 1.13.0)', () => {
     const patch = ['--- a/pkg/x.go', '+++ b/pkg/x.go', '+func MapSlice[T any, U any](items []T, fn func(T) U) []U {', '+func (r *Repo) FindAll[T Model](query string) []T {'].join('\n');
     expect(extractChangedSymbols(patch).symbols).toEqual(['MapSlice', 'FindAll']);
   });
+
+  it('extracts a function whose constraints hold slice and map types', () => {
+    const patch = [
+      '--- a/pkg/y.go', '+++ b/pkg/y.go',
+      '+func Clone[S ~[]E, E any](s S) S {',
+      '+func Keys[M ~map[K]V, K comparable, V any](m M) []K {',
+      '+func Rows[T ~[][]byte](t T) int {',
+    ].join('\n');
+    expect(extractChangedSymbols(patch).symbols).toEqual(['Clone', 'Keys', 'Rows']);
+  });
 });
