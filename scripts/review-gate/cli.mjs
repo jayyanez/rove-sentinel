@@ -165,20 +165,23 @@ async function main() {
         : formatToolsNotice(missing) || 'Every linter tool Sentinel uses is installed on this machine.', Boolean(options.json));
       return;
     }
+    // Every outcome is printed as JSON under --json, like the install result.
+    const outcome = (text, value) => print(options.json ? value : text, Boolean(options.json));
     if (!missing.length) {
-      print('Every linter tool Sentinel uses is installed on this machine.');
+      outcome('Every linter tool Sentinel uses is installed on this machine.', { installed: [], failed: [], missing: [], note: 'every linter tool is already installed' });
       return;
     }
     const plan = installPlan(missing);
     if (!plan.manager) {
-      print(formatToolsNotice(missing));
+      outcome(formatToolsNotice(missing), { installed: [], failed: [], missing, note: 'no supported package manager on this platform; install them by hand', instructions: plan.instructions });
       process.exitCode = 1;
       return;
     }
     if (!options.yes) {
       const consent = isatty(0) ? await ask(`Install ${missing.join(', ')} with ${plan.manager}? [y/N] `) : '';
       if (!/^y(?:es)?$/i.test(consent.trim())) {
-        print(isatty(0) ? 'Nothing was installed.' : `Nothing was installed: rerun with --yes to install ${missing.join(', ')} with ${plan.manager}.`);
+        const note = isatty(0) ? 'Nothing was installed.' : `Nothing was installed: rerun with --yes to install ${missing.join(', ')} with ${plan.manager}.`;
+        outcome(note, { installed: [], failed: [], missing, note: isatty(0) ? 'declined' : 'consent required: rerun with --yes' });
         process.exitCode = 1;
         return;
       }

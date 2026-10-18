@@ -57,8 +57,9 @@ configurable in this release; other project checkers can run as
 ## Linter lanes
 
 Sentinel runs shellcheck, actionlint, gitleaks and ruff on the changed files
-whenever they are installed on the host. The first review on a machine that
-lacks some of them says which, and `doctor` and `tools` always do. Sentinel
+whenever they are installed on the host. The first `gate` you run on a
+machine that lacks some of them says which (the hook and the watcher do not),
+and `doctor` and `tools` always do. Sentinel
 installs them when you ask (winget on Windows, Homebrew on macOS; elsewhere it
 links each tool's instructions):
 
