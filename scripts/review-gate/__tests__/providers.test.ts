@@ -627,3 +627,17 @@ describe('review material in the prompt (1.13.0)', () => {
     }
   });
 });
+
+describe('prior blockers carry their location (1.13.0)', () => {
+  it('names the reported line and, in the bundle file, what fails', async () => {
+    const { describePriorBlocker, shardPrompt: build } = await import('../providers.mjs');
+    const finding = { priority: 'P2', file: 'src/a.ts', title: 'Stale cache', line: 42, scenario: 'Logout\nleaves it warm.' };
+    expect(describePriorBlocker(finding)).toBe('- P2 src/a.ts:42 — Stale cache');
+    // The scenario is model-written: its newline is escaped, never a new line.
+    expect(describePriorBlocker(finding, { scenario: true })).toBe(String.raw`- P2 src/a.ts:42 — Stale cache` + '\n' + String.raw`  Scenario: Logout\nleaves it warm.`);
+    expect(describePriorBlocker({ ...finding, line: null })).toBe('- P2 src/a.ts — Stale cache');
+    const shard = { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: '', reverifyBlockers: [finding] };
+    const prompt = build({ provider: 'claude', contextPath: 'ctx.md', shard, shardPath: 's.diff', round: 'follow-up', priorBlocking: [finding] });
+    expect(prompt).toContain('- P2 src/a.ts:42 — Stale cache');
+  });
+});

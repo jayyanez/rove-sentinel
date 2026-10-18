@@ -480,8 +480,9 @@ export function reviewerPrompt({
   const reverify = round === 'follow-up' && priorBlocking.length
     ? `\n\nThis is a follow-up round with no shard of its own. The previously reviewed
 head blocked on the findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}
-(${priorBlocking.length} in total). Read each one's code at head (its file around the
-reported location, by line range when the file is large) and verify whether
+(${priorBlocking.length} in total), each with the line it was reported at (a repair may
+have moved it) and what fails. Read each one's code at head (its file around
+that location, by line range when the file is large) and verify whether
 the branch still has it: ${PRIOR_BLOCKER_RULE}`
     : '';
   return `${inline ? inlinePreamble(inline) : ''}You are an independent ${provider} reviewer in Rove Sentinel.
@@ -505,6 +506,18 @@ range, and reserve the final response for structured output. If you are about
 to hit a budget or turn limit, emit the JSON now rather than continuing to
 search. Prioritize the assigned lens when the patch is large. Return at most
 ${maxCandidates} concise candidates and the required JSON only.`;
+}
+
+/**
+ * One prior blocker as a follow-up reviewer is told of it (1.13.0): its
+ * priority, file, the line it was reported at when known (a repair may have
+ * moved it), its title and, in the bundle file, what fails. All of it is
+ * model-written text, escaped for the prompt.
+ */
+export function describePriorBlocker(finding, { scenario = false } = {}) {
+  const line = Number.isInteger(finding.line) && finding.line >= 1 ? `:${finding.line}` : '';
+  const story = scenario && finding.scenario ? `\n  Scenario: ${promptSafe(String(finding.scenario).slice(0, 600))}` : '';
+  return `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)}${line} — ${promptSafe(finding.title)}${story}`;
 }
 
 export function shardLens(kind) {
@@ -594,11 +607,11 @@ export function shardPrompt({
     ? `\n\nThis is a follow-up round: your shard holds either hunks of the incremental
 diff since the previously reviewed head, or the full-branch hunks of a file
 that head blocked on (a re-verification shard). That head blocked on the
-findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}${inShard.length ? `; the ones in your shard are:\n${inShard.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}` : '.'}
+findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}${inShard.length ? `; the ones in your shard are:\n${inShard.map((finding) => describePriorBlocker(finding)).join('\n')}` : '.'}
 ${inShardOverflow > 0 ? `- …and ${inShardOverflow} more in your shard, listed in ${priorBlockingPath || 'prior-blocking.md'}\n` : ''}For each one whose file is in your shard, verify whether the branch as it
 stands now still has it: ${PRIOR_BLOCKER_RULE}${unassigned.length ? `\nThese blockers live in files no shard holds (the branch never changed
 them) and are assigned to YOU; read each one's code at head (by line range
-when the file is large) and re-verify it the same way:\n${unassigned.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
+when the file is large) and re-verify it the same way:\n${unassigned.map((finding) => describePriorBlocker(finding)).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
     : '';
   // A shard handed over one part per reviewer (1.12.0): this reviewer owns
   // one part, and the other parts have reviewers of their own.

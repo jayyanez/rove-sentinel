@@ -336,7 +336,7 @@ describe('shared review local state', () => {
     // A forced rerun of the same SHA replaces its record instead of counting twice.
     await recordLineageReview(paths, lineage, {
       headSha: first, reportId: 'report-1-forced', status: 'fail',
-      blockingFindings: [{ key: 'k1', title: 'Defect', file: 'src/a.ts', priority: 'P2' }],
+      blockingFindings: [{ key: 'k1', title: 'Defect', file: 'src/a.ts', priority: 'P2', line: 42, scenario: 'Logout leaves the cache warm.' }],
     });
     await recordLineageReview(paths, lineage, { headSha: second, reportId: 'report-2', status: 'pass', lateDiscoveries: 1 });
 
@@ -345,7 +345,8 @@ describe('shared review local state', () => {
       [first, 'fail', 'report-1-forced'],
       [second, 'pass', 'report-2'],
     ]);
-    expect(reviews[0].blockingFindings).toEqual([{ key: 'k1', title: 'Defect', file: 'src/a.ts', priority: 'P2' }]);
+    // Where it was reported and what fails travel with it (1.13.0).
+    expect(reviews[0].blockingFindings).toEqual([{ key: 'k1', title: 'Defect', file: 'src/a.ts', priority: 'P2', line: 42, scenario: 'Logout leaves the cache warm.' }]);
     expect(reviews[1].lateDiscoveries).toBe(1);
     await expect(readLineagePassHeads(paths, lineage)).resolves.toEqual([second]);
     await expect(readLineageReviews(paths, { ...lineage, branch: 'codex/other' })).resolves.toEqual([]);

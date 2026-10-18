@@ -29,6 +29,7 @@ import { buildReferenceMap } from './refmap.mjs';
 import { runDeterministicLanes } from './lint.mjs';
 import {
   canonicalChangedPath,
+  describePriorBlocker,
   isIncompleteReview,
   normalizeReviewerResult,
   promptSafe,
@@ -1380,12 +1381,12 @@ async function runGateWithLease({
         '# Prior blocking findings to re-verify',
         '',
         // Model-produced text, escaped exactly like the inline prompt list.
-        ...priorBlockingList.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`),
+        ...priorBlockingList.map((finding) => describePriorBlocker(finding, { scenario: true })),
         ...shards.flatMap((shard) => (shard.unassignedBlockers?.length ? [
           '',
           `## owned by shard ${shard.index + 1} (files no shard holds)`,
           '',
-          ...shard.unassignedBlockers.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`),
+          ...shard.unassignedBlockers.map((finding) => describePriorBlocker(finding, { scenario: true })),
         ] : [])),
         '',
       ].join('\n'))
@@ -1912,6 +1913,8 @@ async function runGateWithLease({
           title: finding.title,
           file: finding.file,
           priority: finding.priority,
+          line: finding.line ?? null,
+          scenario: finding.scenario ?? '',
         })),
       ],
       lateDiscoveries: resultConvergence.lateDiscoveriesUsed,
