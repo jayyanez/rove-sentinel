@@ -584,17 +584,70 @@ describe('reference map: whole-file lexing knows where a hunk starts (#474 revie
       `--- a/src/${name}.ts`,
       `+++ b/src/${name}.ts`,
     ].join('\n')).join('\n');
-    const allowances: number[] = [];
-    const run = async (_checkout: string, _args: string[], options: { maxOutputBytes: number }) => {
-      allowances.push(options.maxOutputBytes);
-      // Multibyte text: 4 characters, 10 UTF-8 bytes.
-      return { code: 0, stdout: 'éé€€', stderr: '' };
+    // Every blob is reported as 10 bytes: multibyte text of 4 characters.
+    const calls: Array<{ args: string[]; input: string; binary?: boolean }> = [];
+    const run = async (_checkout: string, args: string[], options: { input: string; binary?: boolean }) => {
+      calls.push({ args, input: options.input, binary: options.binary });
+      const oids = options.input.trim().split('\n');
+      if (args[1] === '--batch-check') {
+        return { code: 0, stdout: oids.map((oid) => `${oid}abc blob 10`).join('\n'), stderr: '' };
+      }
+      return {
+        code: 0,
+        stdout: Buffer.concat(oids.map((oid) => Buffer.from(`${oid} blob 10\néé€€\n`))),
+        stderr: '',
+      };
+    };
+    const sources = await readChangedSources(os.tmpdir(), patch, run, { maxBlobBytes: 12, maxTotalBytes: 25 });
+    // Two processes however many blobs (1.13.0), sizes first.
+    expect(calls.map((call) => call.args[1])).toEqual(['--batch-check', '--batch']);
+    expect(calls[1].binary).toBe(true);
+    // Bytes, not characters: 10 + 10 leaves 5, so the third and every later
+    // blob is not read; only the selected blobs' contents are requested.
+    expect(calls[1].input.trim().split('\n')).toHaveLength(2);
+    expect([...sources.keys()]).toEqual(['1111111', '4444444']);
+    expect(sources.get('1111111')).toBe('éé€€');
+  });
+
+  it('skips a blob over its own bound and still reads the later ones that fit', async () => {
+    const patch = ['a', 'b'].map((name, index) => [
+      `diff --git a/src/${name}.ts b/src/${name}.ts`,
+      `index ${String(index + 1).repeat(7)}..0000000 100644`,
+      `--- a/src/${name}.ts`,
+      `+++ b/src/${name}.ts`,
+    ].join('\n')).join('\n');
+    const sizes = new Map([['1111111', 9], ['2222222', 3]]);
+    const run = async (_checkout: string, args: string[], options: { input: string }) => {
+      const oids = options.input.trim().split('\n');
+      if (args[1] === '--batch-check') return { code: 0, stdout: oids.map((oid) => `${oid} blob ${sizes.get(oid)}`).join('\n'), stderr: '' };
+      return { code: 0, stdout: Buffer.concat(oids.map((oid) => Buffer.from(`${oid} blob 3\nabc\n`))), stderr: '' };
     };
     const sources = await readChangedSources(os.tmpdir(), patch, run, { maxBlobBytes: 8, maxTotalBytes: 25 });
-    // Bytes, not characters: 10 + 10 leaves 5 for the third read, and the
-    // fourth is never started.
-    expect(allowances).toEqual([8, 8, 5]);
-    expect(sources.size).toBe(3);
+    expect([...sources.entries()]).toEqual([['2222222', 'abc']]);
+  });
+
+  it('reads every changed blob of a real repository in one batch', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-refmap-batch-'));
+    temporaryDirectories.push(root);
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'config', 'core.autocrlf', 'false');
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'a.ts'), 'export const a = "é";\n');
+    await writeFile(path.join(root, 'src', 'b.ts'), 'export const b = 1;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const baseSha = git(root, 'rev-parse', 'HEAD');
+    await writeFile(path.join(root, 'src', 'a.ts'), 'export const a = "é€";\nexport function added() {}\n');
+    await writeFile(path.join(root, 'src', 'b.ts'), 'export const b = 2;\n');
+    git(root, 'commit', '-am', 'change');
+    const headSha = git(root, 'rev-parse', 'HEAD');
+    const patch = git(root, 'diff', `${baseSha}...${headSha}`);
+    const sources = await readChangedSources(root, patch);
+    expect(sources.size).toBe(4);
+    expect([...sources.values()]).toContain('export const a = "é€";\nexport function added() {}\n');
+    expect([...sources.values()]).toContain('export const b = 1;\n');
   });
 
   it('builds the map from a real repository: prose deep inside a comment is not a symbol', async () => {
@@ -621,5 +674,283 @@ describe('reference map: whole-file lexing knows where a hunk starts (#474 revie
     const map = await buildReferenceMap({ checkout: root, headSha, patch, files: ['src/note.ts'] });
     expect(map).toContain('`addedForReal`');
     expect(map).not.toContain('`Customers`');
+  });
+});
+
+describe('reference map: parallel sweeps render as if run in order (1.13.0)', () => {
+  it('applies the reference-line budget in symbol order whichever sweep finishes first', async () => {
+    const names = Array.from({ length: 30 }, (_, index) => `sweptName${String(index).padStart(2, '0')}`);
+    const patch = ['--- a/src/x.ts', '+++ b/src/x.ts', ...names.map((name) => `+export function ${name}() {}`)].join('\n');
+    let inFlight = 0;
+    let peak = 0;
+    const run = async (_checkout: string, args: string[]) => {
+      if (args[0] !== 'grep') return { code: 1, stdout: '', stderr: '' };
+      const symbol = args[args.indexOf('-e') + 1];
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      // Later symbols finish first.
+      await new Promise((resolve) => setTimeout(resolve, 2 * (30 - names.indexOf(symbol))));
+      inFlight -= 1;
+      const lines = Array.from({ length: 12 }, (_, index) => `${'a'.repeat(40)}:src/use-${index}.ts:${index + 1}:${symbol}()`);
+      return { code: 0, stdout: lines.join('\n'), stderr: '' };
+    };
+    const map = await buildReferenceMap({ checkout: os.tmpdir(), headSha: 'a'.repeat(40), patch, files: ['src/x.ts'], run });
+    // 240 reference lines at 12 a symbol: the first 20 are listed, in order.
+    const listed = [...map.matchAll(/^### `(sweptName\d+)` — 12 reference\(s\), 12 outside the diff$/gm)].map((match) => match[1]);
+    expect(listed).toEqual(names.slice(0, 20));
+    expect(map).toContain(`truncated the sweep before these extracted symbols: ${names.slice(20).map((name) => `\`${name}\``).join(', ')}`);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+});
+
+describe('reference map: declarations beyond JavaScript, Rust and Go (1.13.0)', () => {
+  const sorted = (values: string[]) => [...values].sort();
+  const added = (file: string, ...lines: string[]) => [
+    `diff --git a/${file} b/${file}`,
+    'new file mode 100644',
+    'index 0000000..abcdef1',
+    '--- /dev/null',
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
+
+  it('reads Python definitions and ignores hash comments and docstrings', () => {
+    const lines = [
+      'class InvoiceStore:',
+      '    """Docstring that mentions class Ghost and def phantom(x)."""',
+      '    def load_invoice(self, invoice_id):',
+      "        # def commented_out(): and class Hidden",
+      "        return f'def notreal({invoice_id})'",
+      '    async def refresh_cache(self):',
+      "        text = '''",
+      '        class InsideTripleQuotes',
+      "        '''",
+      '        pass',
+      'def __init__(self): pass',
+    ];
+    const patch = added('app/invoices.py', ...lines);
+    const sources = new Map([['abcdef1', lines.join('\n')]]);
+    expect(sorted(extractChangedSymbols(patch, { sources }).symbols)).toEqual(sorted(['InvoiceStore', 'load_invoice', 'refresh_cache']));
+  });
+
+  it('reads Java, C# and Kotlin methods and types', () => {
+    const java = added('src/main/java/Billing.java',
+      'public final class BillingService {',
+      '  // public void commentedOut() {}',
+      '  private static Map<String, List<Integer>> totalsByAccount(String id) {',
+      '    char quote = \'"\';',
+      '    return null;',
+      '  }',
+      '  public record LineItem(String sku) {}',
+      '}');
+    expect(sorted(extractChangedSymbols(java).symbols)).toEqual(sorted(['BillingService', 'totalsByAccount', 'LineItem']));
+    const csharp = added('src/Billing.cs',
+      'public sealed class Ledger {',
+      '  public async Task<int> PostEntryAsync(Entry entry) { return 0; }',
+      '  internal override string Summarize() => "class Fake";',
+      '}');
+    expect(sorted(extractChangedSymbols(csharp).symbols)).toEqual(sorted(['Ledger', 'PostEntryAsync', 'Summarize']));
+    const kotlin = added('app/src/Session.kt',
+      'class SessionManager {',
+      '  fun startSession(user: User): Session = TODO()',
+      '  suspend fun <T> withRetry(block: () -> T): T = block()',
+      '  val doc = """ fun notReal() """',
+      '}');
+    expect(sorted(extractChangedSymbols(kotlin).symbols)).toEqual(sorted(['SessionManager', 'startSession', 'withRetry']));
+  });
+
+  it('lists the blobs of the newly supported languages for whole-file lexing', () => {
+    const patch = ['app/a.py', 'src/B.java', 'src/C.cs', 'src/d.kt', 'src/e.rb', 'src/f.php', 'src/g.swift', 'src/h.cpp'].map((file, index) => [
+      `diff --git a/${file} b/${file}`,
+      `index ${String(index + 1).repeat(7)}..${String(index + 1).repeat(6)}a 100644`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+    ].join('\n')).join('\n');
+    expect(codeFileBlobs(patch)).toHaveLength(16);
+  });
+});
+
+describe('reference map: C-family signatures and escaped triple quotes (1.13.0 self-review)', () => {
+  const sorted = (values: string[]) => [...values].sort();
+  const changed = (file: string, ...lines: string[]) => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -1,${lines.filter((line) => !line.startsWith('+')).length} +1,${lines.filter((line) => !line.startsWith('-')).length} @@`,
+    ...lines,
+  ].join('\n');
+
+  it('extracts return-typed C and C++ functions, prototypes and removed definitions', () => {
+    const c = changed('src/money.c',
+      '-int calculate_total(int count)',
+      '+long calculate_total(long count, int scale) {',
+      '+static double apply_discount(double value);',
+      '+struct invoice *load_invoice(const char *path,',
+      '+  int flags)',
+      '+  return compute_tax(value);',
+      '+  int result = round_cents(total);',
+      '+  else update_ledger(entry);',
+      '+  if (ready) notify_owner(entry);');
+    expect(sorted(extractChangedSymbols(c).symbols)).toEqual(sorted(['calculate_total', 'apply_discount', 'load_invoice']));
+    const cpp = changed('src/ledger.cpp',
+      '+Money Ledger::post(const Entry& entry) const {',
+      '+std::vector<Line> Ledger::linesFor(Account account) noexcept;',
+      '+  delete release_buffer(buffer);');
+    expect(sorted(extractChangedSymbols(cpp).symbols)).toEqual(sorted(['post', 'linesFor']));
+    // The same shape in JavaScript is a call.
+    expect(extractChangedSymbols(changed('src/a.ts', '+  await loadInvoice(path);', '+  yield fetchRows(query);')).symbols).toEqual([]);
+  });
+
+  it('does not end a Python docstring at an escaped quote', () => {
+    const lines = [
+      'def documented():',
+      '    """Mentions \\""" then class Phantom inside the docstring."""',
+      '    return 1',
+      'def load_invoice(invoice_id):',
+      '    pass',
+    ];
+    const patch = [
+      'diff --git a/app/a.py b/app/a.py',
+      'new file mode 100644',
+      'index 0000000..abcdef2',
+      '--- /dev/null',
+      '+++ b/app/a.py',
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join('\n');
+    const sources = new Map([['abcdef2', lines.join('\n')]]);
+    expect(sorted(extractChangedSymbols(patch, { sources }).symbols)).toEqual(sorted(['documented', 'load_invoice']));
+  });
+
+  it('keeps a long line of words linear for the C-family pattern', () => {
+    const long = `+${Array.from({ length: 3000 }, (_, index) => `word${index}`).join(' ')}`;
+    const started = Date.now();
+    extractChangedSymbols(changed('src/long.c', long));
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('reference map: C signatures with default arguments or a return type of their own line (1.13.0 follow-up)', () => {
+  const sorted = (values: string[]) => [...values].sort();
+  const changed = (file: string, ...lines: string[]) => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -1,${lines.filter((line) => !line.startsWith('+')).length} +1,${lines.filter((line) => !line.startsWith('-')).length} @@`,
+    ...lines,
+  ].join('\n');
+
+  it('extracts a definition whose parameters have default values', () => {
+    const cpp = changed('src/ledger.cpp',
+      '-int round_cents(double value, int places = 2) {',
+      '+long round_cents(double value, int places = 2, bool bankers = false) {',
+      '+  int total = sum_lines(lines);');
+    expect(extractChangedSymbols(cpp).symbols).toEqual(['round_cents']);
+  });
+
+  it('extracts GNU-style definitions whose return type has a line of its own', () => {
+    const c = changed('src/money.c',
+      '+static int',
+      '+calculate_total (int count)',
+      '+{',
+      '+  return count;',
+      '+}',
+      '-struct invoice *',
+      '-load_invoice (const char *path,',
+      '-              int flags)',
+      '+MODULE_LICENSE("GPL");',
+      '+  indented_call (value);');
+    expect(sorted(extractChangedSymbols(c).symbols)).toEqual(sorted(['calculate_total', 'load_invoice']));
+    // Java keeps one-line signatures only.
+    expect(extractChangedSymbols(changed('src/A.java', '+compute (value)')).symbols).toEqual([]);
+  });
+
+  it('says in the generated map that declarations come from line patterns', async () => {
+    const run = async () => ({ code: 1, stdout: '', stderr: '' });
+    const map = await buildReferenceMap({ checkout: os.tmpdir(), headSha: 'a'.repeat(40), patch: '', files: [], run });
+    expect(map).toContain('declarations are found by line patterns, not a parser');
+  });
+});
+
+describe('reference map: a split signature needs a return type on the line before (1.13.0 follow-up)', () => {
+  it('does not read a multi-line top-level macro invocation as a definition', () => {
+    const lines = [
+      '#include "money.h"',
+      '',
+      'MODULE_LICENSE(',
+      '    "GPL");',
+      'static int',
+      'calculate_total (int count)',
+      '{',
+      '  return count;',
+      '}',
+      'EXPORT_SYMBOL(',
+      '    calculate_total);',
+    ];
+    const patch = [
+      'diff --git a/src/money.c b/src/money.c',
+      'new file mode 100644',
+      'index 0000000..abcdef3',
+      '--- /dev/null',
+      '+++ b/src/money.c',
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join('\n');
+    const sources = new Map([['abcdef3', lines.join('\n')]]);
+    expect(extractChangedSymbols(patch, { sources }).symbols).toEqual(['calculate_total']);
+    // The hunk lexer, without the file, reaches the same answer.
+    expect(extractChangedSymbols(patch).symbols).toEqual(['calculate_total']);
+  });
+});
+
+describe('reference map: the return-type line before a split signature (1.13.0 follow-up)', () => {
+  const added = (...lines: string[]) => [
+    'diff --git a/src/money.cpp b/src/money.cpp',
+    '--- a/src/money.cpp',
+    '+++ b/src/money.cpp',
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
+
+  it('takes a one-letter type and refuses a statement keyword', () => {
+    expect(extractChangedSymbols(added('template <typename T>', 'T', 'pick_first (std::vector<T> items)', '{')).symbols).toEqual(['pick_first']);
+    for (const keyword of ['throw', 'co_return', 'co_await', 'new', 'delete', 'return', 'do', 'try', 'default']) {
+      expect(extractChangedSymbols(added(keyword, 'make_error (code)')).symbols).toEqual([]);
+    }
+  });
+});
+
+describe('reference map: an indented line is never a split signature\'s return type (1.13.0 follow-up)', () => {
+  it('ignores a call that follows an indented line', () => {
+    const patch = [
+      'diff --git a/src/money.c b/src/money.c',
+      '--- a/src/money.c',
+      '+++ b/src/money.c',
+      '@@ -0,0 +1,4 @@',
+      '+    counter',
+      '+pending_total (count)',
+      '+static long',
+      '+settle_total (long count)',
+    ].join('\n');
+    expect(extractChangedSymbols(patch).symbols).toEqual(['settle_total']);
+  });
+});
+
+describe('reference map: Go generic functions (CodeRabbit on 1.13.0)', () => {
+  it('extracts a function with square-bracket type parameters', () => {
+    const patch = ['--- a/pkg/x.go', '+++ b/pkg/x.go', '+func MapSlice[T any, U any](items []T, fn func(T) U) []U {', '+func (r *Repo) FindAll[T Model](query string) []T {'].join('\n');
+    expect(extractChangedSymbols(patch).symbols).toEqual(['MapSlice', 'FindAll']);
+  });
+
+  it('extracts a function whose constraints hold slice and map types', () => {
+    const patch = [
+      '--- a/pkg/y.go', '+++ b/pkg/y.go',
+      '+func Clone[S ~[]E, E any](s S) S {',
+      '+func Keys[M ~map[K]V, K comparable, V any](m M) []K {',
+      '+func Rows[T ~[][]byte](t T) int {',
+    ].join('\n');
+    expect(extractChangedSymbols(patch).symbols).toEqual(['Clone', 'Keys', 'Rows']);
   });
 });

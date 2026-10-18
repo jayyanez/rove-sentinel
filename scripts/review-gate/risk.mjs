@@ -1,6 +1,9 @@
 import { LIMITS } from './constants.mjs';
 
-const DOC_ONLY = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
+// Prose markup only (1.13.0). Plain `.txt` names build and dependency inputs
+// (CMakeLists.txt, requirements.txt) and MDX carries executable JSX, so
+// neither may mint the model-free documentation skip.
+const DOC_ONLY = /\.(?:md|markdown|rst|adoc)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i;
 
 const HIGH_RISK_PATHS = [
@@ -13,7 +16,12 @@ const HIGH_RISK_PATHS = [
   /^scripts\/review-gate\//,
   /^\.rove-sentinel\.json$/,
   /^templates\//,
-  /^(?!.*\.(?:md|mdx|markdown|rst|txt|adoc)$).*(?:permissions|capabilities)/i,
+  /^(?!.*\.(?:md|markdown|rst|adoc)$).*(?:permissions|capabilities)/i,
+  // Generic trust boundaries (1.13.0): CI definitions run with repository
+  // secrets and write tokens; database migrations change persisted data.
+  /^\.github\/workflows\//,
+  /(?:^|\/)\.gitlab-ci\.ya?ml$/i,
+  /(?:^|\/)migrations?\//i,
   /(?:package|pnpm-lock|vite\.config|svelte\.config|tauri\.conf)\.(?:json|yaml|yml|js|ts)$/i,
 ];
 

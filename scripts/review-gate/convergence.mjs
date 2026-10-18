@@ -134,11 +134,13 @@ export function carriedFinding(finding, index, { deferral: recorded = null } = {
     title: finding.title,
     priority: finding.priority,
     file: finding.file,
-    line: null,
+    // Where it was reported and what fails carry forward with it (1.13.0):
+    // the next follow-up reads the code around that location.
+    line: Number.isInteger(finding.line) && finding.line >= 1 ? finding.line : null,
     disposition: deferral ? 'advisory' : 'verified',
     enforcement: deferral ? 'advisory' : 'blocking',
     reason: 'Not re-verified this round (no reviewer had capacity to own it); carried forward from the previous reviewed head as still present.',
-    scenario: 'See the earlier report that verified it.',
+    scenario: finding.scenario ? String(finding.scenario) : 'See the earlier report that verified it.',
     proposed_test: 'Re-verify in a later round.',
     adjudicatedDisposition: 'carried',
     findingKey: key,

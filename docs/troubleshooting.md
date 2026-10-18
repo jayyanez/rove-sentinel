@@ -45,6 +45,15 @@ parts and KB, its largest file, and the reviewer's own account:
   Either way, open an issue with the engine version, the retained report and
   the reviewer's account.
 
+File size alone is not a reason to split code for Sentinel. From 1.12.0 a
+shard is written in parts of at most 24 KB and a line longer than a part is cut
+across parts; from 1.13.0 a shard of up to 96 KB, and the context with its
+required reads, travel in the prompt instead of being read, and a follow-up
+reviewer reads a prior blocker's file around the reported location instead of
+whole. Earlier engines failed closed on a changed file over about 40 KB, a
+changed line over about 2 KB, or a large prior-blocker file; a rule to split
+files below those sizes was a workaround for them.
+
 On Windows, per-repository records live under
 `%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>` for migration
 compatibility. `status` reports the actual paths. Reports and context may contain

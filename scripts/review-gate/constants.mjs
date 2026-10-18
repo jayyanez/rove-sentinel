@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.12.0';
+export const GATE_VERSION = '1.13.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -27,6 +27,12 @@ export const LIMITS = Object.freeze({
   maxProcessStderrBytes: 256 * 1024,
   maxCandidates: 50,
   maxReviewerCandidates: 12,
+  // Candidates below this confidence do not reach adjudication. They are no
+  // longer discarded without trace (1.13.0): up to `maxReportedLowConfidence`
+  // of them are kept in the report, so a defect an external reviewer later
+  // raises can be told apart as "seen and held back" or "never seen".
+  candidateConfidenceFloor: 50,
+  maxReportedLowConfidence: 40,
   // Hypothesis reviewers stay narrow: one primary claim plus up to three
   // same-class siblings observed in code they already read (v1.6.0).
   maxHypothesisCandidates: 4,
@@ -81,9 +87,19 @@ export const LIMITS = Object.freeze({
   // How much of a reviewer's own summary an incomplete-review error keeps.
   incompleteSummaryChars: 400,
   shardMaxCandidates: 8,
+  // Review material carried in the prompt (1.13.0): the context and its
+  // required reads when together they fit the first bound, and a shard
+  // (or an adjudication batch) when it fits the second. Larger material is
+  // read from files, in parts, as before.
+  inlineRequiredMaxBytes: 96 * 1024,
+  inlineShardMaxBytes: 96 * 1024,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.
   coordinatorBatchSize: 5,
+  // Adjudication starts while reviewers run (1.13.0): a full batch goes at
+  // once, and what remains when the last reviewer settles goes in batches of
+  // at most this many, so the wait after the last review is short.
+  coordinatorTailBatchSize: 3,
   // Deterministic lanes (v1.8.0): zero-model linters over changed lines. A
   // lane that times out degrades to an explicit note, never a failed review.
   markdownlintTimeoutMs: 2 * 60 * 1000,
@@ -111,6 +127,8 @@ export const LIMITS = Object.freeze({
   refMapMaxReferenceLines: 240,
   refMapMaxRefsPerSymbol: 12,
   refMapMaxHitsPerSymbol: 200,
+  // Git processes the map runs at once (1.13.0); its sweeps are read-only.
+  refMapGitConcurrency: 8,
   // Co-change sibling mining bounds (v1.6.0).
   coChangeScannedFiles: 20,
   coChangeCommitsPerFile: 30,
@@ -121,6 +139,10 @@ export const LIMITS = Object.freeze({
   openBriefsMaxIndexed: 40,
   openBriefsMaxInlined: 4,
   openBriefsMaxCharsEach: 6_000,
+  // The change's own commit messages, inlined into the review context
+  // (1.13.0) so every reviewer sees the stated intent without a read.
+  intentMaxCommits: 30,
+  intentMaxBytes: 4 * 1024,
   providerRetryLimit: 1,
   // One active high-risk review plus one queued review can each consume the
   // full reviewer + coordinator budget. Keep the hook bound above that total.

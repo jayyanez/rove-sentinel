@@ -37,7 +37,12 @@ describe('bounded model-requested escalation', () => {
     expect(run.mock.calls[0][1]).toContain(COMPLETENESS_CONTRACT);
     expect(run.mock.calls[1][1]).toContain(COMPLETENESS_CONTRACT);
     // A prior blocker the reviewer could not re-verify must not vanish as fixed.
-    expect(COMPLETENESS_CONTRACT).toContain('the file of every prior blocker assigned to you');
+    expect(COMPLETENESS_CONTRACT).toContain('the code that settles every prior blocker assigned to you');
+    // A prior blocker's file is read around the reported location, never
+    // whole: a whole file over one tool output failed rounds closed (1.13.0).
+    expect(COMPLETENESS_CONTRACT).toContain('read a large file by line range,\nnever whole');
+    expect(COMPLETENESS_CONTRACT).toContain('An adjudicator is\nassigned its candidates, not a diff.');
+    expect(COMPLETENESS_CONTRACT).toContain('does not make the review incomplete: read the part you need by line\nrange instead.');
   });
   it('counts call budgets after the required reads, for every role that has one', async () => {
     const { hypothesisPrompt, reviewerPrompt, scoutPrompt, shardPrompt } = await import('../providers.mjs');

@@ -12,15 +12,23 @@ import { LIMITS } from './constants.mjs';
 
 const DOC_FILE = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__|fixtures)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i;
+// Test files named by language convention rather than a test directory
+// (1.13.0): Go's a_test.go, Python's test_a.py and a_test.py, and a
+// capitalised ATest or ATests class file in Java, Kotlin, Scala, C# or Swift.
+const CONVENTIONAL_TEST_FILE = /(?:^|\/)(?:[^/]+_test\.(?:go|py)|test_[^/]+\.py|[^/]*[A-Za-z0-9]Tests?\.(?:java|kt|kts|scala|cs|swift))$/;
 const SCRIPT_FILE = /^(?:scripts|\.githooks|\.github|src-tauri\/launch-shim|src-tauri\/resources|sidecar)\//i;
 const CONFIG_FILE = /\.(?:json|jsonc|ya?ml|toml|lock|conf|ini)$/i;
+// Plain-text build and dependency inputs (1.13.0): reviewed with the config
+// lens, not as prose.
+const TEXT_MANIFEST = /(?:^|\/)(?:CMakeLists|(?:requirements|constraints)(?:[-_.][^/]*)?)\.txt$/i;
 
 /** Lens family a shard reviewer applies; decided by the dominant file kind. */
 export function classifyShardFile(file) {
   const normalized = String(file || '').replace(/\\/g, '/');
   // Location wins over extension: a Markdown fixture under tests/ is test
   // material and gets the tests lens, not the docs one.
-  if (TEST_FILE.test(normalized)) return 'tests';
+  if (TEST_FILE.test(normalized) || CONVENTIONAL_TEST_FILE.test(normalized)) return 'tests';
+  if (TEXT_MANIFEST.test(normalized)) return 'config';
   if (DOC_FILE.test(normalized)) return 'docs';
   if (SCRIPT_FILE.test(normalized)) return 'scripts';
   if (CONFIG_FILE.test(normalized)) return 'config';
@@ -426,12 +434,86 @@ function trimHunk(items, headerLine, header, sideBytes, floor) {
 
 const KIND_ORDER = { code: 0, config: 1, scripts: 2, tests: 3, docs: 4 };
 
+const byPath = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * The name a test shares with the code it tests (1.13.0): `a.test.ts`,
+ * `a.spec.ts`, `test_a.py`, `a_test.go` and `ATest.java` all name `a`.
+ */
+export function familyStem(file) {
+  const base = String(file || '').split('/').pop() || '';
+  return base
+    .replace(/\.(?:test|spec)(?=\.[^.]+$)/i, '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/^tests?_/i, '')
+    .replace(/_tests?$/i, '')
+    .replace(/(?<=.)Tests?$/, '')
+    .toLowerCase();
+}
+
+/**
+ * How close two files' directories are: more shared leading directories is
+ * closer, and among equals, fewer directories outside the shared part.
+ */
+function directoryCloseness(a, b) {
+  const left = a.split('/').slice(0, -1);
+  const right = b.split('/').slice(0, -1);
+  let shared = 0;
+  while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared += 1;
+  return [shared, -((left.length - shared) + (right.length - shared))];
+}
+
+/**
+ * Order sections so each test follows the code file it tests (1.13.0). Kind
+ * order alone put a module and its test in different shards, so no reviewer
+ * saw both the changed branch and the test that should exercise it. A test
+ * is attached to the changed non-test, non-doc file of the same stem whose
+ * directory shares the longest prefix with its own (ties in path order); a
+ * test without one keeps its kind's place. Deterministic for a given patch.
+ */
+export function orderSectionFamilies(sections) {
+  const sorted = [...sections].sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || byPath(a.file, b.file));
+  const owners = sorted.filter((section) => section.kind !== 'tests' && section.kind !== 'docs');
+  const attached = new Map();
+  for (const section of sorted) {
+    if (section.kind !== 'tests') continue;
+    const stem = familyStem(section.file);
+    if (!stem) continue;
+    let best = null;
+    for (const owner of owners) {
+      if (familyStem(owner.file) !== stem) continue;
+      const score = directoryCloseness(owner.file, section.file);
+      if (!best || score[0] > best.score[0] || (score[0] === best.score[0] && score[1] > best.score[1])) best = { owner, score };
+    }
+    if (!best) continue;
+    if (!attached.has(best.owner)) attached.set(best.owner, []);
+    attached.get(best.owner).push(section);
+  }
+  const placed = new Set([...attached.values()].flat());
+  const ordered = [];
+  for (const section of sorted) {
+    if (placed.has(section)) continue;
+    ordered.push({ section, family: null });
+    for (const test of attached.get(section) || []) ordered.push({ section: test, family: section.file });
+  }
+  return ordered;
+}
+
 function dominantKind(files) {
   const weight = new Map();
   for (const file of files) {
     weight.set(file.kind, (weight.get(file.kind) || 0) + Math.max(1, file.changedLines));
   }
   return [...weight.entries()].sort((a, b) => b[1] - a[1] || KIND_ORDER[a[0]] - KIND_ORDER[b[0]])[0]?.[0] || 'code';
+}
+
+/** Every kind a shard holds, heaviest first (its dominant kind first). */
+function shardKinds(files) {
+  const weight = new Map();
+  for (const file of files) {
+    weight.set(file.kind, (weight.get(file.kind) || 0) + Math.max(1, file.changedLines));
+  }
+  return [...weight.entries()].sort((a, b) => b[1] - a[1] || KIND_ORDER[a[0]] - KIND_ORDER[b[0]]).map(([kind]) => kind);
 }
 
 /**
@@ -452,13 +534,13 @@ export function partitionShards(patch, {
   // A section without a textual hunk has nothing a reviewer can read: it is
   // listed in the review context (metadataOnlySections) instead of filling
   // shards with files whose owner would have to report its review incomplete.
-  const sections = splitPatchByFile(patch)
-    .filter((section) => !excluded.has(section.file) && !section.metadataReason)
-    .sort((a, b) => (
-      // Code-unit order, never the host locale's collation: identical patch
-      // bytes must always produce identical shards.
-      KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)
-    ));
+  // Kind order, then code-unit path order (never the host locale's
+  // collation: identical patch bytes must always produce identical shards),
+  // with each test placed right after the code file it tests (1.13.0).
+  const families = orderSectionFamilies(splitPatchByFile(patch)
+    .filter((section) => !excluded.has(section.file) && !section.metadataReason));
+  const sections = families.map(({ section }) => section);
+  const familyOf = new Map(families.map(({ section, family }) => [section, family]));
   if (!sections.length) return [];
   const total = sections.reduce((sum, section) => sum + section.changedLines, 0);
   // Raise the target when the diff cannot fit into maxShards shards at the
@@ -478,7 +560,9 @@ export function partitionShards(patch, {
         current.changedLines + section.changedLines > lineTarget ||
         current.bytes + bytes > byteTarget
       );
-      const kindChanges = current && current.kind !== section.kind && current.changedLines >= lineTarget / 2;
+      // A test stays with the code file it tests when the bounds allow.
+      const withFamily = familyOf.get(section) && current?.files.some((file) => file.file === familyOf.get(section));
+      const kindChanges = current && !withFamily && current.kind !== section.kind && current.changedLines >= lineTarget / 2;
       if (!current || wouldOverflow || kindChanges) {
         if (current) result.push(current);
         current = { files: [], changedLines: 0, bytes: 0, kind: section.kind };
@@ -494,19 +578,32 @@ export function partitionShards(patch, {
   // When path-ordered filling cannot meet the cap at a balanced size, pack
   // by size instead (largest first into the lightest shard): the reviewer
   // cap is the hard bound and the shards stay as even as the sections allow.
+  // A file and the tests attached to it are packed as one unit.
   if (shards.length > maxShards) {
-    const bins = Array.from({ length: Math.max(1, maxShards) }, () => ({ files: [], changedLines: 0, bytes: 0, kind: 'mixed' }));
-    const bySize = [...sized].sort((a, b) => b.bytes - a.bytes || b.section.changedLines - a.section.changedLines || (a.section.file < b.section.file ? -1 : 1));
-    for (const { section, bytes } of bySize) {
+    const units = [];
+    sized.forEach((entry, position) => {
+      const unit = familyOf.get(entry.section) ? units[units.length - 1] : null;
+      if (unit) {
+        unit.members.push(entry.section);
+        unit.bytes += entry.bytes;
+        unit.changedLines += entry.section.changedLines;
+      } else {
+        units.push({ members: [entry.section], bytes: entry.bytes, changedLines: entry.section.changedLines, position });
+      }
+    });
+    const bins = Array.from({ length: Math.max(1, maxShards) }, () => ({ units: [], changedLines: 0, bytes: 0, kind: 'mixed' }));
+    const bySize = [...units].sort((a, b) => b.bytes - a.bytes || b.changedLines - a.changedLines || a.position - b.position);
+    for (const unit of bySize) {
       const lightest = bins.reduce((best, bin) => (bin.bytes < best.bytes ? bin : best), bins[0]);
-      lightest.files.push(section);
-      lightest.changedLines += section.changedLines;
-      lightest.bytes += bytes;
+      lightest.units.push(unit);
+      lightest.changedLines += unit.changedLines;
+      lightest.bytes += unit.bytes;
     }
-    shards = bins.filter((bin) => bin.files.length);
-    for (const bin of shards) {
-      bin.files.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
-    }
+    shards = bins.filter((bin) => bin.units.length).map((bin) => ({
+      ...bin,
+      // Within a shard the units keep the family order.
+      files: bin.units.sort((a, b) => a.position - b.position).flatMap((unit) => unit.members),
+    }));
   }
   while (shards.length > maxShards) {
     let best = 0;
@@ -525,6 +622,7 @@ export function partitionShards(patch, {
   return shards.map((shard, index) => ({
     index,
     kind: dominantKind(shard.files),
+    kinds: shardKinds(shard.files),
     files: shard.files.map((section) => section.file),
     changedLines: shard.changedLines,
     patch: `${shard.files.map((section) => section.text).join('\n')}\n`,

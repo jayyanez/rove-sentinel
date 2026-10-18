@@ -10,7 +10,9 @@ import { reviewPolicySnapshot } from '../context.mjs';
 import {
   adjudicationBatches,
   cleanCandidates,
+  createAdjudicationStream,
   createGateContext,
+  lowConfidenceCandidates,
   describeReviewerFailures,
   formatGateResult,
   providerTreeCleanupFailureCode,
@@ -91,6 +93,45 @@ describe('single-provider pipeline provenance', () => {
     const strict = reviewPolicySnapshot({ charter: repository.policy.charter, lessons: repository.policy.lessons, config: { providers: 'both' } });
     await expect(runGate({ ...options, policy: strict })).rejects.toThrow(/both/);
   });
+});
+
+describe('recall evidence in a completed review (1.13.0)', () => {
+  it('keeps held-back candidates in the report and gives every reviewer the stated intent and the reference map', async () => {
+    const repository = await makeRepository();
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-recall-evidence-'));
+    temporaryDirectories.push(stateRoot);
+    const seen: Array<{ context: string; map: string }> = [];
+    const reviewer = vi.fn(async ({ provider, roleIndex, bundle }) => {
+      seen.push({
+        context: await readFile(bundle.contextPath, 'utf8'),
+        map: await readFile(path.join(path.dirname(bundle.contextPath), 'reference-map.md'), 'utf8'),
+      });
+      return {
+        provider,
+        roleIndex,
+        summary: 'Reviewed',
+        candidates: [{
+          id: `${provider}-${roleIndex}-0`, provider, roleIndex, title: 'Answer may be stale', priority: 'P2', confidence: 35,
+          category: 'state', file: 'src/lib/example.ts', line: 1, scenario: 'a guess', evidence: 'weak', proposed_test: 'none',
+        }],
+      };
+    });
+    const result = await runGate({
+      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
+      author: 'human', risk: 'low', availableProviders: ['claude'], reviewer,
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0].context).toMatch(/## Stated intent of this change\n[\s\S]*^> [0-9a-f]{7,} change$/m);
+    expect(seen[0].map).toContain('### `answer`');
+    const report = await readReport(await ensureState(stateRoot), result.reportId);
+    expect(report.lowConfidenceCandidates).toMatchObject({
+      total: seen.length,
+      candidates: [{ title: 'Answer may be stale', confidence: 35, file: 'src/lib/example.ts' }],
+    });
+    expect(report.findings).toEqual([]);
+  }, REAL_GIT_TEST_TIMEOUT);
 });
 
 describe('changes without a textual hunk', () => {
@@ -394,6 +435,25 @@ describe('shared review gate integration', () => {
     expect(kept.map((candidate) => candidate.title)).toEqual(['Stale write  survives']);
     // Without a prior blocker of that identity the floor still applies.
     expect(cleanCandidates([{ candidates: [reported('Stale write survives', 30)] }])).toEqual([]);
+  });
+
+  it('keeps the candidates held back under the confidence floor as a bounded report record (1.13.0)', () => {
+    const reported = (title: string, confidence: number, id: string) => ({
+      id, provider: 'codex', title, priority: 'P2', confidence, category: 'lifecycle',
+      file: 'src/lib/example.ts', line: 12, scenario: 's'.repeat(900), evidence: 'e', proposed_test: 't',
+    });
+    const priorBlocking = [{ title: 'Stale write survives', file: 'src/lib/example.ts', priority: 'P2' }];
+    const held = lowConfidenceCandidates([
+      { candidates: [reported('Stale write survives', 20, 'a'), reported('Low guess', 30, 'b'), reported('Kept', 70, 'c')] },
+      { candidates: [reported('Lower guess', 10, 'd')] },
+    ], { priorBlocking });
+    // A prior blocker is adjudicated whatever its confidence, and a candidate
+    // at or above the floor is adjudicated: neither is "held back".
+    expect(held.total).toBe(2);
+    expect(held.candidates.map((candidate) => [candidate.id, candidate.confidence])).toEqual([['b', 30], ['d', 10]]);
+    expect(held.candidates[0].scenario).toHaveLength(600);
+    expect(lowConfidenceCandidates([{ candidates: [reported('x', 1, 'a'), reported('y', 2, 'b')] }], { max: 1 }))
+      .toMatchObject({ total: 2, candidates: [{ id: 'b' }] });
   });
 
   it('merges exact duplicate candidates from independent reviewers before adjudication', () => {
@@ -1690,4 +1750,314 @@ describe('launch refusals name their cause (PR #519)', () => {
       resetProviderCleanupLatch();
     }
   });
+});
+
+describe('adjudication while reviewers run (1.13.0)', () => {
+  const candidate = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, provider: 'codex', roleIndex: 0, title: `Defect ${id}`, priority: 'P2', confidence: 80, category: 'state',
+    file: 'src/a.ts', line: Number(id.replace(/\D/g, '')) || 1, scenario: 's', evidence: 'e', proposed_test: 't', ...extra,
+  });
+  const recorder = () => {
+    const batches: string[][] = [];
+    const dispatch = async (batch: Array<{ id: string }>) => {
+      batches.push(batch.map((entry) => entry.id));
+      return { status: 'fulfilled', value: { summary: 'ok', findings: [] } };
+    };
+    return { batches, dispatch };
+  };
+
+  it('sends a full batch at once and splits the tail into small batches', async () => {
+    const { batches, dispatch } = recorder();
+    const stream = createAdjudicationStream({ dispatch, batchSize: 5, tailBatchSize: 3 });
+    await stream.add({ candidates: ['c1', 'c2', 'c3'].map((id) => candidate(id)) });
+    expect(batches).toEqual([]);
+    await stream.add({ candidates: ['c4', 'c5', 'c6'].map((id) => candidate(id)) });
+    expect(batches).toEqual([['c1', 'c2', 'c3', 'c4', 'c5']]);
+    await stream.add({ candidates: ['c7', 'c8', 'c9'].map((id) => candidate(id)) });
+    expect(batches).toHaveLength(1);
+    const sent = await stream.finish();
+    expect(batches).toEqual([['c1', 'c2', 'c3', 'c4', 'c5'], ['c6', 'c7', 'c8'], ['c9']]);
+    expect(sent.map(({ batch }) => batch.length)).toEqual([5, 3, 1]);
+  });
+
+  it('merges duplicates like cleanCandidates, but never replaces a candidate already sent', async () => {
+    const { batches, dispatch } = recorder();
+    const stream = createAdjudicationStream({ dispatch, batchSize: 2 });
+    await stream.add({ candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 40 })] });
+    // c2 is under the floor; c1 waits for a full batch.
+    expect(batches).toEqual([]);
+    await stream.add({ candidates: [candidate('d1', { title: 'defect  C1', confidence: 90 })] });
+    // Same identity, higher confidence, not yet sent: the survivor is d1 whole.
+    await stream.add({ candidates: [candidate('c3')] });
+    expect(batches).toEqual([['d1', 'c3']]);
+    await stream.add({ candidates: [candidate('e3', { confidence: 99, title: 'Defect C3' })] });
+    const { candidates } = await stream.candidates();
+    expect(candidates.map((entry) => [entry.id, entry.corroboratingReviewers])).toEqual([['d1', 2], ['c3', 2]]);
+    await stream.finish();
+    expect(batches).toEqual([['d1', 'c3']]);
+    // The same answer cleanCandidates gives for the reviews in that order,
+    // except that the sent c3 is not replaced by the later e3.
+    const all = [
+      { candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 40 })] },
+      { candidates: [candidate('d1', { title: 'defect  C1', confidence: 90 })] },
+      { candidates: [candidate('c3')] },
+    ];
+    expect(cleanCandidates(all).map((entry) => entry.id)).toEqual(['d1', 'c3']);
+  });
+
+  it('in a follow-up round holds lone P3 candidates and sends them once something needs adjudication', async () => {
+    const lone = recorder();
+    const quiet = createAdjudicationStream({ dispatch: lone.dispatch, followUp: true, batchSize: 1 });
+    await quiet.add({ candidates: [candidate('p1', { priority: 'P3' }), candidate('p2', { priority: 'P3' })] });
+    expect(await quiet.finish()).toEqual([]);
+    expect(lone.batches).toEqual([]);
+    expect((await quiet.candidates()).candidates.map((entry) => entry.id)).toEqual(['p1', 'p2']);
+
+    const mixed = recorder();
+    const prior = [{ title: 'Defect p9', file: 'src/a.ts', priority: 'P2' }];
+    const loud = createAdjudicationStream({ dispatch: mixed.dispatch, followUp: true, batchSize: 1, priorBlocking: prior });
+    await loud.add({ candidates: [candidate('p1', { priority: 'P3' })] });
+    expect(mixed.batches).toEqual([]);
+    // A re-reported prior blocker is adjudicated whatever its priority and confidence.
+    await loud.add({ candidates: [candidate('p9', { priority: 'P3', confidence: 10 })] });
+    expect(mixed.batches).toEqual([['p9'], ['p1']]);
+  });
+
+  it('stops sending past the candidate bound or after stop, and still drains what was sent', async () => {
+    const over = recorder();
+    const bounded = createAdjudicationStream({ dispatch: over.dispatch, batchSize: 2, maxCandidates: 3 });
+    await bounded.add({ candidates: ['c1', 'c2', 'c3', 'c4', 'c5'].map((id) => candidate(id)) });
+    expect(await bounded.candidates()).toMatchObject({ overflow: true, count: 5 });
+    await bounded.finish();
+    // Past the bound the round fails closed: nothing more is sent.
+    expect(over.batches).toEqual([]);
+
+    const halted = recorder();
+    const stopped = createAdjudicationStream({ dispatch: halted.dispatch, batchSize: 5 });
+    await stopped.add({ candidates: [candidate('c1')] });
+    stopped.stop();
+    await stopped.add({ candidates: ['c2', 'c3', 'c4', 'c5', 'c6'].map((id) => candidate(id)) });
+    await stopped.drain();
+    expect(await stopped.finish()).toEqual([]);
+    expect(halted.batches).toEqual([]);
+    // A batch already waiting for a slot reads this before it launches.
+    expect(stopped.halted).toBe(true);
+    expect(bounded.halted).toBe(true);
+    expect(createAdjudicationStream({ dispatch: halted.dispatch }).halted).toBe(false);
+  });
+
+  it('starts adjudicating a finished shard while another shard is still under review', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    // Two files of 300 changed lines each: two shards of the 500-line target.
+    for (const name of ['a', 'b']) {
+      await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'two shards');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-state-'));
+    temporaryDirectories.push(stateRoot);
+    const events: string[] = [];
+    let releaseSlow: () => void = () => {};
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => {
+      const file = shard.files[0];
+      if (file === 'src/b.ts') {
+        events.push('slow shard waiting');
+        await slowGate;
+        events.push('slow shard done');
+        return { provider, roleIndex, summary: 'b', candidates: [] };
+      }
+      events.push('fast shard done');
+      return {
+        provider, roleIndex, summary: 'a',
+        candidates: Array.from({ length: 5 }, (_, index) => ({
+          id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Fast defect ${index}`, priority: 'P2',
+          confidence: 90, category: 'state', file, line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+        })),
+      };
+    });
+    const coordinator = vi.fn(async ({ candidates }) => {
+      events.push(`adjudicating ${candidates.length}`);
+      releaseSlow();
+      return {
+        summary: 'Dismissed.',
+        findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
+          candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+          disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+        })),
+      };
+    });
+    const result = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer, coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    expect(shardReviewer).toHaveBeenCalledTimes(2);
+    // The batch from the fast shard went out before the slow shard finished.
+    expect(events.indexOf('adjudicating 5')).toBeGreaterThan(-1);
+    expect(events.indexOf('adjudicating 5')).toBeLessThan(events.indexOf('slow shard done'));
+    expect(result.stages.map((stage: { name: string }) => stage.name)).toContain('adjudication');
+  }, REAL_GIT_TEST_TIMEOUT);
+});
+
+describe('streamed adjudication in a round that fails closed (1.13.0)', () => {
+  it('reports the failed shard, sends nothing after it, and lets the batch already sent finish', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-fail-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    for (const name of ['a', 'b']) {
+      await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'two shards');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-fail-state-'));
+    temporaryDirectories.push(stateRoot);
+    let releaseSlow: () => void = () => {};
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => {
+      const file = shard.files[0];
+      if (file === 'src/b.ts') {
+        await slowGate;
+        throw new Error('provider timed out');
+      }
+      return {
+        provider, roleIndex, summary: 'a',
+        candidates: Array.from({ length: 6 }, (_, index) => ({
+          id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Fast defect ${index}`, priority: 'P2',
+          confidence: 90, category: 'state', file, line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+        })),
+      };
+    });
+    const coordinator = vi.fn(async ({ candidates }) => {
+      releaseSlow();
+      return {
+        summary: 'Dismissed.',
+        findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
+          candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+          disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+        })),
+      };
+    });
+    const error = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer, coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('1 shard reviewer(s) failed after retry');
+    expect(error.message).toContain('provider timed out');
+    // One full batch went out while the slow shard ran; the sixth candidate
+    // was never sent once the round was going to fail closed.
+    expect(coordinator).toHaveBeenCalledTimes(1);
+    expect(coordinator.mock.calls[0][0].candidates).toHaveLength(5);
+  }, REAL_GIT_TEST_TIMEOUT);
+});
+
+describe('a streamed adjudicator in a round that fails closed (1.13.0 gate review)', () => {
+  async function twoShardRepository() {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-halt-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    for (const name of ['a', 'b']) {
+      await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'two shards');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-halt-state-'));
+    temporaryDirectories.push(stateRoot);
+    return { root, base, head, stateRoot };
+  }
+
+  function shards(releaseSlow: Promise<void>) {
+    return vi.fn(async ({ provider, roleIndex, shard }) => {
+      const file = shard.files[0];
+      if (file === 'src/b.ts') {
+        await releaseSlow;
+        throw new Error('provider timed out');
+      }
+      return {
+        provider, roleIndex, summary: 'a',
+        candidates: Array.from({ length: 5 }, (_, index) => ({
+          id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Fast defect ${index}`, priority: 'P2',
+          confidence: 90, category: 'state', file, line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+        })),
+      };
+    });
+  }
+
+  it('keeps an adjudicator\'s process-tree cleanup failure in the error the watcher pauses on', async () => {
+    const { root, base, head, stateRoot } = await twoShardRepository();
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    const orphan = Object.assign(new Error('coordinator tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
+    const coordinator = vi.fn(async () => {
+      release();
+      throw orphan;
+    });
+    const error = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer: shards(slow), coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    }).catch((caught) => caught);
+    expect(error.message).toContain('1 shard reviewer(s) failed after retry');
+    expect(error.message).toContain('coordinator tree lost');
+    expect(error.code).toBe('ORPHANED_PROCESS_TREE');
+  }, REAL_GIT_TEST_TIMEOUT);
+
+  it('does not retry an adjudicator once the round is failing closed', async () => {
+    const { root, base, head, stateRoot } = await twoShardRepository();
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    const coordinator = vi.fn(async () => {
+      release();
+      // The slow shard fails (twice) and stops the stream before this attempt ends.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      throw new Error('transient adjudicator failure');
+    });
+    const error = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer: shards(slow), coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    }).catch((caught) => caught);
+    expect(error.message).toContain('1 shard reviewer(s) failed after retry');
+    expect(coordinator).toHaveBeenCalledTimes(1);
+  }, REAL_GIT_TEST_TIMEOUT);
 });

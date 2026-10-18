@@ -9,6 +9,7 @@ Start here:
   rove-sentinel status                 Inspect health and local records
   rove-sentinel update-check           Check for a newer stable release
   rove-sentinel updates                Inspect automatic engine updates
+  rove-sentinel limits [--json]        What this engine version accepts and where it stops
 
 Review:
   gate [--base REF] [--head REF] [--branch NAME]

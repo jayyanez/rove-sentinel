@@ -35,7 +35,7 @@ describe('subscription-backed provider adapters', () => {
     const prompt = reviewerPrompt({
       provider: 'claude', roleIndex: 0, contextPath: 'C:\\context\\context.md',
     });
-    expect(prompt).toContain('every required read it lists (each part whole) and the exact patch it references');
+    expect(prompt).toContain('every required read it lists (each part whole), and read the exact patch it references');
     expect(prompt).toContain('Never promote a finding merely to make it blocking');
     expect(prompt).toContain('P0 is a catastrophic security failure');
     expect(prompt).toContain('reference-map.md');
@@ -73,6 +73,19 @@ describe('subscription-backed provider adapters', () => {
     ] as const) {
       expect(shardLens(kind)).toContain(marker);
     }
+    // A shard that also holds tests applies their lens to them (1.13.0).
+    expect(code).not.toContain('This shard also holds');
+    const paired = shardPrompt({
+      provider: 'codex', contextPath: 'ctx.md', shard: { ...shard, kinds: ['code', 'tests'] }, shardPath: 'shard-3.diff',
+    });
+    expect(paired).toContain('This shard also holds tests files. For them apply:');
+    expect(paired).toContain('weaker one');
+    expect(paired).toContain('exercises the branches this diff changed');
+    // Every kind a shard holds gets its lens, however many there are.
+    const mixed = shardPrompt({
+      provider: 'codex', contextPath: 'ctx.md', shard: { ...shard, kinds: ['code', 'config', 'scripts', 'tests', 'docs'] }, shardPath: 's.diff',
+    });
+    for (const kind of ['config', 'scripts', 'tests', 'docs']) expect(mixed).toContain(`This shard also holds ${kind} files.`);
     const priorBlocking = [{ priority: 'P2', file: 'src/a.ts', title: 'Stale handler' }];
     // Prior blockers never turn a full review's prompt into a follow-up one.
     expect(shardPrompt({ provider: 'claude', contextPath: 'ctx.md', shard, shardPath: 's.diff', priorBlocking })).not.toContain('follow-up round');
@@ -480,8 +493,10 @@ describe('subscription-backed provider adapters', () => {
       expect(args.slice(args.indexOf('--cd'), args.indexOf('--cd') + 2)).toEqual([
         '--cd', directory,
       ]);
-      expect(args.at(-1)).toContain('Independently recalibrate every priority');
-      expect(args.at(-1)).toContain('P3 is low-impact polish');
+      // The prompt arrives on standard input (1.13.0).
+      expect(args.at(-1)).toBe('-');
+      expect(runner.mock.calls[0][2].input).toContain('Independently recalibrate every priority');
+      expect(runner.mock.calls[0][2].input).toContain('P3 is low-impact polish');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -510,8 +525,8 @@ describe('subscription-backed provider adapters', () => {
     const patch = `${files.map(section).join('\n')}\n`;
     const shard = { index: 0, kind: 'code', files, changedLines: 900, patch };
     let prompt = '';
-    const runner = vi.fn(async (_command, args) => {
-      prompt = args.at(-1);
+    const runner = vi.fn(async (_command, args, options) => {
+      prompt = options.input;
       await writeFile(args[args.indexOf('--output-last-message') + 1], JSON.stringify({
         review_complete: true, effort_request: null, summary: 'Reviewed every part.', candidates: [],
       }));
@@ -557,5 +572,72 @@ describe('subscription-backed provider adapters', () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe('review material in the prompt (1.13.0)', () => {
+  const inline = { nonce: '00000000-0000-4000-8000-000000000000', required: '===== SENTINEL 00000000-0000-4000-8000-000000000000 BEGIN review-context.md =====\nctx\n===== SENTINEL 00000000-0000-4000-8000-000000000000 END review-context.md =====' };
+
+  it('keeps file reads for a shard larger than the inline bound, and inlines the context anyway', async () => {
+    const { shardPrompt: build, shardInlinable } = await import('../providers.mjs');
+    const big = 'x'.repeat(LIMITS.inlineShardMaxBytes + 1);
+    expect(shardInlinable(inline, big)).toBe(false);
+    expect(shardInlinable(inline, 'small')).toBe(true);
+    expect(shardInlinable(null, 'small')).toBe(false);
+    const shard = { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: big };
+    const prompt = build({ provider: 'claude', contextPath: 'ctx.md', shard, shardPath: 's.diff', inline, shardInline: false });
+    expect(prompt.startsWith('The review material for this task follows')).toBe(true);
+    expect(prompt).toContain('Read s.diff ONCE in full');
+    expect(prompt).toContain('use the review context (ctx.md) and the required reads inlined above');
+    expect(prompt).not.toContain(big);
+  });
+
+  it('inlines the adjudication candidates and names the context inline for every role', async () => {
+    const { coordinatorPrompt, scoutPrompt, hypothesisPrompt, COMPLETENESS_CONTRACT } = await import('../providers.mjs');
+    const coordinator = coordinatorPrompt({
+      provider: 'codex', contextPath: 'ctx.md', candidatesPath: String.raw`C:\b\candidates-0.json`, inline, candidatesText: '{"candidates":[]}\n',
+    });
+    expect(coordinator).toContain(String.raw`and the candidates (C:\b\candidates-0.json) at the end of this prompt`);
+    expect(coordinator.trimEnd().endsWith(`===== SENTINEL ${inline.nonce} END candidates-0.json =====`)).toBe(true);
+    const fileCandidates = coordinatorPrompt({ provider: 'codex', contextPath: 'ctx.md', candidatesPath: 'c.json', inline });
+    expect(fileCandidates).toContain('inlined above; read c.json');
+    expect(scoutPrompt({ provider: 'claude', contextPath: 'ctx.md', maxHypotheses: 2, inline }))
+      .toContain('The review context (ctx.md) and every required read it lists are inlined above.');
+    expect(hypothesisPrompt({ provider: 'claude', contextPath: 'ctx.md', inline, hypothesis: {
+      title: 't', file: 'f', line: null, lens: 'l', claim: 'c', why: 'w',
+    } })).toContain('inlined above; read the minimum surrounding');
+    // Without inline material every prompt still names its files.
+    expect(scoutPrompt({ provider: 'claude', contextPath: 'ctx.md', maxHypotheses: 2 })).toContain('Read ctx.md, then every required read it lists');
+    expect(COMPLETENESS_CONTRACT).toContain('Material inlined in this prompt between SENTINEL markers counts as read in full.');
+  });
+
+  it('sends a Claude prompt on standard input with no prompt argument', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'rove-review-stdin-'));
+    const runner = vi.fn(async () => ({ stdout: JSON.stringify({ structured_output: { review_complete: true, effort_request: null, summary: 'ok', candidates: [] } }) }));
+    try {
+      await runReviewer({ provider: 'claude', roleIndex: 0, checkout: directory, runner,
+        bundle: { directory, contextPath: path.join(directory, 'ctx.md'), inline } });
+      const [, args, options] = runner.mock.calls[0];
+      expect(options.input).toContain(inline.required);
+      expect(args.at(-1)).not.toContain('You are an independent');
+      expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'claude-opus-5-5']);
+      expect(args.at(-2)).toBe('--model');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('prior blockers carry their location (1.13.0)', () => {
+  it('names the reported line and, in the bundle file, what fails', async () => {
+    const { describePriorBlocker, shardPrompt: build } = await import('../providers.mjs');
+    const finding = { priority: 'P2', file: 'src/a.ts', title: 'Stale cache', line: 42, scenario: 'Logout\nleaves it warm.' };
+    expect(describePriorBlocker(finding)).toBe('- P2 src/a.ts:42 — Stale cache');
+    // The scenario is model-written: its newline is escaped, never a new line.
+    expect(describePriorBlocker(finding, { scenario: true })).toBe(String.raw`- P2 src/a.ts:42 — Stale cache` + '\n' + String.raw`  Scenario: Logout\nleaves it warm.`);
+    expect(describePriorBlocker({ ...finding, line: null })).toBe('- P2 src/a.ts — Stale cache');
+    const shard = { index: 0, kind: 'code', files: ['src/a.ts'], changedLines: 1, patch: '', reverifyBlockers: [finding] };
+    const prompt = build({ provider: 'claude', contextPath: 'ctx.md', shard, shardPath: 's.diff', round: 'follow-up', priorBlocking: [finding] });
+    expect(prompt).toContain('- P2 src/a.ts:42 — Stale cache');
   });
 });

@@ -44,7 +44,10 @@ attestation. Missing evidence queues a review and waits within a bounded timeout
 Commit the repair, not just the working file.
 
 Ordinary prose-only diffs receive a documented skip attestation without model
-calls. Changes to review policy or agent instructions still require review.
+calls. Prose means Markdown, reStructuredText and AsciiDoc files; plain `.txt`
+files (such as `requirements.txt` or `CMakeLists.txt`) and MDX are reviewed.
+Changes to review policy or agent instructions still require review, and CI
+workflow and database migration changes are reviewed as high risk.
 
 ## Understand and resolve findings
 
@@ -93,6 +96,7 @@ machine, watcher, network, and the selected authenticated CLI(s) must remain ava
 | `resume` | Resume ordinary paused work |
 | `recover --reason "Investigated the stale watcher state"` | Recover stale locks and claims; refuses a healthy watcher and does not clear a pause |
 | `ledger --pr 123` | Draft an optional comparison ledger from external review comments |
+| `limits` | What the active engine accepts and where it stops, and which earlier workarounds no longer apply |
 | `help` | List commands and flags |
 
 The `ledger` command does not invoke CodeRabbit or Greptile. The `design-evidence`

@@ -93,8 +93,8 @@ async function makeLongLineRepository() {
  */
 function batchingProvider({ limitBytes = 38 * 1024 } = {}) {
   const commands: { files: string[]; texts: string[]; bytes: number; complete: boolean }[] = [];
-  const runner = async (_command: string, args: string[]) => {
-    const prompt = String(args.at(-1));
+  const runner = async (_command: string, args: string[], options: { input?: string }) => {
+    const prompt = String(options.input);
     const listed = [...prompt.matchAll(/^- (.*shard-\d+\.part-\d+-of-\d+\.diff)$/gm)].map((match) => match[1]);
     const single = /^Read (.*shard-\d+(?:\.part-\d+-of-\d+)?\.diff) ONCE in full/m.exec(prompt)?.[1];
     const files = listed.length ? listed : [single as string];
@@ -129,6 +129,8 @@ function gateOptions(repository: Awaited<ReturnType<typeof makeLongLineRepositor
     scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
     deterministicLanes: async () => ({ lanes: [], findings: [] }),
     coordinator: vi.fn(),
+    // These runs exercise the file reads a shard too large to inline gets.
+    inlineMaterial: false,
   };
 }
 
@@ -591,5 +593,46 @@ describe('a rerun after a fail-closed round', () => {
     ].join(' '));
     expect(shardFailureSummary({ failed: 2, kept: 6, repeated: [{ shard: 3, runs: 3 }, { shard: 5, runs: 2 }] }))
       .toContain('Shard(s) 3, 5 failed in 3 consecutive runs of this head');
+  });
+});
+
+describe('review material in the prompt (1.13.0)', () => {
+  it('gives the reviewer the whole shard and its required reads in one prompt, so the boxkite shard needs no read', async () => {
+    const repository = await makeLongLineRepository();
+    const stateRoot = await temporary('sentinel-inline-state-');
+    const prompts: string[] = [];
+    const argv: string[][] = [];
+    const runner = async (_command: string, args: string[], options: { input?: string }) => {
+      prompts.push(String(options.input));
+      argv.push(args);
+      await writeFile(args[args.indexOf('--output-last-message') + 1], JSON.stringify({
+        review_complete: true, effort_request: null, summary: 'Reviewed the inlined hunks.', candidates: [],
+      }));
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const { inlineMaterial: _fileMode, ...inlineOptions } = gateOptions(repository, stateRoot, runner);
+    const result = await runGate(inlineOptions);
+    expect(result.status).toBe('pass');
+    // One reviewer, one pass: nothing was split for reading or retried.
+    expect(prompts).toHaveLength(1);
+    expect(result.shards).toEqual([expect.objectContaining({ files: 4, provider: 'codex' })]);
+    expect(result.shards[0].delivery).toBeUndefined();
+    const prompt = prompts[0];
+    const nonce = /===== SENTINEL ([0-9a-f-]{36}) BEGIN review-context\.md =====/.exec(prompt)?.[1];
+    expect(nonce).toBeTruthy();
+    for (const name of ['review-context.md', 'shared-review-charter.md', 'bug-lessons.md', 'open-bug-briefs.md', 'shard-1.diff']) {
+      expect(prompt).toContain(`===== SENTINEL ${nonce} BEGIN ${name} =====`);
+      expect(prompt).toContain(`===== SENTINEL ${nonce} END ${name} =====`);
+    }
+    // Every byte of the shard is in the prompt, after the instructions.
+    const patch = await readPatch(repository.root, repository.base, repository.head);
+    const [shard] = partitionShards(patch, { maxShards: LIMITS.shardMaxCountHigh });
+    expect(prompt).toContain(shard.patch);
+    expect(prompt.indexOf(shard.patch)).toBeGreaterThan(prompt.indexOf('Return at most'));
+    expect(prompt).toContain('Your hunks are inlined at the end of this prompt (shard-1.diff)');
+    expect(prompt).not.toMatch(/Read \S*shard-1/);
+    // The prompt travels on standard input, never as an argument.
+    expect(argv[0].at(-1)).toBe('-');
+    expect(argv[0].join(' ')).not.toContain(shard.patch.slice(0, 200));
   });
 });

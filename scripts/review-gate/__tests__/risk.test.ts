@@ -20,6 +20,25 @@ describe('shared review risk routing', () => {
     }
   });
 
+  it('reviews plain-text and MDX files instead of skipping them as prose (1.13.0)', () => {
+    // `.txt` names build and dependency inputs (CMakeLists.txt,
+    // requirements.txt) and MDX carries executable JSX: neither is prose
+    // markup, so neither may mint a model-free skip attestation.
+    for (const file of ['CMakeLists.txt', 'requirements.txt', 'requirements-dev.txt', 'docs/page.mdx', 'public/robots.txt', 'NOTES.txt']) {
+      expect(isOrdinaryDocumentationSkip([file])).toBe(false);
+      expect(classifyRisk({ files: [file], patch: '+x', changedLines: 1 }).level).not.toBe('skip');
+    }
+    expect(isOrdinaryDocumentationSkip(['docs/guide.md', 'requirements.txt'])).toBe(false);
+    expect(isOrdinaryDocumentationSkip(['docs/guide.rst', 'docs/guide.adoc'])).toBe(true);
+  });
+
+  it('routes CI definitions and database migrations as high risk (1.13.0)', () => {
+    for (const file of ['.github/workflows/ci.yml', '.gitlab-ci.yml', 'db/migrations/0042_add_index.sql', 'src/migration/v2.ts']) {
+      expect(classifyRisk({ files: [file], patch: '+x', changedLines: 2 }).level).toBe('high');
+    }
+    expect(classifyRisk({ files: ['src/lib/migrate-helpers.ts'], patch: '+x', changedLines: 2 }).level).toBe('low');
+  });
+
   it('reviews Markdown that controls the gate or either agent adapter as high risk', () => {
     for (const file of [
       'docs/shared-review-charter.md',

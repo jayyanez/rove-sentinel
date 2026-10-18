@@ -1,5 +1,53 @@
 # Standalone validation record
 
+## 1.13.0 recall and reference-map speed — 2026-10-18
+
+Deterministic tests cover the documentation skip (plain-text and MDX files are
+reviewed), the new high-risk paths, the kept below-floor candidates and their
+ledger label, the quoted and bounded commit messages in the context, test
+families in shards (including size packing), the lens of every kind a shard
+holds, declaration extraction for the added languages, the batched blob reads
+and the order-independent rendering of parallel sweeps. Each bug fix has a
+regression that fails on the commit before it.
+
+The reference map of this repository's 1.11.1–1.12.0 range (28 files) was
+built by both engines from the same objects: 6.4–7.7 s with 1.12.0 and
+0.9–1.0 s with 1.13.0, byte-identical output. A single local measurement,
+not a benchmark.
+
+The candidate engine reviewed its own branch live (Claude Opus 5.5 and
+GPT-6.1 Sol at high, the installed policy, an isolated state root). The first
+round was a full high-risk review (six shards, three hypotheses, eight
+candidates) that took 7.5 minutes, of which the reference map took 1 second;
+the installed 1.12.0 watcher's recorded average for that stage on this
+repository is 7 seconds. It verified three P2 and four P3 defects in the
+change itself; five follow-up rounds fixed them and the further split C
+signature spellings each round found, and the sixth round passed. The report
+kept the two candidates under the confidence floor. The new language patterns
+were exercised only by deterministic fixtures, not on a live non-JavaScript
+repository, and no round has yet run with the released 1.13.0 package.
+
+The second wave (material in the prompt on standard input, streamed
+adjudication, per-role settings, prior blockers read
+around their location) ran live in six more follow-up rounds of the same
+branch; they found and fixed seven defects in it, and the last round passed.
+Per-role settings ran only in deterministic tests. Reusing shard reviews after
+a rebase was built, reviewed by the installed gate twice, and removed: each
+round showed another dependency a textual test could not see (a call through
+a re-export alias, a transitive import), and a reuse that can miss a changed
+dependency weakens the review's coverage.
+
+One side-by-side run reviewed the same historical change (1.11.1, 17 files,
+630 changed lines, high risk, full round) with 1.12.0 and with 1.13.0, both
+with both providers and the installed policy: 5.8 minutes against 3.0. The
+reference map took 6 s against 1 s, hypotheses started 75 s in instead of 93
+and took 29 s instead of 95, and adjudication began at 118 s instead of 188
+and took 63 s instead of 157. Both runs verified the oversized-line defect
+that 1.12.0 later fixed; 1.12.0 also verified two defects 1.13.0 did not
+report (an unescaped continuation path and part paths in the argument
+vector, which standard input removes). One run each is a timing
+observation, not a recall measurement.
+
 ## 1.12.0 shard parts and reruns — 2026-10-10
 
 Deterministic tests cover the context bound (the bounded patch applied to the

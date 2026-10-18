@@ -15,4 +15,23 @@ describe('explicit model-access probes', () => {
     await expect(checkModels('repo', { selected: ['codex'], runner })).rejects.toThrow(/output exceeded/);
     await expect(access(directory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('probes every model and effort a role can request, once each (1.13.0)', async () => {
+    const calls: string[] = [];
+    const runner = async (_command, args) => {
+      calls.push(`${args[args.indexOf('--model') + 1]}/${args.find((arg: string) => arg.startsWith('model_reasoning_effort='))}`);
+      const outputPath = args[args.indexOf('--output-last-message') + 1];
+      await writeFile(outputPath, JSON.stringify({ ok: true }));
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const config = { models: { codex: { effort: 'high', roles: { scout: { effort: 'medium' }, shard: { effort: 'high' } } } } };
+    const checks = await checkModels('repo', { selected: ['codex'], runner, config });
+    expect(checks.map((check) => check.effort)).toEqual(['medium', 'xhigh', 'high']);
+    expect(new Set(calls).size).toBe(calls.length);
+    expect(calls).toEqual([
+      'gpt-6.1-sol/model_reasoning_effort="medium"',
+      'gpt-6.1-sol/model_reasoning_effort="xhigh"',
+      'gpt-6.1-sol/model_reasoning_effort="high"',
+    ]);
+  });
 });

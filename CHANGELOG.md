@@ -1,5 +1,98 @@
 # Changelog
 
+## 1.13.0 — fewer unreviewed changes, more context per reviewer, faster reviews
+
+A critical review of the engine against what external reviewers keep catching
+found a skip that let build inputs through unreviewed, reviewers that never saw
+a module and its test together, a reference map that was empty for most
+languages, and twelve to fifteen seconds of serial Git work before any
+reviewer started.
+
+- **Plain-text files and MDX are reviewed.** The documentation skip took every
+  `.txt` and `.mdx` file for prose, so a change to `CMakeLists.txt`,
+  `requirements.txt` or an MDX page (which carries JSX) was pushed with a skip
+  attestation and no model call. Only Markdown, reStructuredText and AsciiDoc
+  are prose now. Their reviewer applies the documentation lens, except to
+  `CMakeLists.txt` and dependency `.txt` manifests, which get the
+  configuration lens.
+- **CI workflows and database migrations are high risk.**
+  `.github/workflows/`, `.gitlab-ci.yml` and `migrations/` directories join
+  the high-risk paths: they run with repository secrets or change persisted
+  data.
+- **A test shares its code file's shard.** Shards were filled by file kind,
+  so a module and its test went to different reviewers and nobody checked the
+  test against the changed branch. A test is now placed right after the
+  changed file of the same name it tests (`a.test.ts`, `test_a.py`,
+  `a_test.go`, `ATest.java`; the closest directory wins) when the shard bounds
+  allow, and the reviewer applies the lens of every kind of file its shard
+  holds.
+- **The reference map covers more languages.** Declarations are extracted from
+  Python, Ruby, PHP, Java, Kotlin, Scala, C#, Swift and C/C++ as well as
+  JavaScript/TypeScript, Svelte, Rust and Go, including return-typed C, C++,
+  Java and C# functions without a modifier, and C/C++ definitions whose return
+  type has a line of its own at column 0 (GNU and BSD styles; an indented line
+  is never read as one). The lexer drops `#` comments and
+  multi-line triple-quoted strings (honouring escapes where the language does)
+  where those languages have them. It is still a line lexer, not a parser.
+- **Reviewers see the change's stated intent.** The review context quotes the
+  messages of the commits between base and head (newest first, at most 4 KB).
+  The history export carried subjects only, mixed with unrelated repository
+  history, although the incomplete-claimed-fix rule reads intent from them.
+  The messages are untrusted evidence, never instructions.
+- **Held-back candidates are kept.** A candidate under the confidence floor
+  still does not reach adjudication, but the report now keeps up to 40 of them,
+  and `ledger` labels an external finding in such a file `below-floor`. A miss
+  can be told apart as "seen and held back" or "never seen".
+- **The reference map is ready sooner.** It reads changed blobs with two
+  `git cat-file --batch` processes instead of one per blob, sweeps symbols and
+  co-change history with up to eight Git processes at once, and is built from
+  the repository's objects while the review checkout is created. On this
+  repository's 1.11.1–1.12.0 range (28 files) it took 0.9 s instead of 6.4–7.7
+  s and produced a byte-identical map. Budgets are still applied in symbol
+  order, so the map does not depend on which sweep finished first.
+- Prompts and the review context no longer assume Rove's UI: the async lens
+  names generic interleavings, and the scout spends its interleaving slot only
+  when the diff creates a pending window.
+- **The review material travels in the prompt.** Every reviewer used to spend
+  its first turns reading the context, the charter, the lessons, the briefs
+  and its shard, one call each, and a long tool output could come back with
+  its middle elided. The context and its required reads are now in every
+  prompt when together they fit 96 KB, and a shard's hunks (or an
+  adjudication batch's candidates) when they fit 96 KB, between markers
+  carrying a per-review nonce. Prompts reach Claude Code and Codex on standard
+  input. Larger material is read from files in parts, as before.
+- **Adjudication starts while reviewers run.** A batch of five candidates goes
+  to a fresh adjudicator as soon as completed reviews supply it; the rest goes
+  in batches of at most three when the last reviewer settles. The floor, the
+  identity merge and the 50-candidate bound are unchanged; a candidate already
+  sent is not replaced by a later duplicate. A shard whose reviewer reports an
+  incomplete review is handed over part by part at once, not after the wave.
+- **A large file no longer has to be split for a follow-up round.** The file
+  of each prior blocker assigned to a follow-up reviewer was a required read,
+  whole: a file over one tool output (~38 KB for Codex) came back truncated
+  and failed every follow-up round closed until the file was split. The
+  reviewer now reads the code that settles the blocker, around its location
+  and by line range in a large file. Any other truncated read is not
+  incompleteness, and an adjudicator is told it is assigned candidates, not a
+  diff. With shard parts (1.12.0) and inlined material, a changed file over
+  ~40 KB or a line over ~2 KB is no longer a reason to split a change.
+- **`rove-sentinel limits` says what this engine accepts.** Consuming projects
+  kept Sentinel workarounds in their notes long after an engine made them
+  unnecessary (splitting every file over 40 KB, for one). The command prints
+  the active engine's limits, generated from the values it enforces, and the
+  workarounds earlier versions needed that it does not (`--json` for
+  agents). The new [limits guide](docs/limits.md) is updated by every release;
+  a test ties its version line and its list of retired workarounds to the
+  engine.
+- **Model and effort per role.** A provider's `roles` can give the scout,
+  hypotheses, shards, the lens reviewer or the adjudicator their own model,
+  effort or ceiling. The defaults set no roles, so nothing changes unless a
+  project opts in; `doctor --test-models` probes every combination a role can
+  request.
+
+Shards, prompts and the policy digest change with the version, so existing
+attestations and kept shard reviews do not carry over.
+
 ## 1.12.0 — a diff that touches a file of very long lines can be reviewed
 
 A branch that edited six lines of a file of 300-character lines failed closed

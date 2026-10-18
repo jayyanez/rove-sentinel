@@ -4,6 +4,7 @@ import {
   addedLinesByFile,
   classifyShardFile,
   CONTINUATION_PREFIX,
+  familyStem,
   metadataOnlySections,
   partitionShards,
   splitPatchByFile,
@@ -53,6 +54,10 @@ describe('sharded coverage partition', () => {
     expect(classifyShardFile('src-tauri/launch-shim/src/bin/rove_agent_hook.rs')).toBe('scripts');
     expect(classifyShardFile('src-tauri/resources/agent-notifications/global/pi.js')).toBe('scripts');
     expect(classifyShardFile('src-tauri/permissions/default.toml')).toBe('config');
+    expect(classifyShardFile('CMakeLists.txt')).toBe('config');
+    expect(classifyShardFile('native/CMakeLists.txt')).toBe('config');
+    expect(classifyShardFile('requirements-dev.txt')).toBe('config');
+    expect(classifyShardFile('docs/notes.txt')).toBe('docs');
   });
 
   it('splits a patch into per-file sections with changed-line counts', () => {
@@ -360,5 +365,98 @@ describe('sharded coverage partition', () => {
     const added = addedLinesByFile(patch);
     expect([...added.get('docs/a.md') ?? []]).toEqual([11, 12, 14, 43]);
     expect(added.has('docs/none.md')).toBe(false);
+  });
+});
+
+describe('a test shares a shard with the code it tests (1.13.0)', () => {
+  it('names the family of common test conventions', () => {
+    expect(familyStem('src/lib/cache.test.ts')).toBe('cache');
+    expect(familyStem('src/lib/cache.spec.tsx')).toBe('cache');
+    expect(familyStem('src/lib/cache.ts')).toBe('cache');
+    expect(familyStem('tests/test_cache.py')).toBe('cache');
+    expect(familyStem('pkg/cache_test.go')).toBe('cache');
+    expect(familyStem('src/test/java/CacheTest.java')).toBe('cache');
+    expect(familyStem('src/main/java/Cache.java')).toBe('cache');
+  });
+
+  it('places each test right after its code file instead of in a tests shard of its own', () => {
+    const patch = [
+      fileSection('src/lib/a.ts', 300),
+      fileSection('src/lib/b.ts', 300),
+      fileSection('src/lib/__tests__/a.test.ts', 200),
+      fileSection('src/lib/__tests__/b.test.ts', 200),
+      fileSection('tests/unrelated.test.ts', 40),
+      fileSection('docs/a.md', 10),
+    ].join('\n');
+    const shards = partitionShards(patch, { targetLines: 500, maxShards: 8 });
+    const shardOf = (file: string) => shards.findIndex((shard) => shard.files.includes(file));
+    expect(shardOf('src/lib/__tests__/a.test.ts')).toBe(shardOf('src/lib/a.ts'));
+    expect(shardOf('src/lib/__tests__/b.test.ts')).toBe(shardOf('src/lib/b.ts'));
+    expect(shards[shardOf('src/lib/a.ts')].files).toEqual(['src/lib/a.ts', 'src/lib/__tests__/a.test.ts']);
+    expect(shards[shardOf('src/lib/a.ts')].kinds).toEqual(['code', 'tests']);
+    // Every hunk still has exactly one owner.
+    expect(shards.flatMap((shard) => shard.files).sort()).toEqual([
+      'docs/a.md', 'src/lib/__tests__/a.test.ts', 'src/lib/__tests__/b.test.ts', 'src/lib/a.ts', 'src/lib/b.ts', 'tests/unrelated.test.ts',
+    ]);
+  });
+
+  it('attaches a test to the same-named file closest to it', () => {
+    const patch = [
+      fileSection('packages/one/src/util.ts', 5),
+      fileSection('packages/two/src/util.ts', 5),
+      fileSection('packages/two/src/util.test.ts', 5),
+    ].join('\n');
+    const [shard] = partitionShards(patch, { targetLines: 500, maxShards: 8 });
+    expect(shard.files).toEqual(['packages/one/src/util.ts', 'packages/two/src/util.ts', 'packages/two/src/util.test.ts']);
+  });
+
+  it('keeps a family together when the cap forces packing by size', () => {
+    const big = (file: string, kb: number) => fileSection(file, 1).replace('+new 0', `+${'x'.repeat(kb * 1024)}`);
+    const patch = [
+      big('src/a.ts', 60), big('src/b.ts', 60), big('src/c.ts', 20), big('src/d.ts', 20),
+      big('src/a.test.ts', 10), big('src/c.test.ts', 10),
+    ].join('\n');
+    const shards = partitionShards(patch, { targetLines: 500, maxShards: 2 });
+    expect(shards.length).toBe(2);
+    const shardOf = (file: string) => shards.findIndex((shard) => shard.files.includes(file));
+    expect(shardOf('src/a.test.ts')).toBe(shardOf('src/a.ts'));
+    expect(shardOf('src/c.test.ts')).toBe(shardOf('src/c.ts'));
+    const owner = shards[shardOf('src/a.ts')].files;
+    expect(owner.indexOf('src/a.test.ts')).toBe(owner.indexOf('src/a.ts') + 1);
+    expect(partitionShards(patch, { targetLines: 500, maxShards: 2 })).toEqual(shards);
+  });
+});
+
+describe('test families after the 1.13.0 self-review', () => {
+  it('names test classes whose name ends in a capital letter', () => {
+    expect(familyStem('src/test/java/ATest.java')).toBe('a');
+    expect(familyStem('src/test/java/UserDAOTest.java')).toBe('userdao');
+    expect(familyStem('src/main/java/Contest.java')).toBe('contest');
+  });
+
+  it('prefers the same-named file closest to the test when shared directories tie', () => {
+    const patch = [
+      fileSection('src/deep/nested/util.ts', 5),
+      fileSection('src/util.ts', 5),
+      fileSection('src/util.test.ts', 5),
+    ].join('\n');
+    const [shard] = partitionShards(patch, { targetLines: 500, maxShards: 8 });
+    expect(shard.files.indexOf('src/util.test.ts')).toBe(shard.files.indexOf('src/util.ts') + 1);
+  });
+});
+
+describe('test files named by language convention (1.13.0 gate review)', () => {
+  it('classifies and pairs Go, Python and capitalised test classes outside a test directory', () => {
+    expect(classifyShardFile('pkg/cache/cache_test.go')).toBe('tests');
+    expect(classifyShardFile('app/test_cache.py')).toBe('tests');
+    expect(classifyShardFile('app/cache_test.py')).toBe('tests');
+    expect(classifyShardFile('src/main/java/CacheTest.java')).toBe('tests');
+    expect(classifyShardFile('src/main/java/Contest.java')).toBe('code');
+    expect(classifyShardFile('pkg/cache/cache.go')).toBe('code');
+    const patch = [fileSection('pkg/cache/cache.go', 300), fileSection('pkg/other/other.go', 300), fileSection('pkg/cache/cache_test.go', 50)].join('\n');
+    const shards = partitionShards(patch, { targetLines: 500, maxShards: 8 });
+    const owner = shards.find((shard) => shard.files.includes('pkg/cache/cache.go'));
+    expect(owner?.files).toEqual(['pkg/cache/cache.go', 'pkg/cache/cache_test.go']);
+    expect(owner?.kinds).toEqual(['code', 'tests']);
   });
 });

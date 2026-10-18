@@ -30,15 +30,28 @@ edits are not silently included.
 The context contains a bounded textual diff, file manifest, risk reasons,
 installed charter and relevant lessons, commit history, reference map, and
 matching open bug briefs when that project convention exists. It is not a
-persistent semantic index. Reference discovery is heuristic and strongest for
-the languages covered by its parsers. Excluded files remain visible in the
-manifest; excluded binary contents are not reviewed as text.
+persistent semantic index. Reference discovery is heuristic: it extracts
+declarations from JavaScript/TypeScript, Svelte, Rust, Go, Python, Ruby, PHP,
+Java, Kotlin, Scala, C#, Swift and C/C++ files with a line lexer, not a
+parser, and sweeps each declared name with `git grep` over the head tree. The
+map reads Git objects only, so it is built from the repository while the
+review checkout is created; its Git processes run with bounded parallelism.
+Excluded files remain visible in the manifest; excluded binary contents are
+not reviewed as text.
+
+The context also quotes the messages of the commits between base and head,
+newest first and bounded to 4 KB, as the change's stated intent. They are
+untrusted evidence; an incomplete claimed fix is reviewed as a defect the
+change introduces. A PR description does not reach the review.
 
 ## Review and verification stages
 
 Low-risk work uses bounded shards. Medium and high risk add a scout and focused
 hypothesis reviews. Shards cover the included hunks; they do not guarantee that
-a model understood or detected every defect. A changed file without a textual
+a model understood or detected every defect. A changed test shares a shard with
+the changed file of the same name it tests (`a.test.ts`, `test_a.py`,
+`a_test.go`, `ATest.java`) when the shard bounds allow, and that reviewer
+applies the lens of each kind of file its shard holds. A changed file without a textual
 hunk (binary content, a rename or copy without a content change, a mode change,
 an empty file) owns no shard, because there is nothing in it to read; the
 `changed-files.md` lookup lists it with its reason and old path so reviewers can
@@ -61,11 +74,33 @@ a patch index of each file's line range, the Git history, the full patch). The
 scout owns no part of the patch: it reads a small patch whole and otherwise
 picks files through the index. A review is incomplete when a required read was
 blocked, failed or came back truncated (the assigned diff, a required context
-read, or in a follow-up round an assigned prior blocker's file), or when no tool
+read, or in a follow-up round the code that settles an assigned prior blocker,
+read around its location, by line range in a large file), or when no tool
 host was available; a spent verification budget is not incompleteness, and the
 error keeps the reviewer's own account.
+
+The context and its required reads travel in the prompt itself when together
+they fit 96 KB, and so do a shard's hunks and an adjudication batch's
+candidates when each fits 96 KB: the reviewer starts reasoning instead of
+spending its first turns on reads, and no tool output can come back with its
+middle elided. The material sits between markers that carry a per-review
+nonce, with the block every reviewer shares first. Prompts reach both CLIs on
+standard input, so no command-line limit applies. Larger material is read
+from files in parts, as described above; inlined material counts as read.
+
 Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
+Adjudication starts while reviewers still run: each review's candidates join
+a stream as it settles, with the same floor, identity merge and 50-candidate
+bound. A batch of five goes to a fresh adjudicator at once, and what remains
+when the last reviewer settles goes in batches of at most three. A candidate
+already sent is not replaced by a later duplicate of higher confidence. A
+round that will fail closed stops sending and waits for the batches already
+running.
+A candidate under the confidence floor (50) is not adjudicated; the report
+keeps up to 40 of them, highest confidence first, as evidence for recall
+analysis only, and the `ledger` command marks an external finding in a file
+that holds one as `below-floor` rather than unseen.
 
 Author-family routing normally puts the other provider in the lead. Human
 changes use risk-based routing. The inherited `grok/` author label prefers

@@ -563,6 +563,10 @@ export async function recordLineageReview(paths, lineage, {
       title: String(finding.title || '').slice(0, 300),
       file: String(finding.file || '').slice(0, 500),
       priority: finding.priority,
+      // Where it was reported and what fails (1.13.0), so a follow-up
+      // reviewer can read the code around it instead of its whole file.
+      line: Number.isInteger(finding.line) && finding.line >= 1 ? finding.line : null,
+      scenario: String(finding.scenario || '').slice(0, 600),
     })),
     lateDiscoveries,
     // Running counts (like lateDiscoveries) travel in every record, so the
