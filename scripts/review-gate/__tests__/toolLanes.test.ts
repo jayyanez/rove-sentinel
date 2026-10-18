@@ -138,7 +138,7 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
     // name, never read as configuration (1.13.0 gate review).
     // gitleaks skips any file named .gitleaks.toml, so the copy is renamed too.
     expect(seen!.copied.some((file) => file.endsWith('.gitleaks.toml'))).toBe(false);
-    expect(seen!.copied.find((file) => file.endsWith('/gitleaks-config.toml'))).toMatch(/^\.sentinel-control-rove-review-gitleaks-[^/]+\/gitleaks-config\.toml$/);
+    expect(seen!.copied.find((file) => file.endsWith('.scanned'))).toMatch(/^\.sentinel-control-rove-review-gitleaks-[^/]+\/\d+\.scanned$/);
     expect(seen!.copied.filter((file) => !file.startsWith('.sentinel-control-'))).toEqual(['src', 'src/k.js', 'tests', 'tests/fixture.js']);
     expect(seen!.env).toEqual({ PATH: 'x' });
     expect(seen!.args).toEqual(expect.arrayContaining(['--redact', '--ignore-gitleaks-allow', '--gitleaks-ignore-path']));
@@ -243,10 +243,14 @@ describe('linter lanes with the real tools, where installed (1.13.0)', () => {
 
   it.skipIf(!installed('gitleaks'))('gitleaks finds a token in the own .gitleaks.toml of the branch and reports it there', async () => {
     const token = ['ghp', 'R7mQ2xK9vLp4TzW8nB3cY6dF1hJ5sA0gE2uX'].join('_');
-    const files = { '.gitleaks.toml': `title = "x"\n# ${token}\n` };
+    const files = { '.gitleaks.toml': `title = "x"\n# ${token}\n`, 'config/.gitleaks.toml': `# ${token}\n`, 'my-gitleaks.toml.bak': `# ${token}\n` };
     const checkout = await checkoutWith(files);
     const lane = await runGitleaksLane({ checkout, files: Object.keys(files), patch: addedPatch(files) });
-    expect(lane.findings).toEqual([expect.objectContaining({ file: '.gitleaks.toml', line: 2, priority: 'P2' })]);
+    // gitleaks skips every path containing gitleaks.toml; each is scanned
+    // under its own name and reported against its own path.
+    expect(lane.findings.map((finding: { file: string; line: number }) => [finding.file, finding.line]).sort()).toEqual([
+      ['.gitleaks.toml', 2], ['config/.gitleaks.toml', 1], ['my-gitleaks.toml.bak', 1],
+    ]);
   });
 
   it.skipIf(!installed('ruff'))('ruff finds an undefined name', async () => {
