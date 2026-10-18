@@ -904,3 +904,20 @@ describe('reference map: a split signature needs a return type on the line befor
     expect(extractChangedSymbols(patch).symbols).toEqual(['calculate_total']);
   });
 });
+
+describe('reference map: the return-type line before a split signature (1.13.0 follow-up)', () => {
+  const added = (...lines: string[]) => [
+    'diff --git a/src/money.cpp b/src/money.cpp',
+    '--- a/src/money.cpp',
+    '+++ b/src/money.cpp',
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
+
+  it('takes a one-letter type and refuses a statement keyword', () => {
+    expect(extractChangedSymbols(added('template <typename T>', 'T', 'pick_first (std::vector<T> items)', '{')).symbols).toEqual(['pick_first']);
+    for (const keyword of ['throw', 'co_return', 'co_await', 'new', 'delete', 'return']) {
+      expect(extractChangedSymbols(added(keyword, 'make_error (code)')).symbols).toEqual([]);
+    }
+  });
+});
