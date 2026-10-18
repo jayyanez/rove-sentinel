@@ -55,12 +55,30 @@ export function shardCacheKey({ shard, provider, policyDigest, repository, risk,
   }), 40);
 }
 
+// A module named after its directory: `./parser` imports parser/index.ts,
+// `parser` imports parser/__init__.py or parser/mod.rs.
+const DIRECTORY_MODULE = /^(?:index|mod|__init__|main|lib|init)$/i;
+
+/**
+ * The names other files use for `file`: its name without the extension, and
+ * its directory's name too when the file is the directory's module. Null
+ * when one of them is shorter than three characters: such a name cannot be
+ * searched as a word reliably.
+ */
+export function fileNames(file) {
+  const parts = String(file).split('/');
+  const stem = parts.at(-1).replace(/\.[^.]+$/, '');
+  const names = [stem];
+  if (DIRECTORY_MODULE.test(stem) && parts.length > 1) names.push(parts.at(-2));
+  return names.some((name) => name.length < 3) ? null : names;
+}
+
 /** The names a change elsewhere would have to mention to affect this shard. */
 export function shardSurface(shard) {
-  const stems = shard.files.map((file) => String(file).split('/').pop().replace(/\.[^.]+$/, ''));
-  if (stems.some((stem) => stem.length < 3)) return null;
+  const names = shard.files.map(fileNames);
+  if (names.some((entry) => entry === null)) return null;
   const { symbols } = extractChangedSymbols(shard.patch);
-  return [...new Set([...stems, ...symbols])];
+  return [...new Set([...names.flat(), ...symbols])];
 }
 
 /**
@@ -73,18 +91,19 @@ export async function rebaseReuseAllowed(repoRoot, { shard, reviewedHead, headSh
   if (!surface || !surface.length) return false;
   const quiet = { allowFailure: true, result: true, latchCleanupFailure: false };
   try {
-    const diff = await run(repoRoot, ['diff', '--name-only', '--no-renames', reviewedHead, headSha], quiet);
+    // NUL-separated output: paths arrive verbatim, never Git-quoted.
+    const diff = await run(repoRoot, ['diff', '--name-only', '-z', '--no-renames', reviewedHead, headSha], quiet);
     if (diff.code !== 0) return false;
-    const changed = new Set(diff.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    const changed = new Set(String(diff.stdout).split('\0').filter(Boolean));
     if (!changed.size) return true;
     if (shard.files.some((file) => changed.has(file))) return false;
     const filesMentioning = async (names) => {
       const grep = await run(repoRoot, [
-        'grep', '-l', '-w', '--fixed-strings', ...names.flatMap((name) => ['-e', name]), headSha, '--',
+        'grep', '-l', '-z', '-w', '--fixed-strings', ...names.flatMap((name) => ['-e', name]), headSha, '--',
       ], quiet);
       if (grep.code === 1) return new Set();
       if (grep.code !== 0) return null;
-      return new Set(grep.stdout.split(/\r?\n/).filter(Boolean)
+      return new Set(String(grep.stdout).split('\0').filter(Boolean)
         .map((line) => (line.startsWith(`${headSha}:`) ? line.slice(headSha.length + 1) : line)));
     };
     // Something that changed uses the shard ...
@@ -94,8 +113,10 @@ export async function rebaseReuseAllowed(repoRoot, { shard, reviewedHead, headSh
     // changed file (an import, an include, a path). A changed file with a
     // name shorter than three characters, or too many changed files to name,
     // cannot be checked this way.
-    const changedNames = [...new Set([...changed].map((file) => file.split('/').pop().replace(/\.[^.]+$/, '')))];
-    if (changedNames.length > MAX_CHANGED_NAMES || changedNames.some((name) => name.length < 3)) return false;
+    const named = [...changed].map(fileNames);
+    if (named.some((entry) => entry === null)) return false;
+    const changedNames = [...new Set(named.flat())];
+    if (changedNames.length > MAX_CHANGED_NAMES) return false;
     const dependents = await filesMentioning(changedNames);
     return Boolean(dependents) && !shard.files.some((file) => dependents.has(file));
   } catch {

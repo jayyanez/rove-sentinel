@@ -178,3 +178,47 @@ describe('shard reuse after the 1.13.0 self-review', () => {
     expect(await rebaseReuseAllowed(root, { shard, reviewedHead: after, headSha: unrelated })).toBe(true);
   });
 });
+
+describe('shard reuse: quoted paths and directory modules (1.13.0 follow-up)', () => {
+  it('names a directory module by its directory as well', async () => {
+    const { fileNames } = await import('../shardCache.mjs');
+    expect(fileNames('src/parser/index.ts')).toEqual(['index', 'parser']);
+    expect(fileNames('pkg/parser/__init__.py')).toEqual(['__init__', 'parser']);
+    expect(fileNames('src/parser.ts')).toEqual(['parser']);
+    expect(fileNames('src/io/index.ts')).toBeNull();
+  });
+
+  it('reviews a shard again when the directory module it imports changed', async () => {
+    const root = await makeRepository();
+    git(root, 'switch', 'main');
+    await write(root, 'src/parser/index.ts', 'export const parse = (text: string) => text;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'add parser');
+    git(root, 'switch', 'feature/cache');
+    await write(root, 'src/cache.ts', "import { parse } from './parser';\nexport function readEntry(key: string) {\n  return parse(key).trim();\n}\n");
+    git(root, 'commit', '-am', 'Parse keys');
+    git(root, 'rebase', 'main');
+    const before = git(root, 'rev-parse', 'HEAD');
+    const [shard] = partitionShards(await readPatch(root, git(root, 'merge-base', 'main', before), before));
+    const after = await moveMainAndRebase(root, 'src/parser/index.ts', 'export const parse = (text: string) => text.toLowerCase();\n');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: before, headSha: after })).toBe(false);
+  });
+
+  it('reads changed paths verbatim, not Git-quoted', async () => {
+    const root = await makeRepository();
+    git(root, 'switch', 'main');
+    await write(root, 'src/\u00e9parser.ts', 'export const parse = (text: string) => text;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'add parser');
+    git(root, 'switch', 'feature/cache');
+    await write(root, 'src/cache.ts', "import { parse } from './\u00e9parser';\nexport function readEntry(key: string) {\n  return parse(key).trim();\n}\n");
+    git(root, 'commit', '-am', 'Parse keys');
+    git(root, 'rebase', 'main');
+    const before = git(root, 'rev-parse', 'HEAD');
+    const [shard] = partitionShards(await readPatch(root, git(root, 'merge-base', 'main', before), before));
+    const after = await moveMainAndRebase(root, 'src/\u00e9parser.ts', 'export const parse = (text: string) => text.toLowerCase();\n');
+    // Git quotes this path in its default output (core.quotePath).
+    expect(git(root, 'diff', '--name-only', before, after)).toContain('\\303\\251parser');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: before, headSha: after })).toBe(false);
+  });
+});

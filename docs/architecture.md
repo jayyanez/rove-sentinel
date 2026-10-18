@@ -148,8 +148,10 @@ their context, files, provider, risk, branch, author, policy and engine). A
 later full round, typically after a rebase, reuses one only when none of the
 shard's files differs between the two heads and no file that differs
 mentions, as a whole word, a name the shard declares or removes or the name
-of one of its files without the extension, and none of its files mentions the
-name of a file that differs (a dependency it imports or includes). That textual test stands in for
+of one of its files without the extension (and of its directory, for an
+`index`, `mod`, `__init__`, `main`, `lib` or `init` module), and none of its
+files mentions such a name of a file that differs (a dependency it imports or
+includes). That textual test stands in for
 "nothing the hunks depend on changed"; it is not an analysis, so a shard with
 a file name shorter than three characters, and every documentation or
 configuration shard, is reviewed again. Candidates are adjudicated afresh,
