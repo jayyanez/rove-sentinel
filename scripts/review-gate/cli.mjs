@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
+import { formatLimits, sentinelLimits } from './limits.mjs';
 import { readReviewPolicy, loadInstalledReviewPolicy } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
@@ -114,6 +115,11 @@ async function main() {
   }
   if (command === '--version' || command === 'version') {
     print(GATE_VERSION);
+    return;
+  }
+  // What this engine accepts (1.13.0): no repository or policy needed.
+  if (command === 'limits') {
+    print(options.json ? sentinelLimits() : formatLimits(), Boolean(options.json));
     return;
   }
   if (['gate', 'pre-push', 'doctor'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {

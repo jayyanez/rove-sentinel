@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { LIMITS } from '../constants.mjs';
+import { GATE_VERSION, LIMITS } from '../constants.mjs';
 
 const CLI = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 
@@ -76,6 +76,16 @@ describe('review-gate CLI pre-push stdin', () => {
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ status: 'disabled' });
     expect(result.stderr).toBe('');
+  });
+
+  it('reports the limits of this engine without a repository (1.13.0)', async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'sentinel-limits-'));
+    dirs.push(scratch);
+    const result = await runCli(['limits', '--json', '--repo', scratch], []);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ version: GATE_VERSION, review: expect.any(Array), superseded: expect.any(Array) });
+    const text = await runCli(['limits', '--repo', scratch], []);
+    expect(text.stdout).toContain('No longer needed');
   });
 
   it('shows subcommand help without an installed policy or repository', async () => {

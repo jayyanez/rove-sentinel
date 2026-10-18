@@ -84,6 +84,14 @@ reviewer started.
   incompleteness, and an adjudicator is told it is assigned candidates, not a
   diff. With shard parts (1.12.0) and inlined material, a changed file over
   ~40 KB or a line over ~2 KB is no longer a reason to split a change.
+- **`rove-sentinel limits` says what this engine accepts.** Consuming projects
+  kept Sentinel workarounds in their notes long after an engine made them
+  unnecessary (splitting every file over 40 KB, for one). The command prints
+  the active engine's limits, generated from the values it enforces, and the
+  workarounds earlier versions needed that it does not (`--json` for
+  agents). The new [limits guide](docs/limits.md) is updated by every release;
+  a test ties its version line and its list of retired workarounds to the
+  engine.
 - **Model and effort per role.** A provider's `roles` can give the scout,
   hypotheses, shards, the lens reviewer or the adjudicator their own model,
   effort or ceiling. The defaults set no roles, so nothing changes unless a

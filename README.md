@@ -21,6 +21,7 @@ See the [validation record](docs/validation.md) for what was tested.
 | Understand automatic updates | [Update guide](docs/updates.md) |
 | Use Sentinel across agents and projects | [Multiple projects](docs/multiple-projects.md) |
 | Understand requirements and limitations | [Support matrix](docs/support.md) |
+| Know what this version accepts (for your agents too) | [Limits](docs/limits.md) |
 | Choose models, effort and subscriptions | [Models guide](docs/models.md) |
 | Add your project's review rules | [Configuration](docs/configuration.md) |
 | Understand how the review works | [Architecture](docs/architecture.md) |

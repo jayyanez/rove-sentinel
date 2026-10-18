@@ -15,6 +15,26 @@ describe('standalone package contract', () => {
     expect(pkg.sentinelEngineProtocol).toBe(1);
   });
 
+  it('documents the limits of this version, and the engine reports them (1.13.0)', async () => {
+    // Every release reviews the limits page: its version line must match.
+    const guide = await readFile('docs/limits.md', 'utf8');
+    expect(guide).toContain(`**Engine version:** ${GATE_VERSION}`);
+    expect(guide).toContain(`## Limits of ${GATE_VERSION}`);
+    const { formatLimits, sentinelLimits } = await import('../limits.mjs');
+    const limits = sentinelLimits();
+    expect(limits.version).toBe(GATE_VERSION);
+    // The guide lists exactly the workarounds the engine calls unnecessary.
+    const rows = guide.match(/^\| .+ \| \d+\.\d+\.\d+ \| .+ \|$/gm) || [];
+    expect(rows.length).toBe(limits.superseded.length);
+    for (const entry of limits.superseded) {
+      expect(rows.some((row) => row.includes(`| ${entry.unnecessarySince} |`))).toBe(true);
+    }
+    const text = formatLimits(limits);
+    expect(text).toContain(`Rove Sentinel ${GATE_VERSION}`);
+    expect(text).toContain('4 MiB');
+    expect(text).toContain('No limit on a changed file');
+  });
+
   it('keeps incomplete claimed fixes in every reviewer scope', async () => {
     const charter = await readFile('templates/charter.md', 'utf8');
     expect(charter).toMatch(/Pre-existing\s+is NOT a valid ground/);

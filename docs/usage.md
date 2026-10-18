@@ -96,6 +96,7 @@ machine, watcher, network, and the selected authenticated CLI(s) must remain ava
 | `resume` | Resume ordinary paused work |
 | `recover --reason "Investigated the stale watcher state"` | Recover stale locks and claims; refuses a healthy watcher and does not clear a pause |
 | `ledger --pr 123` | Draft an optional comparison ledger from external review comments |
+| `limits` | What the active engine accepts and where it stops, and which earlier workarounds no longer apply |
 | `help` | List commands and flags |
 
 The `ledger` command does not invoke CodeRabbit or Greptile. The `design-evidence`

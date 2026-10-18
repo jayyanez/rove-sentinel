@@ -102,7 +102,10 @@ configuration. Contributors without access skip this section.
 
 ## Documentation and distribution
 
-Update affected guides when behavior changes. Windows is the qualified platform;
+Update affected guides when behavior changes. Every release updates
+[limits](docs/limits.md) and `scripts/review-gate/limits.mjs` (`rove-sentinel
+limits`): the current limits and the workarounds it makes unnecessary, so
+consuming projects never follow a rule from an earlier engine. Windows is the qualified platform;
 do not claim macOS/Linux support or new provider integrations without evidence.
 Keep limitations and the [validation record](docs/validation.md) accurate.
 
