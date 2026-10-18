@@ -916,8 +916,24 @@ describe('reference map: the return-type line before a split signature (1.13.0 f
 
   it('takes a one-letter type and refuses a statement keyword', () => {
     expect(extractChangedSymbols(added('template <typename T>', 'T', 'pick_first (std::vector<T> items)', '{')).symbols).toEqual(['pick_first']);
-    for (const keyword of ['throw', 'co_return', 'co_await', 'new', 'delete', 'return']) {
+    for (const keyword of ['throw', 'co_return', 'co_await', 'new', 'delete', 'return', 'do', 'try', 'default']) {
       expect(extractChangedSymbols(added(keyword, 'make_error (code)')).symbols).toEqual([]);
     }
+  });
+});
+
+describe('reference map: an indented line is never a split signature\'s return type (1.13.0 follow-up)', () => {
+  it('ignores a call that follows an indented line', () => {
+    const patch = [
+      'diff --git a/src/money.c b/src/money.c',
+      '--- a/src/money.c',
+      '+++ b/src/money.c',
+      '@@ -0,0 +1,4 @@',
+      '+    counter',
+      '+pending_total (count)',
+      '+static long',
+      '+settle_total (long count)',
+    ].join('\n');
+    expect(extractChangedSymbols(patch).symbols).toEqual(['settle_total']);
   });
 });

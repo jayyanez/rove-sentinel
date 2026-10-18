@@ -79,9 +79,12 @@ const RETURN_TYPED_PATTERNS = [
 // (RETURN_TYPE_LINE): a top-level macro invocation such as `MODULE_LICENSE(`
 // follows a blank line, a `;` or a `}`, never a bare type. A one-line
 // invocation ending in `;` is refused too (1.13.0).
-// The same statement keywords RETURN_TYPED_PATTERNS refuses; a one-letter
-// type (`T`) is a type.
-const RETURN_TYPE_LINE = /^(?!\s*(?:return|else|case|new|delete|throw|goto|sizeof|typedef|using|assert|co_return|co_yield|co_await|yield|await)\b)[A-Za-z_](?:[\w\s*&:<>,]*[\w*&>])?\s*$/;
+// The type starts at column 0, as in the GNU and BSD styles: inside a
+// function body a statement is indented, so an indented line never counts.
+// Unindented code inside a function is beyond what a line pattern can tell
+// apart; the keywords that can stand alone on a line are refused anyway. A
+// one-letter type (`T`) is a type.
+const RETURN_TYPE_LINE = /^(?!(?:return|else|case|default|do|try|new|delete|throw|goto|sizeof|typedef|using|assert|static_assert|co_return|co_yield|co_await|yield|await)\b)[A-Za-z_](?:[\w\s*&:<>,]*[\w*&>])?\s*$/;
 const SPLIT_SIGNATURE_PATTERNS = [
   /^(?:[A-Za-z_]\w*::)*~?([A-Za-z_]\w{2,})\s*\([^;{}]*\)?\s*(?:const\s*)?(?:\{|$)/g,
 ];

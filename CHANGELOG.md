@@ -29,8 +29,9 @@ reviewer started.
 - **The reference map covers more languages.** Declarations are extracted from
   Python, Ruby, PHP, Java, Kotlin, Scala, C#, Swift and C/C++ as well as
   JavaScript/TypeScript, Svelte, Rust and Go, including return-typed C, C++,
-  Java and C# functions without a modifier (and C/C++ definitions whose return
-  type has a line of its own). The lexer drops `#` comments and
+  Java and C# functions without a modifier, and C/C++ definitions whose return
+  type has a line of its own at column 0 (GNU and BSD styles; an indented line
+  is never read as one). The lexer drops `#` comments and
   multi-line triple-quoted strings (honouring escapes where the language does)
   where those languages have them. It is still a line lexer, not a parser.
 - **Reviewers see the change's stated intent.** The review context quotes the
