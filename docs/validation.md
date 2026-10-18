@@ -36,7 +36,7 @@ Per-role settings and the reuse after a rebase ran only in deterministic tests.
 One side-by-side run reviewed the same historical change (1.11.1, 17 files,
 630 changed lines, high risk, full round) with 1.12.0 and with 1.13.0, both
 with both providers and the installed policy: 5.8 minutes against 3.0. The
-reference map took 6 s against 1 s, hypotheses finished 75 s in instead of 93
+reference map took 6 s against 1 s, hypotheses started 75 s in instead of 93
 and took 29 s instead of 95, and adjudication began at 118 s instead of 188
 and took 63 s instead of 157. Both runs verified the oversized-line defect
 that 1.12.0 later fixed; 1.12.0 also verified two defects 1.13.0 did not
