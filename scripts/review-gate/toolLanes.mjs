@@ -129,19 +129,20 @@ export function toolFinding({ source, rule, title, file, line, detail, priority 
   };
 }
 
-/** The files that are regular files at head: a symlink is never followed. */
-async function existing(checkout, files) {
+/**
+ * The files that are regular files at head, bounded, and how many were left
+ * out: past the bound, or not a regular file (a symlink is never followed).
+ * A file deleted at head is not left out; it has nothing to analyze.
+ */
+async function analyzable(checkout, files, max = MAX_LANE_FILES) {
   const present = [];
+  let notRegular = 0;
   for (const file of files) {
     const info = await lstat(path.join(checkout, file)).catch(() => null);
     if (info?.isFile()) present.push(file);
+    else if (info) notRegular += 1;
   }
-  return present;
-}
-
-/** Bound a lane's file list, saying what it left out. */
-function bounded(targets, max = MAX_LANE_FILES) {
-  return { files: targets.slice(0, max), omitted: Math.max(0, targets.length - max) };
+  return { files: present.slice(0, max), omitted: notRegular + Math.max(0, present.length - max) };
 }
 
 async function firstLine(target) {
@@ -219,7 +220,7 @@ export async function runShellcheckLane({ checkout, files, patch, run = runProce
     if (SHELL_EXTENSION.test(file)) candidates.push(file);
     else if (!/\.[^/]+$/.test(file.split('/').pop()) && SHELL_SHEBANG.test(await firstLine(path.join(checkout, file)))) candidates.push(file);
   }
-  const { files: targets, omitted } = bounded(await existing(checkout, candidates));
+  const { files: targets, omitted } = await analyzable(checkout, candidates);
   if (!targets.length) return { lane, status: 'skipped', note: 'no shell script changed', findings: [] };
   const { result, lane: failed } = await runTool(lane, 'shellcheck', ['-f', 'json1', '-S', 'warning', '--', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
   if (failed) return failed;
@@ -244,7 +245,7 @@ export async function runShellcheckLane({ checkout, files, patch, run = runProce
 
 export async function runActionlintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
   const lane = 'actionlint';
-  const { files: targets, omitted } = bounded(await existing(checkout, (files || []).map(normalize).filter((file) => WORKFLOW_FILE.test(file))));
+  const { files: targets, omitted } = await analyzable(checkout, (files || []).map(normalize).filter((file) => WORKFLOW_FILE.test(file)));
   if (!targets.length) return { lane, status: 'skipped', note: 'no GitHub workflow changed', findings: [] };
   // Its shellcheck and pyflakes integrations are off: run-step style noise
   // would bury the workflow errors this lane is for.
@@ -271,7 +272,7 @@ export async function runActionlintLane({ checkout, files, patch, run = runProce
 
 export async function runRuffLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
   const lane = 'ruff';
-  const { files: targets, omitted } = bounded(await existing(checkout, (files || []).map(normalize).filter((file) => PYTHON_FILE.test(file))));
+  const { files: targets, omitted } = await analyzable(checkout, (files || []).map(normalize).filter((file) => PYTHON_FILE.test(file)));
   if (!targets.length) return { lane, status: 'skipped', note: 'no Python file changed', findings: [] };
   const { result, lane: failed } = await runTool(lane, 'ruff', ['check', '--output-format', 'json', '--no-cache', '--quiet', '--force-exclude', '--', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
   if (failed) return failed;
@@ -314,11 +315,12 @@ async function readAtMost(target, maxBytes) {
   }
 }
 
-// Files gitleaks reads as its own configuration from the scanned root. The
-// branch's copies are scanned as data under another name, so they can
-// neither switch rules off nor hide a secret they contain.
-const GITLEAKS_CONTROL = /^\.(?:gitleaks\.toml|gitleaksignore)$/i;
-const CONTROL_SUFFIX = '.sentinel-scanned';
+// The file gitleaks reads as its configuration from the scanned root. The
+// branch's copy is scanned as data in a directory whose name carries a
+// per-scan random part, so it can neither switch rules off nor collide with
+// another changed file. (The ignore file is read from --gitleaks-ignore-path,
+// which is outside the copy.)
+const GITLEAKS_CONTROL = /^\.gitleaks\.toml$/i;
 
 /**
  * gitleaks over a copy of the changed text files, with its built-in rules
@@ -332,12 +334,13 @@ export async function runGitleaksLane({ checkout, files, patch, run = runProcess
   const added = addedLinesByFile(patch);
   const deadline = Date.now() + timeoutMs;
   const withAdded = (files || []).map(normalize).filter((file) => added.get(file)?.size);
-  const { files: targets, omitted: overCount } = bounded(await existing(checkout, withAdded), MAX_LANE_FILES * 5);
+  const { files: targets, omitted: overCount } = await analyzable(checkout, withAdded, MAX_LANE_FILES * 5);
   if (!targets.length) return { lane, status: 'skipped', note: 'no added lines to scan', findings: [] };
   const scratch = await mkdtemp(path.join(temporaryRoot, 'rove-review-gitleaks-'));
   try {
     const source = path.join(scratch, 'source');
     const scannedAs = new Map();
+    const controlDirectory = `.sentinel-control-${path.basename(scratch)}`;
     let total = 0;
     let skipped = overCount;
     for (const file of targets) {
@@ -349,7 +352,7 @@ export async function runGitleaksLane({ checkout, files, patch, run = runProcess
         skipped += 1;
         continue;
       }
-      const copy = GITLEAKS_CONTROL.test(file) ? `${file}${CONTROL_SUFFIX}` : file;
+      const copy = GITLEAKS_CONTROL.test(file) ? `${controlDirectory}/${file}` : file;
       await mkdir(path.dirname(path.join(source, copy)), { recursive: true });
       await writeFile(path.join(source, copy), text);
       scannedAs.set(copy, file);
@@ -427,7 +430,8 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
   const pattern = command.files ? new RegExp(command.files) : null;
   const selected = (files || []).map(normalize).filter((file) => !pattern || pattern.test(file));
   if (pattern && !selected.length) return { lane, status: 'skipped', note: `no changed file matches ${command.files}`, findings: [] };
-  const targets = await existing(checkout, selected);
+  // Every matching file is passed, up to the bound checked below.
+  const { files: targets, omitted: leftOut } = await analyzable(checkout, selected, Number.MAX_SAFE_INTEGER);
   const usesFiles = command.run.includes('{files}');
   if (usesFiles && !targets.length) return { lane, status: 'skipped', note: 'the matching changed files are absent at head', findings: [] };
   if (usesFiles && targets.length > MAX_LANE_FILES) {
@@ -462,7 +466,7 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
       priority: hit.severity === 'error' ? 'P2' : 'P3',
     }));
   }
-  return finish(lane, findings, { total: hits.length, files: usesFiles ? targets.length : selected.length });
+  return finish(lane, findings, { total: hits.length, files: usesFiles ? targets.length : selected.length, omitted: usesFiles ? leftOut : 0 });
 }
 
 /**

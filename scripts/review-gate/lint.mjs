@@ -425,6 +425,17 @@ export async function runClippyLane({
 }
 
 /**
+ * The error to fail the lanes with: among several rejected lanes, a
+ * process-tree cleanup failure wins, because the watcher's mandatory pause
+ * keys on its classification (1.13.0).
+ */
+export function laneFailure(settled) {
+  const rejected = settled.filter((result) => result.status === 'rejected');
+  if (!rejected.length) return null;
+  return (rejected.find((result) => processTreeCleanupFailureCode(result.reason)) || rejected[0]).reason;
+}
+
+/**
  * Run every deterministic lane that applies to the diff, in parallel, and
  * return their findings plus a per-lane note for the report. Nothing here
  * can reject except a process-tree cleanup failure, which must reach the
@@ -461,8 +472,8 @@ export async function runDeterministicLanes({ checkout, files, patch, stateRoot,
   } finally {
     await nodeModules?.release();
   }
-  const rejected = settled.find((result) => result.status === 'rejected');
-  if (rejected) throw rejected.reason;
+  const failure = laneFailure(settled);
+  if (failure) throw failure;
   const lanes = settled.map((result) => result.value);
   // A lane that could not produce diagnostics (a host hiccup, a timeout, an
   // unparseable manifest) is a NOTE in the report and the summary, exactly

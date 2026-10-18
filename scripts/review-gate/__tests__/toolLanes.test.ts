@@ -136,7 +136,9 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
     const lane = await runGitleaksLane({ checkout, files: Object.keys(files), patch: addedPatch(files), run, resolve: passthrough, env: { PATH: 'x', GITLEAKS_CONFIG: '/allow-all.toml' } });
     // The branch's gitleaks configuration is scanned as data under another
     // name, never read as configuration (1.13.0 gate review).
-    expect(seen!.copied).toEqual(['.gitleaks.toml.sentinel-scanned', 'src', 'src/k.js', 'tests', 'tests/fixture.js']);
+    const control = seen!.copied.find((file) => file.endsWith('/.gitleaks.toml'));
+    expect(control).toMatch(/^\.sentinel-control-rove-review-gitleaks-[^/]+\/\.gitleaks\.toml$/);
+    expect(seen!.copied.filter((file) => file !== control && !file.startsWith('.sentinel-control-'))).toEqual(['src', 'src/k.js', 'tests', 'tests/fixture.js']);
     expect(seen!.env).toEqual({ PATH: 'x' });
     expect(seen!.args).toEqual(expect.arrayContaining(['--redact', '--ignore-gitleaks-allow', '--gitleaks-ignore-path']));
     expect(lane.findings.map((finding: { file: string; priority: string; reason: string }) => [finding.file, finding.priority])).toEqual([
@@ -325,5 +327,43 @@ describe('linter lanes after the 1.13.0 gate review', () => {
     })).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
     expect(modulesAtEnd).toBe(true);
     await expect(access(path.join(checkout, 'node_modules'))).rejects.toThrow();
+  });
+});
+
+describe('linter lanes after the second gate round of 1.13.0', () => {
+  it('scans the branch gitleaks configuration as data without overwriting a file of the same new name', async () => {
+    const files = { '.gitleaks.toml': 'one\n', '.gitleaks.toml.sentinel-scanned': 'two\n' };
+    const checkout = await checkoutWith(files);
+    const contents: string[] = [];
+    const run = async (_command: string, args: string[]) => {
+      const fsSync = await import('node:fs');
+      for (const file of fsSync.readdirSync(args[1], { recursive: true }).map(String)) {
+        const full = path.join(args[1], file);
+        if (fsSync.statSync(full).isFile()) contents.push(fsSync.readFileSync(full, 'utf8'));
+      }
+      await writeFile(args[args.indexOf('--report-path') + 1], '[]');
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    await runGitleaksLane({ checkout, files: Object.keys(files), patch: addedPatch(files), run, resolve: passthrough });
+    expect(contents.sort()).toEqual(['one\n', 'two\n']);
+  });
+
+  it('counts a changed symlink as left out', async () => {
+    const checkout = await checkoutWith({ 'scripts/real.sh': 'echo hi\n' });
+    await (await import('node:fs/promises')).symlink(path.join(checkout, 'scripts', 'real.sh'), path.join(checkout, 'scripts', 'link.sh'), 'file').catch(() => null);
+    const linked = await (await import('node:fs/promises')).lstat(path.join(checkout, 'scripts', 'link.sh')).then((info) => info.isSymbolicLink(), () => false);
+    if (!linked) return; // Creating a file symlink needs a privilege some Windows hosts lack.
+    const run = async () => ({ code: 0, stdout: JSON.stringify({ comments: [] }), stderr: '' });
+    const lane = await runShellcheckLane({ checkout, files: ['scripts/real.sh', 'scripts/link.sh'], patch: addedPatch({ 'scripts/real.sh': 'echo hi\n' }), run, resolve: passthrough });
+    expect(lane.note).toContain('1 changed file(s) NOT analyzed');
+  });
+
+  it('reports a cleanup failure over another lane failure', async () => {
+    const { laneFailure } = await import('../lint.mjs');
+    const plain = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    const orphan = Object.assign(new Error('tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
+    expect(laneFailure([{ status: 'rejected', reason: plain }, { status: 'fulfilled', value: {} }, { status: 'rejected', reason: orphan }])).toBe(orphan);
+    expect(laneFailure([{ status: 'rejected', reason: plain }])).toBe(plain);
+    expect(laneFailure([{ status: 'fulfilled', value: {} }])).toBeNull();
   });
 });
