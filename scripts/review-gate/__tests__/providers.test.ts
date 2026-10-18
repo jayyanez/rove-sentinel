@@ -73,6 +73,14 @@ describe('subscription-backed provider adapters', () => {
     ] as const) {
       expect(shardLens(kind)).toContain(marker);
     }
+    // A shard that also holds tests applies their lens to them (1.13.0).
+    expect(code).not.toContain('This shard also holds');
+    const paired = shardPrompt({
+      provider: 'codex', contextPath: 'ctx.md', shard: { ...shard, kinds: ['code', 'tests'] }, shardPath: 'shard-3.diff',
+    });
+    expect(paired).toContain('This shard also holds tests files. For them apply:');
+    expect(paired).toContain('weaker one');
+    expect(paired).toContain('exercises the branches this diff changed');
     const priorBlocking = [{ priority: 'P2', file: 'src/a.ts', title: 'Stale handler' }];
     // Prior blockers never turn a full review's prompt into a follow-up one.
     expect(shardPrompt({ provider: 'claude', contextPath: 'ctx.md', shard, shardPath: 's.diff', priorBlocking })).not.toContain('follow-up round');

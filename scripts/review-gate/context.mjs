@@ -187,8 +187,8 @@ export function selectReviewLessons(lessons, files, { maxIndex = 20, maxFull = 8
   return `# Selected bug lessons
 
 The installed lessons file is not inlined in full. Use this index plus the
-selected entries. The checkout still contains docs/bugs/lessons.md if a
-specific class must be confirmed.
+selected entries. The full file is the project's configured lessons file if
+a specific class must be confirmed.
 
 ## Index
 
@@ -284,7 +284,7 @@ export async function readOpenBugBriefs(checkout, files, {
   }
   return `# Open bug briefs
 
-Known-open Rove bugs; each documents a still-true fact about the codebase.
+Known-open bugs; each documents a still-true fact about the codebase.
 Do not re-report these as findings, but treat their documented invariants as
 load-bearing when judging the diff. The checkout has the full set under
 docs/bugs/open/.
@@ -450,7 +450,7 @@ export async function createContextBundle({
   const openBriefsPaths = partPaths(directory, 'open-bug-briefs.md', openBriefsParts.length);
   const listed = (paths) => paths.join(', ');
 
-  const context = `# Rove shared review context
+  const context = `# Sentinel review context
 
 Repository checkout: ${checkout}
 Base commit: ${baseSha}

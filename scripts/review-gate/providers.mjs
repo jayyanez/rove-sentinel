@@ -20,7 +20,7 @@ state, trust boundaries, authorization, and the installed project's error
 contracts. Look for a concrete input that makes the changed code wrong.`,
   `Tests, counterexamples, and history: derive mutants that would still pass the
 changed tests, then inspect the production seam those tests protect. Check
-the bounded git-history.md export and docs/bugs/lessons.md for reintroduced
+the bounded git-history.md export and the selected bug lessons for reintroduced
 classes or stale assumptions. Verify tests cover decision outcomes and do not
 pin a bug as correct.`,
   `Accuracy and parity: inspect relevant history and the OLD-vs-NEW behavior for
@@ -40,16 +40,17 @@ const SHARD_LENSES = {
   code: `Code shard. For every hunk: (1) is it correct in isolation and at every
 usage site listed in reference-map.md; (2) async interleaving — for each await,
 queued callback, retry, timer, or deferred event the hunk touches, list what
-the user or system can change meanwhile (workspace switch, active pane/tab
-change, surface close/unmount, disconnect/logout, teardown, supersession,
-renderer/backend replacement) and verify every identifier the continuation
+the user or system can change meanwhile (navigation or a context switch, the
+active item changing, a view or component closing or unmounting, a request
+being cancelled, disconnect/logout, teardown, supersession by a newer call, a
+connection or backend being replaced) and verify every identifier the continuation
 uses is re-validated against live state, not a stale capture; (3) sibling
 symmetry — a flag or guard set on one path is reset on the inverse path, a
 handler added for one event exists for its twin; (4) installed project contracts,
 recoverable error handling, bounded buffers/queues/retries, authorization parity,
 and responsive event loops. When you find one instance of a defect class, enumerate the
 rest of the class through the reference map before moving on.`,
-  scripts: `Scripts, hooks, launch-shim, and resource-adapter shard. For every
+  scripts: `Scripts, hooks, CI, launchers, and resource-adapter shard. For every
 hunk check: platform and feature gating (Windows-only tools invoked elsewhere,
 edition/feature flags, hook scope environment variables,
 case folding that differs per OS); untrusted input reaching the code (a
@@ -464,6 +465,20 @@ export function shardLens(kind) {
 }
 
 /**
+ * The lenses of the other kinds a shard holds (1.13.0). A test now shares a
+ * shard with the code it tests, so a code shard often holds tests: their
+ * reviewer applies the tests lens to them, and checks the pair together.
+ */
+export function secondaryLenses(shard) {
+  const kinds = Array.isArray(shard?.kinds) ? shard.kinds : [];
+  const others = kinds.filter((kind) => kind !== shard.kind && SHARD_LENSES[kind]).slice(0, 2);
+  if (!others.length) return '';
+  return `${others.map((kind) => `\nThis shard also holds ${kind} files. For them apply:\n\n${SHARD_LENSES[kind]}\n`).join('')}${others.includes('tests') || shard.kind === 'tests'
+    ? '\nA changed test next to the code it tests: check that it exercises the branches this diff changed, and that the code does what the test asserts.\n'
+    : ''}`;
+}
+
+/**
  * A repository path is untrusted text: Git-decoded control characters (a
  * newline in a filename) must not be able to start a new line inside the
  * instruction-bearing prompt. Escape them JSON-style.
@@ -564,7 +579,7 @@ code.
 Lens for this shard:
 
 ${shardLens(shard.kind)}
-
+${secondaryLenses(shard)}
 ${CLAIMED_FIX_EXCEPTION} A candidate needs a concrete failure scenario and
 evidence in changed code.${reverify}
 
@@ -588,11 +603,12 @@ required read: partial patch coverage, or a chosen range that came back
 truncated, never makes your scouting incomplete.
 Propose at most ${maxHypotheses} narrow, concrete bug hypotheses introduced by
 this exact diff. Each hypothesis is one claim about one file/line: a specific
-failure, not a theme. Always include at least one async-interleaving sweep:
-for each pending window the diff creates (await, queued callback, retry,
-deferred event), hypothesize what breaks when the user switches workspace,
-closes the surface, logs out, or supersedes the call before it settles, and
-whether captured identifiers are re-validated against live state. Use the
+failure, not a theme. When the diff creates a pending window (await, queued
+callback, retry, timer, deferred event), include at least one
+async-interleaving hypothesis: what breaks when the user or system navigates
+away, closes the view, cancels, logs out, or supersedes the call before it
+settles, and whether captured identifiers are re-validated against live state.
+When it creates none, spend that slot on the riskiest other claim. Use the
 reference-map.md the context lists for usage sites and untouched co-change
 siblings. Skip style, praise, pre-existing issues, and generic risk
 — but when the diff's stated intent (a commit message, patch note, or changed-code

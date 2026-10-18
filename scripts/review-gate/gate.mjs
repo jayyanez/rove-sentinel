@@ -325,6 +325,7 @@ export function shardAssignmentDigest({
     version: 1,
     index: shard.index,
     kind: shard.kind,
+    kinds: shard.kinds ?? null,
     files: shard.files,
     changedLines: shard.changedLines,
     reverify: Boolean(shard.reverify),

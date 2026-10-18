@@ -703,3 +703,71 @@ describe('reference map: parallel sweeps render as if run in order (1.13.0)', ()
     expect(peak).toBeLessThanOrEqual(8);
   });
 });
+
+describe('reference map: declarations beyond JavaScript, Rust and Go (1.13.0)', () => {
+  const sorted = (values: string[]) => [...values].sort();
+  const added = (file: string, ...lines: string[]) => [
+    `diff --git a/${file} b/${file}`,
+    'new file mode 100644',
+    'index 0000000..abcdef1',
+    '--- /dev/null',
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join('\n');
+
+  it('reads Python definitions and ignores hash comments and docstrings', () => {
+    const lines = [
+      'class InvoiceStore:',
+      '    """Docstring that mentions class Ghost and def phantom(x)."""',
+      '    def load_invoice(self, invoice_id):',
+      "        # def commented_out(): and class Hidden",
+      "        return f'def notreal({invoice_id})'",
+      '    async def refresh_cache(self):',
+      "        text = '''",
+      '        class InsideTripleQuotes',
+      "        '''",
+      '        pass',
+      'def __init__(self): pass',
+    ];
+    const patch = added('app/invoices.py', ...lines);
+    const sources = new Map([['abcdef1', lines.join('\n')]]);
+    expect(sorted(extractChangedSymbols(patch, { sources }).symbols)).toEqual(sorted(['InvoiceStore', 'load_invoice', 'refresh_cache']));
+  });
+
+  it('reads Java, C# and Kotlin methods and types', () => {
+    const java = added('src/main/java/Billing.java',
+      'public final class BillingService {',
+      '  // public void commentedOut() {}',
+      '  private static Map<String, List<Integer>> totalsByAccount(String id) {',
+      '    char quote = \'"\';',
+      '    return null;',
+      '  }',
+      '  public record LineItem(String sku) {}',
+      '}');
+    expect(sorted(extractChangedSymbols(java).symbols)).toEqual(sorted(['BillingService', 'totalsByAccount', 'LineItem']));
+    const csharp = added('src/Billing.cs',
+      'public sealed class Ledger {',
+      '  public async Task<int> PostEntryAsync(Entry entry) { return 0; }',
+      '  internal override string Summarize() => "class Fake";',
+      '}');
+    expect(sorted(extractChangedSymbols(csharp).symbols)).toEqual(sorted(['Ledger', 'PostEntryAsync', 'Summarize']));
+    const kotlin = added('app/src/Session.kt',
+      'class SessionManager {',
+      '  fun startSession(user: User): Session = TODO()',
+      '  suspend fun <T> withRetry(block: () -> T): T = block()',
+      '  val doc = """ fun notReal() """',
+      '}');
+    expect(sorted(extractChangedSymbols(kotlin).symbols)).toEqual(sorted(['SessionManager', 'startSession', 'withRetry']));
+  });
+
+  it('lists the blobs of the newly supported languages for whole-file lexing', () => {
+    const patch = ['app/a.py', 'src/B.java', 'src/C.cs', 'src/d.kt', 'src/e.rb', 'src/f.php', 'src/g.swift', 'src/h.cpp'].map((file, index) => [
+      `diff --git a/${file} b/${file}`,
+      `index ${String(index + 1).repeat(7)}..${String(index + 1).repeat(6)}a 100644`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+    ].join('\n')).join('\n');
+    expect(codeFileBlobs(patch)).toHaveLength(16);
+  });
+});

@@ -21,6 +21,10 @@ const SYMBOL_STOPWORDS = new Set([
   'them', 'these', 'those', 'does', 'did', 'been', 'being', 'should', 'would',
   'could', 'just', 'more', 'most', 'some', 'such', 'very', 'too', 'how', 'why',
   'who', 'whose', 'where', 'because', 'until', 'once', 'both', 'either',
+  // Language-level names that every file of a language declares (1.13.0).
+  'main', 'init', '__init__', '__str__', '__repr__', '__eq__', '__call__', 'tostring',
+  'equals', 'hashcode', 'setup', 'teardown', 'synchronized', 'using', 'foreach', 'lock',
+  'fixed', 'guard', 'elif', 'else', 'self', 'cls', 'new', 'get', 'set',
 ]);
 
 // Keyword-prefixed declarations accept names of 3+ characters (`Job`, `up`
@@ -42,15 +46,23 @@ const DECLARATION_PATTERNS = [
   // Rust items.
   /\bfn\s+([a-z_]\w{2,})/g,
   /\b(?:struct|enum|trait)\s+([A-Z]\w{2,})/g,
-  // Go functions and methods.
-  /\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w{2,})\s*\(/g,
+  // Go functions and methods; Swift functions (with generic parameters).
+  /\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w{2,})\s*(?:<[^>]*>)?\s*\(/g,
+  // Python, Ruby and Scala definitions; Kotlin functions (1.13.0).
+  /\bdef\s+(?:self\.)?([A-Za-z_]\w{2,})/g,
+  /\bfun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?([A-Za-z_]\w{2,})\s*\(/g,
+  // Java, C#, Kotlin and Swift methods introduced by a modifier, with any
+  // return type between (generic types may contain spaces after commas);
+  // records, Swift protocols and Ruby modules (1.13.0).
+  /\b(?:public|private|protected|internal|static|final|override|virtual|abstract|async|sealed|synchronized|open|suspend|extern|unsafe|partial)\s+(?:[\w<>[\],.?]+\s+)*?([A-Za-z_]\w{2,})\s*(?:<[^>]*>)?\s*\(/g,
+  /\b(?:record|protocol|module)\s+([A-Z]\w{2,})/g,
 ];
 
 // Declaration regexes only make sense over source code. Running them over
 // prose (Markdown, plain text) filled the bounded symbol budget with English
 // words and crowded out real declarations — the gate's own first self-review
 // caught exactly that.
-const CODE_FILE = /\.(?:ts|tsx|js|jsx|mjs|cjs|svelte|rs|go)$/i;
+const CODE_FILE = /\.(?:ts|tsx|js|jsx|mjs|cjs|svelte|rs|go|py|pyi|rb|php|java|kt|kts|scala|cs|swift|c|h|cc|cpp|cxx|hpp|hh)$/i;
 // Whole-file lexing reads the changed code files' blobs; bounded in count, per
 // blob and in total so a huge diff costs a bounded amount of Git output.
 const REF_MAP_MAX_SOURCE_BLOBS = 120;
@@ -59,7 +71,13 @@ const REF_MAP_MAX_SOURCE_BYTES = 24 * 1024 * 1024;
 const TEST_PATH = /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i;
 // Rust and Go spell a single quote as a char/rune literal or a Rust lifetime,
 // never as a string delimiter.
-const QUOTE_IS_CHAR_LITERAL = /\.(?:rs|go)$/i;
+const QUOTE_IS_CHAR_LITERAL = /\.(?:rs|go|java|kt|kts|scala|cs|c|h|cc|cpp|cxx|hpp|hh)$/i;
+// Python, Ruby and PHP comment with \`#\` (1.13.0).
+const HASH_COMMENT_FILE = /\.(?:py|pyi|rb|php)$/i;
+// Triple-quoted strings that may span lines: Python (either quote), and
+// Kotlin, Scala and Swift (double quotes only).
+const TRIPLE_QUOTE_FILE = /\.(?:py|pyi|kt|kts|scala|swift)$/i;
+const PYTHON_FILE = /\.pyi?$/i;
 const SVELTE_FILE = /\.svelte$/i;
 const RUST_FILE = /\.rs$/i;
 const CHAR_LITERAL = /^'(?:\\(?:u\{[0-9A-Fa-f]{1,6}\}|x[0-9A-Fa-f]{2}|.)|[^\\'])'/u;
@@ -76,6 +94,8 @@ function lexerFor(file, { wholeFile = false } = {}) {
   const svelte = SVELTE_FILE.test(file);
   return {
     charLiterals: QUOTE_IS_CHAR_LITERAL.test(file),
+    hashComments: HASH_COMMENT_FILE.test(file),
+    tripleQuotes: TRIPLE_QUOTE_FILE.test(file) ? (PYTHON_FILE.test(file) ? ['"""', "'''"] : ['"""']) : [],
     // Rust string literals (cooked and raw) may span lines.
     rust: RUST_FILE.test(file),
     closer: null,
@@ -125,6 +145,13 @@ function codeOnly(line, lexer) {
   while (index < line.length) {
     if (lexer.mode === 'block') {
       if (closeAt('*/')) lexer.mode = 'code';
+      continue;
+    }
+    if (lexer.mode === 'triple') {
+      if (closeAt(lexer.closer)) {
+        lexer.mode = 'code';
+        code += ' ';
+      }
       continue;
     }
     if (lexer.mode === 'html') {
@@ -207,6 +234,15 @@ function codeOnly(line, lexer) {
     const char = line[index];
     const next = line[index + 1];
     if (char === '/' && next === '/') break;
+    if (char === '#' && lexer.hashComments) break;
+    const triple = lexer.tripleQuotes.find((quote) => line.startsWith(quote, index));
+    if (triple) {
+      index += triple.length;
+      lexer.closer = triple;
+      lexer.mode = closeAt(triple) ? 'code' : 'triple';
+      code += ' "" ';
+      continue;
+    }
     if (char === '/' && next === '*') {
       lexer.mode = 'block';
       index += 2;
