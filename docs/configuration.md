@@ -23,7 +23,7 @@ Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 | `clippy` | Opt into executing Cargo Clippy for changed Rust files under `src-tauri` |
 | `trustedAuthors` | GitHub logins allowed for automatic same-repository PR review; empty means the repository owner |
 | `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
-| `models` | Optional per-provider `model`, `effort`, and `maxEffort`; see [models](models.md) |
+| `models` | Optional per-provider `model`, `effort`, `maxEffort` and per-role `roles`; see [models](models.md) |
 
 Paths use forward slashes and cannot be absolute or contain `..`. Unknown keys
 and invalid values are refused. A custom charter replaces the bundled prose;

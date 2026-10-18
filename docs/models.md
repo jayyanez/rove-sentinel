@@ -7,7 +7,8 @@ is never silently dropped. API keys do not satisfy subscription authentication.
 
 ## Defaults and customization
 
-All roles use the same project-selected model and initial effort per provider.
+By default all roles use the same project-selected model and initial effort
+per provider; a project can set them per role (see below).
 The defaults are GPT-6.1 Sol (`gpt-6.1-sol`) and Claude Opus 5.5
 (`claude-opus-5-5`), both at `high`, with a ceiling of `xhigh`.
 
@@ -53,6 +54,33 @@ For example, to use only Codex with an available GPT-6 Sol model:
   }
 }
 ```
+
+### Per-role settings
+
+From 1.13, a provider's `roles` can give one review role its own `model`,
+`effort` or `maxEffort`. The roles are `scout`, `hypothesis`, `shard`,
+`reviewer` (the whole-diff lens reviewer used when no shard exists) and
+`coordinator` (adjudication). A role you leave out uses the provider's
+settings, and an omitted field of a named role comes from the provider. For
+example, to scout and test hypotheses at medium effort while shards and
+adjudication stay at high:
+
+```json
+{
+  "schemaVersion": 1,
+  "models": {
+    "claude": { "effort": "high", "roles": { "scout": { "effort": "medium" }, "hypothesis": { "effort": "medium" } } },
+    "codex": { "effort": "high", "roles": { "scout": { "effort": "medium" }, "hypothesis": { "effort": "medium" } } }
+  }
+}
+```
+
+Role settings are part of the installed policy and its digest, appear under
+`roles` in `status`, reports and attestations, and are checked by
+`doctor --test-models`, which probes every distinct model and effort a role
+can request. The defaults have no role settings: every role uses the
+provider's settings, as before. A lower effort is faster and finds less; the
+engine does not pick it for you.
 
 To prevent escalation, set `maxEffort` equal to `effort`. Exact versioned model
 identifiers make selection reproducible. Aliases such as `opus` may change at
