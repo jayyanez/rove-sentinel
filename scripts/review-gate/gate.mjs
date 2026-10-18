@@ -53,7 +53,6 @@ import {
   metadataOnlySections, partitionShards, renameMapFor, renamedPaths, shardPartShards, splitPatchByFile,
 } from './shards.mjs';
 import { deferCommand } from './dispositions.mjs';
-import { rebaseReuseAllowed, shardCacheKey } from './shardCache.mjs';
 import { LIMITS } from './constants.mjs';
 import {
   carriedFinding,
@@ -77,7 +76,6 @@ import {
   readBranchReviews,
   readLineageReviews,
   readReport,
-  readCachedShardReview,
   readShardCheckpoint,
   recordDisposition,
   removeDisposition,
@@ -86,7 +84,6 @@ import {
   removeShardCheckpoint,
   stateRootFor,
   writeAttestation,
-  writeCachedShardReviews,
   writeReport,
   writeShardCheckpoint,
 } from './storage.mjs';
@@ -390,9 +387,6 @@ export function keptShardReview(entry, provider, roleIndex) {
       ),
       completedAt: typeof entry.completedAt === 'string' ? entry.completedAt : null,
       delivery: entry.delivery === 'part-by-part' ? 'part-by-part' : 'whole',
-      // A review a full round reused from an earlier head (1.13.0) says so,
-      // also when a checkpoint carries it into a rerun.
-      ...(typeof entry.reusedFrom === 'string' && /^[0-9a-f]{40}$/.test(entry.reusedFrom) ? { reusedFrom: entry.reusedFrom } : {}),
       executions: Array.isArray(entry.executions) ? entry.executions.filter((record) => record && typeof record === 'object') : [],
     };
   } catch {
@@ -1344,36 +1338,10 @@ async function runGateWithLease({
     const checkpoint = force ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
     const keptShards = shards.map((_, index) => keptShardReview(checkpoint?.shards[assignments[index]], shardProviders[index], index));
     const keptCount = keptShards.filter(Boolean).length;
-    // A full round may reuse the review of an identical shard made at an
-    // earlier head when nothing it depends on changed (1.13.0, shardCache.mjs):
-    // the common case is a rebase. `--force` reviews every shard afresh.
-    const cacheKeys = shards.map((shard, index) => (round === 'full'
-      ? shardCacheKey({
-        shard, provider: shardProviders[index], policyDigest: reviewPolicy.policyDigest, repository: context.repository, risk: risk.level, branch, author,
-      })
-      : null));
-    if (!force) {
-      const reusable = await Promise.all(shards.map(async (shard, index) => {
-        if (keptShards[index] || !cacheKeys[index]) return null;
-        const entry = await readCachedShardReview(context.paths, cacheKeys[index]).catch(() => null);
-        if (!entry || entry.headSha === headSha) return null;
-        if (!(await rebaseReuseAllowed(context.repoRoot, { shard, reviewedHead: entry.headSha, headSha }))) return null;
-        const kept = keptShardReview(entry, shardProviders[index], index);
-        return kept ? { ...kept, reusedFrom: entry.headSha } : null;
-      }));
-      reusable.forEach((kept, index) => {
-        if (kept) keptShards[index] = kept;
-      });
-    }
-    const reusedCount = keptShards.filter((kept) => kept?.reusedFrom).length;
     for (const kept of keptShards) {
       for (const record of kept?.executions ?? []) providerExecutions.push({ ...record, reused: true });
     }
-    const keptNotes = [
-      ...(keptCount ? [`${keptCount} more completed in an earlier round of this exact head and are kept`] : []),
-      ...(reusedCount ? [`${reusedCount} more were reviewed at an earlier head with the same hunks and unchanged dependencies and are reused`] : []),
-    ];
-    progress(`Reviewing ${shards.length - keptCount - reusedCount} shard(s)${keptNotes.length ? ` (${keptNotes.join('; ')})` : ''}${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
+    progress(`Reviewing ${shards.length - keptCount} shard(s)${keptCount ? ` (${keptCount} more completed in an earlier round of this exact head and are kept)` : ''}${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
     // The prior-blocker list travels as a bundle file, never inline in the
     // provider's argument vector: fifty persisted entries would exceed the
     // Windows command-line limit and fail every shard.
@@ -1574,7 +1542,6 @@ async function runGateWithLease({
       index, kind, files: shardFiles.length, changedLines, provider: shardProviders[index], reverify: Boolean(reverify),
       ...(settledShards[index].delivery ? { delivery: settledShards[index].delivery } : {}),
       ...(keptShards[index] ? { reused: true, reviewedAt: keptShards[index].completedAt, delivery: keptShards[index].delivery } : {}),
-      ...(keptShards[index]?.reusedFrom ? { reusedFrom: keptShards[index].reusedFrom } : {}),
     }));
     const settledHypotheses = await hypothesisPromise;
     // A shard-less diff (every changed file excluded from the textual patch
@@ -1944,26 +1911,6 @@ async function runGateWithLease({
     });
     // The round ended in a report: nothing is left to resume.
     await removeShardCheckpoint(context.paths, identity).catch(() => {});
-    // A full round's shard reviews stay available to a later head with the
-    // same hunks (1.13.0). A reused review keeps its own completion time, so
-    // its age bound never renews; it is recorded under this head, the latest
-    // at which its dependencies were found unchanged.
-    const cacheEntries = shards.flatMap((shard, index) => {
-      const settled = settledShards[index];
-      if (!cacheKeys[index] || settled?.status !== 'fulfilled') return [];
-      return [{
-        key: cacheKeys[index],
-        review: settled.value,
-        // A kept or reused review keeps its own age: its bound never renews.
-        completedAt: keptShards[index]?.completedAt ?? new Date().toISOString(),
-        headSha,
-        baseSha,
-        delivery: keptShards[index]?.delivery ?? settled.delivery ?? 'whole',
-        executions: keptShards[index] ? keptShards[index].executions : shardExecutions[index].map((record) => ({ ...record })),
-      }];
-    });
-    if (cacheEntries.length) await writeCachedShardReviews(context.paths, cacheEntries).catch(() => {});
-
     if (status !== 'pass') {
       completedResult = { ...report, reportId: report.id, scoutFailed };
       return completedResult;

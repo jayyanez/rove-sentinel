@@ -41,7 +41,6 @@ When a review still fails, read the report's own account of why
 | One push | 16 refs to check, 1 still needing review; the hook waits 120 minutes | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
-| Reuse after a rebase | Code, script and test shards with identical hunks, 7 days | Reviewed again when anything they name, or that names them, changed |
 
 The exact values are in `scripts/review-gate/constants.mjs`; the
 [architecture](architecture.md) explains each stage.
@@ -54,7 +53,6 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 | Keep changed lines under about 2 KB | 1.12.0 | Context is bounded by bytes, and a long line is cut across parts |
 | Keep a follow-up delta small for the adjudicator | 1.13.0 | The patch is a lookup, and an adjudicator is assigned candidates, not a diff |
 | Avoid shards of about 70 KB | 1.11.1 | Shards are written in parts that each fit one read |
-| Expect every hunk reviewed again after a rebase | 1.13.0 | Unchanged shards with unchanged dependencies reuse their review |
 
 ## Limits that remain
 

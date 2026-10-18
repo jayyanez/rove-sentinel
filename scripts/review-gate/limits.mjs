@@ -62,11 +62,6 @@ export function sentinelLimits() {
         limit: `${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours`,
         text: `A round that failed closed keeps its completed shard reviews for ${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours for the exact head; a rerun reviews only the rest.`,
       },
-      {
-        id: 'rebase',
-        limit: `${Math.round(LIMITS.shardCacheMaxAgeMs / 86_400_000)} days`,
-        text: `After a rebase, a code, script or test shard with identical hunks reuses its review from the last ${Math.round(LIMITS.shardCacheMaxAgeMs / 86_400_000)} days when no changed file shares a name with its changed lines or its files. Candidates are always adjudicated afresh.`,
-      },
     ],
     superseded: [
       {
@@ -88,11 +83,6 @@ export function sentinelLimits() {
         rule: 'Avoid shards of about 70 KB (Codex never saw them whole)',
         unnecessarySince: '1.11.1',
         why: 'Shards are written in parts that each fit one read; since 1.13.0 a shard of up to 96 KB is in the prompt.',
-      },
-      {
-        rule: 'Expect a full review of every hunk after each rebase onto a moved main',
-        unnecessarySince: '1.13.0',
-        why: 'Identical code, script and test shards whose dependencies did not change reuse their review.',
       },
     ],
   };

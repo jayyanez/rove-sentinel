@@ -67,15 +67,6 @@ reviewer started.
   identity merge and the 50-candidate bound are unchanged; a candidate already
   sent is not replaced by a later duplicate. A shard whose reviewer reports an
   incomplete review is handed over part by part at once, not after the wave.
-- **A rebase no longer means reviewing every hunk again.** A full round keeps
-  its code, script and test shard reviews for seven days. After a rebase, a
-  shard with byte-identical hunks is reused when none of its files changed
-  between the two heads, no file that changed mentions (at either head) an
-  identifier on its changed lines or its file names, and none of its files
-  names a file that changed. Documentation and configuration shards are
-  always reviewed again, candidates are always adjudicated afresh, and
-  `--force` reuses nothing. The test is textual, and the architecture guide
-  says what it cannot see.
 - **A large file no longer has to be split for a follow-up round.** The file
   of each prior blocker assigned to a follow-up reviewer was a required read,
   whole: a file over one tool output (~38 KB for Codex) came back truncated

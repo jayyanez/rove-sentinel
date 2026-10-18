@@ -1978,21 +1978,6 @@ describe('streamed adjudication in a round that fails closed (1.13.0)', () => {
   }, REAL_GIT_TEST_TIMEOUT);
 });
 
-describe('a reused review carried by a checkpoint (1.13.0 self-review)', () => {
-  it('keeps the head it was reviewed at and its own completion time', async () => {
-    const { keptShardReview } = await import('../gate.mjs');
-    const entry = {
-      review: { provider: 'codex', summary: 'Reviewed.', candidates: [] },
-      completedAt: '2026-10-11T00:00:00.000Z',
-      delivery: 'whole',
-      executions: [],
-      reusedFrom: 'a'.repeat(40),
-    };
-    expect(keptShardReview(entry, 'codex', 2)).toMatchObject({ completedAt: entry.completedAt, reusedFrom: 'a'.repeat(40) });
-    expect(keptShardReview({ ...entry, reusedFrom: 'not a sha' }, 'codex', 2)?.reusedFrom).toBeUndefined();
-  });
-});
-
 describe('a streamed adjudicator in a round that fails closed (1.13.0 gate review)', () => {
   async function twoShardRepository() {
     const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-halt-'));

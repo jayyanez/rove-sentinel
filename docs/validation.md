@@ -28,10 +28,14 @@ were exercised only by deterministic fixtures, not on a live non-JavaScript
 repository, and no round has yet run with the released 1.13.0 package.
 
 The second wave (material in the prompt on standard input, streamed
-adjudication, per-role settings, reuse after a rebase, prior blockers read
+adjudication, per-role settings, prior blockers read
 around their location) ran live in six more follow-up rounds of the same
 branch; they found and fixed seven defects in it, and the last round passed.
-Per-role settings and the reuse after a rebase ran only in deterministic tests.
+Per-role settings ran only in deterministic tests. Reusing shard reviews after
+a rebase was built, reviewed by the installed gate twice, and removed: each
+round showed another dependency a textual test could not see (a call through
+a re-export alias, a transitive import), and a reuse that can miss a changed
+dependency weakens the review's coverage.
 
 One side-by-side run reviewed the same historical change (1.11.1, 17 files,
 630 changed lines, high risk, full round) with 1.12.0 and with 1.13.0, both

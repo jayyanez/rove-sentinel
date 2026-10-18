@@ -87,7 +87,6 @@ export function statePaths(root) {
     convergence: path.join(root, 'convergence'),
     dispositions: path.join(root, 'dispositions'),
     shardCheckpoints: path.join(root, 'shard-checkpoints'),
-    shardCache: path.join(root, 'shard-cache'),
     events: path.join(root, 'events'),
     auditEvents: path.join(root, 'audit-events'),
     queueSubmitLock: path.join(root, 'queue-submit.lock'),
@@ -103,7 +102,7 @@ export function statePaths(root) {
 export async function ensureState(root) {
   const paths = statePaths(root);
   await Promise.all(
-    ['requests', 'claims', 'results', 'attestations', 'outcomes', 'reports', 'convergence', 'dispositions', 'shardCheckpoints', 'shardCache', 'events', 'auditEvents'].map((key) =>
+    ['requests', 'claims', 'results', 'attestations', 'outcomes', 'reports', 'convergence', 'dispositions', 'shardCheckpoints', 'events', 'auditEvents'].map((key) =>
       mkdir(paths[key], { recursive: true }),
     ),
   );
@@ -348,41 +347,6 @@ export async function writeShardCheckpoint(paths, identity, { shards, failures }
     maxAgeMs: LIMITS.shardCheckpointMaxAgeMs,
   });
   return value;
-}
-
-/**
- * Shard reviews of completed full rounds, by the digest of what the reviewer
- * was given (1.13.0), so the same hunks reviewed again after a rebase can be
- * reused when nothing they depend on changed (see shardCache.mjs). A record
- * that cannot be read, has another key, or is past `shardCacheMaxAgeMs` reads
- * as absent.
- */
-export async function readCachedShardReview(paths, key, { now = Date.now() } = {}) {
-  if (!/^[0-9a-f]{40}$/.test(String(key))) return null;
-  const target = path.join(paths.shardCache, `${key}.json`);
-  let value;
-  try {
-    value = await readJson(target);
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
-    await removeStoredJson(target);
-    return null;
-  }
-  if (!value || value.schemaVersion !== 1 || value.key !== key) return null;
-  const age = now - Date.parse(value.completedAt);
-  if (!Number.isFinite(age) || age < 0 || age > LIMITS.shardCacheMaxAgeMs) return null;
-  return value;
-}
-
-export async function writeCachedShardReviews(paths, entries) {
-  for (const entry of entries) {
-    if (!/^[0-9a-f]{40}$/.test(String(entry.key))) continue;
-    await atomicWriteJson(path.join(paths.shardCache, `${entry.key}.json`), { schemaVersion: 1, ...entry });
-  }
-  await pruneDirectory(paths.shardCache, {
-    maxFiles: LIMITS.maxShardCacheEntries,
-    maxAgeMs: LIMITS.shardCacheMaxAgeMs,
-  });
 }
 
 export async function removeShardCheckpoint(paths, identity) {
