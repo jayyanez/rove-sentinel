@@ -38,6 +38,7 @@ When a review still fails, read the report's own account of why
 | Shards per round | 8 high risk, 4 medium, 2 low, about 500 changed lines each | Shards grow instead; a shard's reviewer gets 5 to 12 minutes by size |
 | Candidates per round | 50 after merging duplicates (8 per shard, 4 per hypothesis) | The round fails closed |
 | Confidence floor | 50 | Not adjudicated; the report keeps up to 40 |
+| Linters | shellcheck, actionlint, gitleaks, ruff when installed; project `lintCommands` from installed policy | A missing tool is a note in the report, not a pass |
 | Documentation skip | Only `.md`, `.markdown`, `.rst`, `.adoc` outside the review policy | Everything else, `.txt` and `.mdx` included, is reviewed |
 | One push | 16 refs to check, 1 still needing review; the hook waits 120 minutes | The push is refused |
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |

@@ -8,6 +8,7 @@ import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
 import { formatLimits, sentinelLimits } from './limits.mjs';
+import { detectLintTools } from './toolLanes.mjs';
 import { readReviewPolicy, loadInstalledReviewPolicy } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
@@ -162,6 +163,7 @@ async function main() {
         return readReviewPolicy(root);
       });
     const result = await verifyPrerequisites(root, { config: policy.config });
+    result.lintTools = await detectLintTools({ config: policy.config });
     if (options['test-models']) result.modelChecks = await checkModels(root, {
       config: policy.config, selected: result.providers.selected,
     });

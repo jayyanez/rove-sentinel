@@ -12,6 +12,7 @@ Products change. It is not a benchmark, ranking, or pricing comparison.
 | Area | Rove Sentinel | CodeRabbit | Greptile |
 | --- | --- | --- | --- |
 | Primary workflow | Local committed-diff gate, Git hook, optional local PR watcher | PR review plus CLI and IDE workflows | Repository-aware PR review and agent integrations |
+| Static analysis | shellcheck, actionlint, gitleaks and ruff when installed, plus project commands such as tsc or eslint, on changed lines | Many bundled linters and security analyzers | Not compared here |
 | Review context | Bounded diff, history, heuristic reference map and installed project policy | Context-aware review, guidelines, learned feedback and multi-repository knowledge | Codebase graph, parallel agents and team-specific context |
 | Project customization | Versioned charter, lessons and a small installed configuration | Repository and path-based instructions and custom checks | Plain-English rules and learning from team comments |
 | Review follow-up | Commit-bound records, blocker rechecks and explicit finding deferrals | Review management and fix workflows | Agent integrations for resolving review feedback |

@@ -108,10 +108,21 @@ Claude; there is no Grok provider. A single authenticated provider preserves rol
 counts and fresh contexts while the report records reduced model diversity.
 Installed model/effort settings and bounded escalation are described in [models](models.md).
 
-Markdownlint runs in a bounded subprocess against changed Markdown. Optional
-Clippy runs only when installed policy enables it. Tool unavailability and
-timeouts are reported as lane notes; a partial deterministic run is not a clean
-bill of health. A process tree that cannot be proven terminated fails closed.
+Deterministic lanes run beside the model review, with no model call, and
+report hits on added lines: markdownlint on changed Markdown; shellcheck on
+shell scripts (by extension or shebang); actionlint on GitHub workflows;
+gitleaks on every changed text file, scanned as a copy so the branch's own
+gitleaks configuration cannot switch rules off, with secrets redacted; and
+ruff on Python. Those four analyze text, never execute repository code, and
+run whenever the tool is installed. Project commands listed in installed
+policy (`lintCommands`, for example `tsc` or `eslint`) and the opt-in Clippy
+lane execute the project's toolchain and configuration from the reviewed head,
+so only trusted policy enables them. A missing tool, a timeout or a failure is
+a lane note; a partial deterministic run is not a clean bill of health. A hit
+is a deterministic finding: an error-level hit (a shellcheck error, a workflow
+error, a probable secret outside test paths, a Python syntax error or undefined
+name, a project command's error) is P2 and blocks; a warning is P3 and needs a
+fix or a recorded deferral. A process tree that cannot be proven terminated fails closed.
 
 ## Repairs and decisions
 

@@ -53,6 +53,18 @@ reviewer started.
 - Prompts and the review context no longer assume Rove's UI: the async lens
   names generic interleavings, and the scout spends its interleaving slot only
   when the diff creates a pending window.
+- **Linters run beside the model review, as CodeRabbit's do.** shellcheck,
+  actionlint, gitleaks and ruff run on the changed files whenever they are
+  installed, with no model call, and report hits on added lines: an
+  error-level hit (a shellcheck error, a workflow error, a probable secret
+  outside test paths, a Python syntax error or undefined name) blocks as P2, a
+  warning is a P3 advisory. gitleaks scans a copy of the changed files so the
+  branch's own configuration cannot switch it off, and never records the
+  secret. Projects can add their own checkers (`tsc`, `eslint`, any tool with
+  `path:line:col` or tsc output) as `lintCommands` in installed policy, with
+  the trusted checkout's `node_modules` linked in; `lintLanes` turns a
+  built-in lane off, and `doctor` lists which tools the host has. A missing
+  tool is a note in the report, never a pass.
 - **The review material travels in the prompt.** Every reviewer used to spend
   its first turns reading the context, the charter, the lessons, the briefs
   and its shard, one call each, and a long tool output could come back with

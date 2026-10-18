@@ -1249,6 +1249,7 @@ async function runGateWithLease({
     const lanesPromise = clock.time('deterministic-lanes', () => deterministicLanes({
       config: reviewPolicy.config,
       checkout: worktree.checkout,
+      repoRoot: context.repoRoot,
       files,
       patch,
       stateRoot: context.stateRoot,

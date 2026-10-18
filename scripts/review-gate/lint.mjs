@@ -6,6 +6,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { LIMITS } from './constants.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { addedLinesByFile } from './shards.mjs';
+import {
+  linkNodeModules,
+  runActionlintLane,
+  runGitleaksLane,
+  runProjectCommandLane,
+  runRuffLane,
+  runShellcheckLane,
+} from './toolLanes.mjs';
 
 // Deterministic lanes (v1.8.0). The CodeRabbit recall audit counted 14
 // markdownlint findings and a Clippy pass among the 84 external findings on
@@ -422,13 +430,34 @@ export async function runClippyLane({
  * can reject except a process-tree cleanup failure, which must reach the
  * gate's fence.
  */
-export async function runDeterministicLanes({ checkout, files, patch, stateRoot, run, env, config }) {
-  const lanes = await Promise.all([
-    runMarkdownlintLane({ checkout, files, patch }),
-    config?.clippy === true
-      ? runClippyLane({ checkout, files, patch, stateRoot, run, env })
-      : Promise.resolve({ lane: 'clippy', status: 'skipped', note: 'execution of project build scripts is not enabled in installed policy', findings: [] }),
-  ]);
+export async function runDeterministicLanes({ checkout, files, patch, stateRoot, run, env, config, repoRoot = null }) {
+  const toolOptions = { checkout, files, patch, ...(run ? { run } : {}), ...(env ? { env } : {}) };
+  const enabled = (lane) => config?.lintLanes?.[lane] !== false;
+  const off = (lane) => Promise.resolve({ lane, status: 'skipped', note: 'turned off in installed policy', findings: [] });
+  // Project commands share one node_modules link, made before they start and
+  // removed after the last one ends.
+  const commands = Array.isArray(config?.lintCommands) ? config.lintCommands : [];
+  const nodeModules = commands.some((command) => command.nodeModules) && repoRoot
+    ? await linkNodeModules(checkout, repoRoot).catch((error) => ({ linked: false, note: `node_modules could not be linked: ${error?.message || String(error)}`, release: async () => {} }))
+    : null;
+  let lanes;
+  try {
+    lanes = await Promise.all([
+      runMarkdownlintLane({ checkout, files, patch }),
+      config?.clippy === true
+        ? runClippyLane({ checkout, files, patch, stateRoot, run, env })
+        : Promise.resolve({ lane: 'clippy', status: 'skipped', note: 'execution of project build scripts is not enabled in installed policy', findings: [] }),
+      enabled('shellcheck') ? runShellcheckLane(toolOptions) : off('shellcheck'),
+      enabled('actionlint') ? runActionlintLane(toolOptions) : off('actionlint'),
+      enabled('gitleaks') ? runGitleaksLane(toolOptions) : off('gitleaks'),
+      enabled('ruff') ? runRuffLane(toolOptions) : off('ruff'),
+      ...commands.map((command) => runProjectCommandLane({ ...toolOptions, command }).then((lane) => (
+        command.nodeModules && nodeModules?.note && lane.status !== 'ok' ? { ...lane, note: `${lane.note}; ${nodeModules.note}` } : lane
+      ))),
+    ]);
+  } finally {
+    await nodeModules?.release();
+  }
   // A lane that could not produce diagnostics (a host hiccup, a timeout, an
   // unparseable manifest) is a NOTE in the report and the summary, exactly
   // as the charter states — never a finding that blocks a push or needs a

@@ -37,6 +37,15 @@ round showed another dependency a textual test could not see (a call through
 a re-export alias, a transitive import), and a reuse that can miss a changed
 dependency weakens the review's coverage.
 
+The linter lanes were checked against the real tools on Windows (shellcheck
+0.11.0, actionlint 1.7.12, gitleaks 8.30.1, ruff 0.17.1): each found its
+defect on an added line in a synthetic file, and gitleaks kept the token out
+of the report. A `tsc` project command ran on a consumer's real head (107
+changed files) in a detached checkout with the trusted `node_modules` linked:
+it reported a type error added for the check, the link was removed, and the
+trusted `node_modules` was intact; all lanes took 16 seconds, beside the model
+review. No gate round has yet run with a project command in installed policy.
+
 One side-by-side run reviewed the same historical change (1.11.1, 17 files,
 630 changed lines, high risk, full round) with 1.12.0 and with 1.13.0, both
 with both providers and the installed policy: 5.8 minutes against 3.0. The

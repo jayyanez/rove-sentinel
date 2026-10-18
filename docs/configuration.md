@@ -24,6 +24,8 @@ Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 | `trustedAuthors` | GitHub logins allowed for automatic same-repository PR review; empty means the repository owner |
 | `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
 | `models` | Optional per-provider `model`, `effort`, `maxEffort` and per-role `roles`; see [models](models.md) |
+| `lintLanes` | Turn a built-in linter lane off: `{ "ruff": false }`; all four are on by default |
+| `lintCommands` | Project lint commands to run in the review checkout; see below |
 
 Paths use forward slashes and cannot be absolute or contain `..`. Unknown keys
 and invalid values are refused. A custom charter replaces the bundled prose;
@@ -48,8 +50,52 @@ Clippy currently targets `src-tauri/Cargo.toml`, uses a shared target cache,
 and has an eight-minute bound. It can execute build scripts and access the
 host environment. Enable it only for code you trust to build locally. Large
 cold native dependency builds can time out repeatedly; a timeout is a visible
-lane note, not proof that Rust passed. Arbitrary crate paths and custom command
-lanes are not configurable in this release.
+lane note, not proof that Rust passed. Arbitrary crate paths are not
+configurable in this release; other project checkers can run as
+`lintCommands`.
+
+## Linter lanes
+
+Sentinel runs shellcheck, actionlint, gitleaks and ruff on the changed files
+whenever they are installed on the host; `doctor` lists which are. Install
+the ones your project needs, for example on Windows:
+
+```powershell
+winget install koalaman.shellcheck rhysd.actionlint Gitleaks.Gitleaks
+pip install ruff
+```
+
+They read the project's own configuration where the tool supports it
+(`.shellcheckrc`, `.github/actionlint.yaml`, ruff's `pyproject.toml`), except
+gitleaks, which always uses its built-in rules. Only hits on lines the change
+added are reported.
+
+Project commands run your own checker in the review checkout:
+
+```json
+{
+  "lintCommands": [
+    { "name": "tsc", "run": ["node", "node_modules/typescript/bin/tsc", "--noEmit", "--pretty", "false"], "format": "tsc", "nodeModules": true },
+    { "name": "eslint", "run": ["node", "node_modules/eslint/bin/eslint.js", "-f", "unix", "{files}"], "format": "unix", "files": "\\.(?:ts|tsx|js)$", "nodeModules": true }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Lane name in reports: lower-case letters, digits and dashes |
+| `run` | Program and arguments, without a shell; `node` is Sentinel's Node.js. On Windows run a package's script with `node`, not its `.cmd` shim |
+| `format` | `unix` (`path:line:col: message`, an ESLint-style `[Error/rule]` tag sets the severity) or `tsc` |
+| `files` | Optional regular expression: the command runs only when a changed file matches, and `{files}` in `run` becomes those files |
+| `scope` | `added-lines` (default) or `all`, for a checker that is clean on the base and should report every hit |
+| `timeoutMinutes` | 1 to 15; 5 by default |
+| `nodeModules` | Link the trusted checkout's `node_modules` into the review checkout while the command runs |
+
+Project commands execute your toolchain and the configuration in the reviewed
+branch (an ESLint config is code), so they come only from installed policy and
+the watcher runs them only for trusted authors. The `node_modules` link is a
+junction removed before the lanes return; removing a review checkout never
+follows it.
 
 ## Provider choices and fixed execution limits
 
