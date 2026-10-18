@@ -96,6 +96,10 @@ export const LIMITS = Object.freeze({
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.
   coordinatorBatchSize: 5,
+  // Adjudication starts while reviewers run (1.13.0): a full batch goes at
+  // once, and what remains when the last reviewer settles goes in batches of
+  // at most this many, so the wait after the last review is short.
+  coordinatorTailBatchSize: 3,
   // Deterministic lanes (v1.8.0): zero-model linters over changed lines. A
   // lane that times out degrades to an explicit note, never a failed review.
   markdownlintTimeoutMs: 2 * 60 * 1000,

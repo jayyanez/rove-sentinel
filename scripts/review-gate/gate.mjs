@@ -192,6 +192,9 @@ export async function settleReviewersWithRetry(tasks, {
   // Whether a failed first attempt gets the same task again. A caller that
   // retries another way (the shard wave) declines here and is told so.
   shouldRetry = () => true,
+  // Told each task's final result as soon as it is known (1.13.0), so its
+  // candidates can go to adjudication while the other tasks still run.
+  onSettled = () => {},
 } = {}) {
   // One retry total (charter: "retried once" — two attempts, never three),
   // and a provider-tree cleanup failure halts NEW launches instead of
@@ -199,6 +202,12 @@ export async function settleReviewersWithRetry(tasks, {
   // processes (§5 safety fence).
   let halted = false;
   return await mapWithConcurrency(tasks, async (task, index) => {
+    const result = await settleOne(task, index);
+    onSettled(result, index);
+    return result;
+  }, concurrency, { pool });
+
+  async function settleOne(task, index) {
     if (halted) {
       return {
         status: 'rejected',
@@ -246,7 +255,7 @@ export async function settleReviewersWithRetry(tasks, {
         return { status: 'rejected', reason: second, retried: true };
       }
     }
-  }, concurrency, { pool });
+  }
 }
 
 /**
@@ -259,18 +268,34 @@ export async function settleReviewersWithRetry(tasks, {
  * is not retried: the charter's two attempts per hunk hold. Any other
  * failure, and an incomplete shard of one part, gets the ordinary retry.
  */
-export async function settleShardWave(shards, runShard, { concurrency = LIMITS.providerConcurrency, pool } = {}) {
+export async function settleShardWave(shards, runShard, {
+  concurrency = LIMITS.providerConcurrency, pool, onSettled = () => {},
+} = {}) {
   const parts = shards.map((shard) => shardPartShards(shard));
+  // A shard that declined the ordinary retry is handed over part by part as
+  // soon as it does (1.13.0), not after the whole wave.
+  const partRetries = [];
   const settled = await settleReviewersWithRetry(
     shards.map((shard) => () => runShard(shard)),
     {
       concurrency,
       pool,
       shouldRetry: (error, index) => !(isIncompleteReview(error) && parts[index].length > 1),
+      onSettled: (whole, index) => {
+        if (!whole.retryDeclined) {
+          onSettled(whole, index);
+          return;
+        }
+        partRetries[index] = retryByParts(whole, index).then((final) => {
+          onSettled(final, index);
+          return final;
+        });
+      },
     },
   );
-  return await Promise.all(settled.map(async (whole, index) => {
-    if (!whole.retryDeclined) return whole;
+  return await Promise.all(settled.map((whole, index) => (whole.retryDeclined ? partRetries[index] : whole)));
+
+  async function retryByParts(whole, index) {
     const settledParts = await settleReviewersWithRetry(
       parts[index].map((part) => () => runShard(part)),
       { concurrency, pool, shouldRetry: () => false },
@@ -307,7 +332,7 @@ export async function settleShardWave(shards, runShard, { concurrency = LIMITS.p
           .map((candidate, position) => ({ ...candidate, id: `${provider}-${roleIndex}-${position}` })),
       },
     };
-  }));
+  }
 }
 
 /**
@@ -489,13 +514,10 @@ export function cleanCandidates(reviews, { priorBlocking = [] } = {}) {
   // candidate kept WHOLE (id, category, scenario, evidence, test all from
   // the same reviewer — never a stitched hybrid), annotated with how many
   // reviewers corroborated it.
-  const normalizedTitle = (title) => String(title || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const byKey = new Map();
   const candidates = [];
   for (const candidate of qualifying) {
-    const key = Number.isInteger(candidate.line) && typeof candidate.file === 'string'
-      ? `${candidate.file}\0${candidate.line}\0${candidate.priority}\0${normalizedTitle(candidate.title)}`
-      : null;
+    const key = candidateIdentityKey(candidate);
     const existingIndex = key === null ? -1 : (byKey.has(key) ? byKey.get(key) : -1);
     if (existingIndex === -1) {
       if (key !== null) byKey.set(key, candidates.length);
@@ -540,6 +562,144 @@ export function lowConfidenceCandidates(reviews, {
       line: candidate.line,
       scenario: String(candidate.scenario ?? '').slice(0, 600),
     })),
+  };
+}
+
+/**
+ * The identity two reviewers' candidates must share to be merged: file,
+ * integer line, priority and normalized title (see cleanCandidates). A
+ * candidate without a file or an integer line is never merged.
+ */
+export function candidateIdentityKey(candidate) {
+  const normalizedTitle = String(candidate.title || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return Number.isInteger(candidate.line) && typeof candidate.file === 'string'
+    ? `${candidate.file}\0${candidate.line}\0${candidate.priority}\0${normalizedTitle}`
+    : null;
+}
+
+/**
+ * Adjudication that starts while the reviewers still run (1.13.0). It used
+ * to wait for the last shard and hypothesis, then adjudicate everything:
+ * on this repository that tail was the longest stage of a review. Each
+ * completed review's candidates join the stream as it settles, with the same
+ * floor, identity merge and bound as cleanCandidates; a full batch goes to a
+ * fresh adjudicator at once, and what remains when every reviewer has
+ * settled goes in smaller batches, so the tail is short.
+ *
+ * A candidate already sent cannot be replaced by a higher-confidence
+ * duplicate that arrives later; the duplicate only adds to its
+ * corroboration. In a follow-up round a P3 candidate that is not a prior
+ * blocker waits: if nothing else needs adjudication, all of them stay
+ * unadjudicated advisories, exactly as before. `stop` ends dispatching (a
+ * round that will fail closed); `drain` waits for what was sent.
+ */
+export function createAdjudicationStream({
+  dispatch,
+  canonicalize = async (review) => review,
+  priorBlocking = [],
+  followUp = false,
+  batchSize = LIMITS.coordinatorBatchSize,
+  tailBatchSize = LIMITS.coordinatorTailBatchSize,
+  maxCandidates = LIMITS.maxCandidates,
+  onDispatch = () => {},
+}) {
+  const priorKeys = new Set(priorBlocking.map((finding) => findingKey(finding)));
+  const entries = [];
+  const byKey = new Map();
+  const pending = [];
+  const held = [];
+  const sent = [];
+  let forced = !followUp;
+  let overflow = false;
+  let stopped = false;
+  let queue = Promise.resolve();
+  const needsAdjudication = (candidate) => !followUp || candidate.priority !== 'P3' || priorKeys.has(findingKey(candidate));
+  const send = (list) => {
+    if (!list.length) return;
+    const batchIndex = sent.length;
+    const batch = list.map((entry) => {
+      entry.dispatched = true;
+      return entry.candidate;
+    });
+    sent.push(Promise.resolve(dispatch(batch, batchIndex)).then((settled) => ({ batch, settled })));
+    onDispatch(batch, batchIndex);
+  };
+  const flushFull = () => {
+    while (!stopped && !overflow && pending.length >= batchSize) send(pending.splice(0, batchSize));
+  };
+  const accept = (review) => {
+    for (const candidate of review.candidates) {
+      if (!(candidate.confidence >= LIMITS.candidateConfidenceFloor || priorKeys.has(findingKey(candidate)))) continue;
+      const key = candidateIdentityKey(candidate);
+      const existing = key === null ? null : byKey.get(key);
+      if (existing) {
+        existing.corroborating += 1;
+        existing.candidate = !existing.dispatched && candidate.confidence > existing.candidate.confidence
+          ? { ...candidate, corroboratingReviewers: existing.corroborating }
+          : { ...existing.candidate, corroboratingReviewers: existing.corroborating };
+        continue;
+      }
+      const entry = { candidate: { ...candidate, corroboratingReviewers: 1 }, corroborating: 1, dispatched: false };
+      entries.push(entry);
+      if (key !== null) byKey.set(key, entry);
+      if (entries.length > maxCandidates) {
+        overflow = true;
+        continue;
+      }
+      if (needsAdjudication(entry.candidate)) forced = true;
+      (needsAdjudication(entry.candidate) || forced ? pending : held).push(entry);
+    }
+    if (forced && held.length) pending.push(...held.splice(0));
+    flushFull();
+  };
+  const settledBatches = async () => {
+    const results = await Promise.all(sent);
+    return results;
+  };
+  // A review that cannot be read (a canonicalization failure) is kept as an
+  // error for the caller of `candidates` or `finish`; a draining caller that
+  // is already failing closed keeps its own error.
+  let streamError = null;
+  const rethrow = () => {
+    if (streamError) throw streamError;
+  };
+  return {
+    add(review) {
+      queue = queue.then(async () => {
+        if (streamError || !Array.isArray(review?.candidates)) return;
+        accept(await canonicalize(review));
+      }).catch((error) => {
+        streamError ??= error;
+      });
+      return queue;
+    },
+    stop() {
+      stopped = true;
+    },
+    async drain() {
+      await queue;
+      await settledBatches();
+    },
+    /** Every candidate in arrival order, after the floor and the merge. */
+    async candidates() {
+      await queue;
+      rethrow();
+      return { candidates: entries.map((entry) => entry.candidate), overflow, count: entries.length };
+    },
+    /**
+     * Send what remains in tail batches and wait for every batch. Returns the
+     * batches in the order they were sent, with each one's settled result.
+     */
+    async finish() {
+      await queue;
+      rethrow();
+      if (!overflow && !stopped && forced) {
+        const rest = pending.splice(0);
+        const size = Math.max(1, tailBatchSize);
+        for (let index = 0; index < rest.length; index += size) send(rest.slice(index, index + size));
+      }
+      return await settledBatches();
+    },
   };
 }
 
@@ -693,6 +853,10 @@ export function createStageClock() {
       } finally {
         stages.push({ name, startedAt: new Date(startedAt).toISOString(), ms: Date.now() - startedAt });
       }
+    },
+    /** A stage whose start and end are not one call (streamed adjudication). */
+    record(name, startedAt, ms) {
+      stages.push({ name, startedAt: new Date(startedAt).toISOString(), ms });
     },
     snapshot() {
       return stages.map((stage) => ({ ...stage }));
@@ -1213,8 +1377,66 @@ async function runGateWithLease({
       priorBlocking: priorBlockingList,
       priorBlockingPath,
     });
+    // A model-written path is matched to the exact changed-file path when the
+    // checkout's directory listings identify it (see canonicalChangedPath),
+    // so the identity and increment checks below compare the same string.
+    // Known paths: the changed files AND the files of the prior blockers a
+    // follow-up re-verifies (a blocker may sit in an unchanged usage-site
+    // file), so a re-verification path canonicalizes to the prior key.
+    const knownFiles = [...new Set([...files, ...priorBlockingList.map((finding) => finding.file)])];
+    const canonicalByModelPath = new Map();
+    const canonicalize = async (modelFiles) => {
+      for (const file of new Set(modelFiles)) {
+        if (canonicalByModelPath.has(file)) continue;
+        canonicalByModelPath.set(file, await canonicalChangedPath(file, knownFiles, { checkout: worktree.checkout }));
+      }
+    };
+    const canonicalFile = (file) => canonicalByModelPath.get(file) ?? file;
+    const canonicalReview = async (review) => {
+      await canonicalize(review.candidates.map((candidate) => candidate.file));
+      return { ...review, candidates: review.candidates.map((candidate) => ({ ...candidate, file: canonicalFile(candidate.file) })) };
+    };
+    // Adjudication runs while the reviewers do (1.13.0): each review's
+    // candidates join the stream as it settles. A round that will fail closed
+    // stops sending, and a batch still queued for a slot is then skipped.
+    let adjudicationHalted = false;
+    let adjudicationStartedAt = null;
+    const adjudicationStream = createAdjudicationStream({
+      followUp,
+      priorBlocking: priorBlockingList,
+      canonicalize: canonicalReview,
+      dispatch: (batch, batchIndex) => pool.run(() => (adjudicationHalted
+        ? { status: 'rejected', reason: new Error('Adjudication skipped: the round failed closed.'), retried: false }
+        : runProviderWithOneRetry(() => coordinator({
+          provider: plan.coordinator,
+          checkout: worktree.checkout,
+          bundle,
+          candidates: batch,
+          batchIndex,
+        })))),
+      onDispatch: (batch) => {
+        adjudicationStartedAt ??= Date.now();
+        progress(`Adjudicating ${batch.length} candidate finding(s) in a fresh ${plan.coordinator} batch.`);
+      },
+    });
+    const haltAdjudication = async () => {
+      adjudicationHalted = true;
+      adjudicationStream.stop();
+      await adjudicationStream.drain();
+    };
+    // A failed shard fails the round closed; a failed hypothesis or lens does
+    // not, unless it left an unverified process tree.
+    const streamShard = (result) => {
+      if (result.status === 'fulfilled') adjudicationStream.add(result.value);
+      else adjudicationStream.stop();
+    };
+    const streamOther = (result) => {
+      if (result.status === 'fulfilled') adjudicationStream.add(result.value);
+      else if (processTreeCleanupFailureCode(result.reason)) adjudicationStream.stop();
+    };
+    for (const kept of keptShards) if (kept) adjudicationStream.add(kept.review);
     const shardPromise = clock.time('shards', async () => {
-      const settledPending = await settleShardWave(shards.filter((_, index) => !keptShards[index]), runShard, { pool });
+      const settledPending = await settleShardWave(shards.filter((_, index) => !keptShards[index]), runShard, { pool, onSettled: streamShard });
       return shards.map((_, index) => (keptShards[index]
         ? { status: 'fulfilled', value: keptShards[index].review, retried: false, reused: true }
         : settledPending.shift()));
@@ -1266,6 +1488,7 @@ async function runGateWithLease({
           // The shard reviews that completed beside the scout are kept too.
           await keepCompletedShards(await shardPromise);
           await lanesPromise;
+          await haltAdjudication();
           throw await buildFailClosedError({
             paths: context.paths,
             baseReport,
@@ -1289,7 +1512,7 @@ async function runGateWithLease({
           bundle,
           hypothesis,
         }));
-        hypothesisPromise = clock.time('hypotheses', () => settleReviewersWithRetry(hypothesisTasks, { pool }));
+        hypothesisPromise = clock.time('hypotheses', () => settleReviewersWithRetry(hypothesisTasks, { pool, onSettled: streamOther }));
       }
     }
     const settledShards = await shardPromise;
@@ -1317,7 +1540,7 @@ async function runGateWithLease({
           reviewer({
             provider, roleIndex, checkout: worktree.checkout, bundle, round, priorBlocking: lensBlockers, priorBlockingPath,
           })),
-        { pool },
+        { pool, onSettled: streamOther },
       ));
       reviewerErrors.push(...describeReviewerFailures(settledLens, plan.reviewers));
     }
@@ -1330,6 +1553,7 @@ async function runGateWithLease({
     const reviews = settledReviewers.filter((result) => result.status === 'fulfilled').map((result) => result.value);
     const lanesSettled = await lanesPromise;
     if (lanesSettled.status === 'rejected') {
+      await haltAdjudication();
       // Whichever wave produced a cleanup classification, it must reach the
       // fail-closed error: the watcher's mandatory pause keys on it.
       const laneCode = processTreeCleanupFailureCode(lanesSettled.reason) || reviewerCleanupFailure(settledReviewers)?.code || null;
@@ -1353,6 +1577,7 @@ async function runGateWithLease({
       .map((result, index) => ({ result, shard: shards[index] }))
       .filter(({ result }) => result.status !== 'fulfilled');
     if (failedShards.length) {
+      await haltAdjudication();
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
@@ -1374,6 +1599,7 @@ async function runGateWithLease({
       });
     }
     if (!reviews.length) {
+      await haltAdjudication();
       const messages = reviewerErrors.length ? reviewerErrors : ['every required reviewer failed'];
       throw await buildFailClosedError({
         paths: context.paths,
@@ -1392,6 +1618,7 @@ async function runGateWithLease({
     // watcher (§5 safety fence).
     const partialCleanupFailure = reviewerCleanupFailure(settledReviewers);
     if (partialCleanupFailure) {
+      await haltAdjudication();
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
@@ -1400,30 +1627,11 @@ async function runGateWithLease({
         code: partialCleanupFailure.code,
       });
     }
-    // A model-written path is matched to the exact changed-file path when the
-    // checkout's directory listings identify it (see canonicalChangedPath),
-    // so the identity and increment checks below compare the same string.
-    // Known paths: the changed files AND the files of the prior blockers a
-    // follow-up re-verifies (a blocker may sit in an unchanged usage-site
-    // file), so a re-verification path canonicalizes to the prior key.
-    const knownFiles = [...new Set([...files, ...priorBlockingList.map((finding) => finding.file)])];
-    const canonicalByModelPath = new Map();
-    const canonicalize = async (modelFiles) => {
-      for (const file of new Set(modelFiles)) {
-        if (canonicalByModelPath.has(file)) continue;
-        canonicalByModelPath.set(file, await canonicalChangedPath(file, knownFiles, { checkout: worktree.checkout }));
-      }
-    };
-    const canonicalFile = (file) => canonicalByModelPath.get(file) ?? file;
-    await canonicalize(reviews.flatMap((review) => review.candidates.map((candidate) => candidate.file)));
-    const canonicalReviews = reviews.map((review) => ({
-      ...review,
-      candidates: review.candidates.map((candidate) => ({ ...candidate, file: canonicalFile(candidate.file) })),
-    }));
-    let candidates;
-    try {
-      candidates = cleanCandidates(canonicalReviews, { priorBlocking: priorBlockingList });
-    } catch (error) {
+    const canonicalReviews = await Promise.all(reviews.map(canonicalReview));
+    const streamed = await adjudicationStream.candidates();
+    const candidates = streamed.candidates;
+    if (streamed.overflow) {
+      await haltAdjudication();
       // The kept reviews are what exceeded the bound: reusing them would
       // fail every rerun the same way, so the rerun reviews afresh.
       await removeShardCheckpoint(context.paths, identity).catch(() => {});
@@ -1431,7 +1639,7 @@ async function runGateWithLease({
         paths: context.paths,
         baseReport,
         summary: 'The independent candidate set exceeded its safe bound; the gate failed closed.',
-        errors: [error?.message || String(error)],
+        errors: [`Independent reviewers produced ${streamed.count} qualifying candidates; the bounded adjudication limit is ${LIMITS.maxCandidates}. The gate refuses to drop candidates or attest an incomplete review.`],
         extra: {
           reviewerSummaries: reviews.map(({ provider, roleIndex, summary }) => ({
             provider,
@@ -1454,21 +1662,11 @@ async function runGateWithLease({
       };
     } else if (candidates.length) {
       usedCoordinator = true;
-      const batches = adjudicationBatches(candidates);
-      progress(`Adjudicating ${candidates.length} candidate finding(s) in ${batches.length} fresh ${plan.coordinator} batch(es).`);
       try {
-        const settledBatches = await clock.time('adjudication', () => mapWithConcurrency(
-          batches,
-          (batch, batchIndex) => runProviderWithOneRetry(() => coordinator({
-            provider: plan.coordinator,
-            checkout: worktree.checkout,
-            bundle,
-            candidates: batch,
-            batchIndex,
-          })),
-          LIMITS.providerConcurrency,
-          { pool },
-        ));
+        const sentBatches = await adjudicationStream.finish();
+        const startedAt = adjudicationStartedAt ?? Date.now();
+        clock.record('adjudication', startedAt, Date.now() - startedAt);
+        const settledBatches = sentBatches.map(({ settled }) => settled);
         // Among several failed batches, a process-tree cleanup failure must
         // win: it is the classification the watcher's mandatory pause keys on.
         const failedBatches = settledBatches.filter((result) => result.status !== 'fulfilled');

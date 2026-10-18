@@ -10,6 +10,7 @@ import { reviewPolicySnapshot } from '../context.mjs';
 import {
   adjudicationBatches,
   cleanCandidates,
+  createAdjudicationStream,
   createGateContext,
   lowConfidenceCandidates,
   describeReviewerFailures,
@@ -1749,4 +1750,226 @@ describe('launch refusals name their cause (PR #519)', () => {
       resetProviderCleanupLatch();
     }
   });
+});
+
+describe('adjudication while reviewers run (1.13.0)', () => {
+  const candidate = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, provider: 'codex', roleIndex: 0, title: `Defect ${id}`, priority: 'P2', confidence: 80, category: 'state',
+    file: 'src/a.ts', line: Number(id.replace(/\D/g, '')) || 1, scenario: 's', evidence: 'e', proposed_test: 't', ...extra,
+  });
+  const recorder = () => {
+    const batches: string[][] = [];
+    const dispatch = async (batch: Array<{ id: string }>) => {
+      batches.push(batch.map((entry) => entry.id));
+      return { status: 'fulfilled', value: { summary: 'ok', findings: [] } };
+    };
+    return { batches, dispatch };
+  };
+
+  it('sends a full batch at once and splits the tail into small batches', async () => {
+    const { batches, dispatch } = recorder();
+    const stream = createAdjudicationStream({ dispatch, batchSize: 5, tailBatchSize: 3 });
+    await stream.add({ candidates: ['c1', 'c2', 'c3'].map((id) => candidate(id)) });
+    expect(batches).toEqual([]);
+    await stream.add({ candidates: ['c4', 'c5', 'c6'].map((id) => candidate(id)) });
+    expect(batches).toEqual([['c1', 'c2', 'c3', 'c4', 'c5']]);
+    await stream.add({ candidates: ['c7', 'c8', 'c9'].map((id) => candidate(id)) });
+    expect(batches).toHaveLength(1);
+    const sent = await stream.finish();
+    expect(batches).toEqual([['c1', 'c2', 'c3', 'c4', 'c5'], ['c6', 'c7', 'c8'], ['c9']]);
+    expect(sent.map(({ batch }) => batch.length)).toEqual([5, 3, 1]);
+  });
+
+  it('merges duplicates like cleanCandidates, but never replaces a candidate already sent', async () => {
+    const { batches, dispatch } = recorder();
+    const stream = createAdjudicationStream({ dispatch, batchSize: 2 });
+    await stream.add({ candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 40 })] });
+    // c2 is under the floor; c1 waits for a full batch.
+    expect(batches).toEqual([]);
+    await stream.add({ candidates: [candidate('d1', { title: 'defect  C1', confidence: 90 })] });
+    // Same identity, higher confidence, not yet sent: the survivor is d1 whole.
+    await stream.add({ candidates: [candidate('c3')] });
+    expect(batches).toEqual([['d1', 'c3']]);
+    await stream.add({ candidates: [candidate('e3', { confidence: 99, title: 'Defect C3' })] });
+    const { candidates } = await stream.candidates();
+    expect(candidates.map((entry) => [entry.id, entry.corroboratingReviewers])).toEqual([['d1', 2], ['c3', 2]]);
+    await stream.finish();
+    expect(batches).toEqual([['d1', 'c3']]);
+    // The same answer cleanCandidates gives for the reviews in that order,
+    // except that the sent c3 is not replaced by the later e3.
+    const all = [
+      { candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 40 })] },
+      { candidates: [candidate('d1', { title: 'defect  C1', confidence: 90 })] },
+      { candidates: [candidate('c3')] },
+    ];
+    expect(cleanCandidates(all).map((entry) => entry.id)).toEqual(['d1', 'c3']);
+  });
+
+  it('in a follow-up round holds lone P3 candidates and sends them once something needs adjudication', async () => {
+    const lone = recorder();
+    const quiet = createAdjudicationStream({ dispatch: lone.dispatch, followUp: true, batchSize: 1 });
+    await quiet.add({ candidates: [candidate('p1', { priority: 'P3' }), candidate('p2', { priority: 'P3' })] });
+    expect(await quiet.finish()).toEqual([]);
+    expect(lone.batches).toEqual([]);
+    expect((await quiet.candidates()).candidates.map((entry) => entry.id)).toEqual(['p1', 'p2']);
+
+    const mixed = recorder();
+    const prior = [{ title: 'Defect p9', file: 'src/a.ts', priority: 'P2' }];
+    const loud = createAdjudicationStream({ dispatch: mixed.dispatch, followUp: true, batchSize: 1, priorBlocking: prior });
+    await loud.add({ candidates: [candidate('p1', { priority: 'P3' })] });
+    expect(mixed.batches).toEqual([]);
+    // A re-reported prior blocker is adjudicated whatever its priority and confidence.
+    await loud.add({ candidates: [candidate('p9', { priority: 'P3', confidence: 10 })] });
+    expect(mixed.batches).toEqual([['p9'], ['p1']]);
+  });
+
+  it('stops sending past the candidate bound or after stop, and still drains what was sent', async () => {
+    const over = recorder();
+    const bounded = createAdjudicationStream({ dispatch: over.dispatch, batchSize: 2, maxCandidates: 3 });
+    await bounded.add({ candidates: ['c1', 'c2', 'c3', 'c4', 'c5'].map((id) => candidate(id)) });
+    expect(await bounded.candidates()).toMatchObject({ overflow: true, count: 5 });
+    await bounded.finish();
+    // Past the bound the round fails closed: nothing more is sent.
+    expect(over.batches).toEqual([]);
+
+    const halted = recorder();
+    const stopped = createAdjudicationStream({ dispatch: halted.dispatch, batchSize: 5 });
+    await stopped.add({ candidates: [candidate('c1')] });
+    stopped.stop();
+    await stopped.add({ candidates: ['c2', 'c3', 'c4', 'c5', 'c6'].map((id) => candidate(id)) });
+    await stopped.drain();
+    expect(await stopped.finish()).toEqual([]);
+    expect(halted.batches).toEqual([]);
+  });
+
+  it('starts adjudicating a finished shard while another shard is still under review', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    // Two files of 300 changed lines each: two shards of the 500-line target.
+    for (const name of ['a', 'b']) {
+      await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'two shards');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-state-'));
+    temporaryDirectories.push(stateRoot);
+    const events: string[] = [];
+    let releaseSlow: () => void = () => {};
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => {
+      const file = shard.files[0];
+      if (file === 'src/b.ts') {
+        events.push('slow shard waiting');
+        await slowGate;
+        events.push('slow shard done');
+        return { provider, roleIndex, summary: 'b', candidates: [] };
+      }
+      events.push('fast shard done');
+      return {
+        provider, roleIndex, summary: 'a',
+        candidates: Array.from({ length: 5 }, (_, index) => ({
+          id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Fast defect ${index}`, priority: 'P2',
+          confidence: 90, category: 'state', file, line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+        })),
+      };
+    });
+    const coordinator = vi.fn(async ({ candidates }) => {
+      events.push(`adjudicating ${candidates.length}`);
+      releaseSlow();
+      return {
+        summary: 'Dismissed.',
+        findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
+          candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+          disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+        })),
+      };
+    });
+    const result = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer, coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    expect(shardReviewer).toHaveBeenCalledTimes(2);
+    // The batch from the fast shard went out before the slow shard finished.
+    expect(events.indexOf('adjudicating 5')).toBeGreaterThan(-1);
+    expect(events.indexOf('adjudicating 5')).toBeLessThan(events.indexOf('slow shard done'));
+    expect(result.stages.map((stage: { name: string }) => stage.name)).toContain('adjudication');
+  }, REAL_GIT_TEST_TIMEOUT);
+});
+
+describe('streamed adjudication in a round that fails closed (1.13.0)', () => {
+  it('reports the failed shard, sends nothing after it, and lets the batch already sent finish', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-fail-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    for (const name of ['a', 'b']) {
+      await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'two shards');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-fail-state-'));
+    temporaryDirectories.push(stateRoot);
+    let releaseSlow: () => void = () => {};
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => {
+      const file = shard.files[0];
+      if (file === 'src/b.ts') {
+        await slowGate;
+        throw new Error('provider timed out');
+      }
+      return {
+        provider, roleIndex, summary: 'a',
+        candidates: Array.from({ length: 6 }, (_, index) => ({
+          id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Fast defect ${index}`, priority: 'P2',
+          confidence: 90, category: 'state', file, line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+        })),
+      };
+    });
+    const coordinator = vi.fn(async ({ candidates }) => {
+      releaseSlow();
+      return {
+        summary: 'Dismissed.',
+        findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
+          candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+          disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+        })),
+      };
+    });
+    const error = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer, coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain('1 shard reviewer(s) failed after retry');
+    expect(error.message).toContain('provider timed out');
+    // One full batch went out while the slow shard ran; the sixth candidate
+    // was never sent once the round was going to fail closed.
+    expect(coordinator).toHaveBeenCalledTimes(1);
+    expect(coordinator.mock.calls[0][0].candidates).toHaveLength(5);
+  }, REAL_GIT_TEST_TIMEOUT);
 });
