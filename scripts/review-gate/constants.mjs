@@ -84,6 +84,10 @@ export const LIMITS = Object.freeze({
   // shards that did not complete. Kept this long, for this many identities.
   shardCheckpointMaxAgeMs: 24 * 60 * 60 * 1000,
   maxShardCheckpoints: 20,
+  // Shard reviews of completed full rounds, kept for reuse after a rebase
+  // when the same hunks and everything they depend on are unchanged (1.13.0).
+  shardCacheMaxAgeMs: 7 * 24 * 60 * 60 * 1000,
+  maxShardCacheEntries: 400,
   // How much of a reviewer's own summary an incomplete-review error keeps.
   incompleteSummaryChars: 400,
   shardMaxCandidates: 8,

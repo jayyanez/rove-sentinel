@@ -77,8 +77,25 @@ blocked, failed or came back truncated (the assigned diff, a required context
 read, or in a follow-up round an assigned prior blocker's file), or when no tool
 host was available; a spent verification budget is not incompleteness, and the
 error keeps the reviewer's own account.
+
+The context and its required reads travel in the prompt itself when together
+they fit 96 KB, and so do a shard's hunks and an adjudication batch's
+candidates when each fits 96 KB: the reviewer starts reasoning instead of
+spending its first turns on reads, and no tool output can come back with its
+middle elided. The material sits between markers that carry a per-review
+nonce, with the block every reviewer shares first. Prompts reach both CLIs on
+standard input, so no command-line limit applies. Larger material is read
+from files in parts, as described above; inlined material counts as read.
+
 Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
+Adjudication starts while reviewers still run: each review's candidates join
+a stream as it settles, with the same floor, identity merge and 50-candidate
+bound. A batch of five goes to a fresh adjudicator at once, and what remains
+when the last reviewer settles goes in batches of at most three. A candidate
+already sent is not replaced by a later duplicate of higher confidence. A
+round that will fail closed stops sending and waits for the batches already
+running.
 A candidate under the confidence floor (50) is not adjudicated; the report
 keeps up to 40 of them, highest confidence first, as evidence for recall
 analysis only, and the `ledger` command marks an external finding in a file
@@ -124,6 +141,20 @@ digest of what that reviewer was assigned. A rerun of that exact identity
 reviews only the other shards, adjudicates every candidate afresh, and records
 which shards it reused; `--force` and a round that ends in a report keep
 nothing. A kept review is not a decision: only a completed round attests.
+
+A full round also keeps each completed shard review of code, script and test
+files for seven days, keyed by everything the reviewer was given (hunks with
+their context, files, provider, risk, branch, author, policy and engine). A
+later full round, typically after a rebase, reuses one only when none of the
+shard's files differs between the two heads and no file that differs
+mentions, as a whole word, a name the shard declares or removes or the name
+of one of its files without the extension. That textual test stands in for
+"nothing the hunks depend on changed"; it is not an analysis, so a shard with
+a file name shorter than three characters, and every documentation or
+configuration shard, is reviewed again. Candidates are adjudicated afresh,
+the scout and hypotheses cover the whole diff, the report names the head a
+reused review was made at, a rerun of the same head and `--force` reuse
+nothing.
 
 State identity is shared by local clones of the same remote. To preserve the
 Rove migration and prevent duplicate watchers, this release retains the legacy

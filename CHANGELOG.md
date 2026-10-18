@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.13.0 — fewer unreviewed changes, more context per reviewer, a faster start
+## 1.13.0 — fewer unreviewed changes, more context per reviewer, faster reviews
 
 A critical review of the engine against what external reviewers keep catching
 found a skip that let build inputs through unreviewed, reviewers that never saw
@@ -53,6 +53,33 @@ reviewer started.
 - Prompts and the review context no longer assume Rove's UI: the async lens
   names generic interleavings, and the scout spends its interleaving slot only
   when the diff creates a pending window.
+- **The review material travels in the prompt.** Every reviewer used to spend
+  its first turns reading the context, the charter, the lessons, the briefs
+  and its shard, one call each, and a long tool output could come back with
+  its middle elided. The context and its required reads are now in every
+  prompt when together they fit 96 KB, and a shard's hunks (or an
+  adjudication batch's candidates) when they fit 96 KB, between markers
+  carrying a per-review nonce. Prompts reach Claude Code and Codex on standard
+  input. Larger material is read from files in parts, as before.
+- **Adjudication starts while reviewers run.** A batch of five candidates goes
+  to a fresh adjudicator as soon as completed reviews supply it; the rest goes
+  in batches of at most three when the last reviewer settles. The floor, the
+  identity merge and the 50-candidate bound are unchanged; a candidate already
+  sent is not replaced by a later duplicate. A shard whose reviewer reports an
+  incomplete review is handed over part by part at once, not after the wave.
+- **A rebase no longer means reviewing every hunk again.** A full round keeps
+  its code, script and test shard reviews for seven days. After a rebase, a
+  shard with byte-identical hunks is reused when none of its files changed
+  between the two heads and no file that changed mentions a name it declares
+  or removes, or its file names. Documentation and configuration shards are
+  always reviewed again, candidates are always adjudicated afresh, and
+  `--force` reuses nothing. The test is textual, and the architecture guide
+  says what it cannot see.
+- **Model and effort per role.** A provider's `roles` can give the scout,
+  hypotheses, shards, the lens reviewer or the adjudicator their own model,
+  effort or ceiling. The defaults set no roles, so nothing changes unless a
+  project opts in; `doctor --test-models` probes every combination a role can
+  request.
 
 Shards, prompts and the policy digest change with the version, so existing
 attestations and kept shard reviews do not carry over.
