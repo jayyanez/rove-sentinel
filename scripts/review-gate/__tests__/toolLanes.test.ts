@@ -380,3 +380,14 @@ describe('linter lanes after the second gate round of 1.13.0', () => {
     expect(laneFailure([{ status: 'fulfilled', value: {} }])).toBeNull();
   });
 });
+
+describe('winget program directories (CodeRabbit on 1.13.0)', () => {
+  it.skipIf(process.platform !== 'win32')('finds a tool in the user-scope and the machine-scope WinGet Links when PATH lacks them', async () => {
+    const { resolveExecutable } = await import('../toolLanes.mjs');
+    const user = await checkoutWith({ 'Microsoft/WinGet/Links/user-only-tool.exe': 'x' });
+    const machineRoot = await checkoutWith({ 'WinGet/Links/machine-only-tool.exe': 'x' });
+    const env = { PATH: '', LOCALAPPDATA: user, ProgramFiles: machineRoot, PATHEXT: '.EXE' };
+    expect(await resolveExecutable('user-only-tool', { env })).toMatch(/user-only-tool\.exe$/);
+    expect(await resolveExecutable('machine-only-tool', { env })).toMatch(/machine-only-tool\.exe$/);
+  });
+});

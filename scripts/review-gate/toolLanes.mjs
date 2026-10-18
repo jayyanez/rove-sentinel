@@ -77,7 +77,9 @@ export async function resolveExecutable(name, { env = process.env, exclude = [],
   // Where the package managers Sentinel installs with put programs, also when
   // a long-running watcher started before they were added to PATH.
   const managed = platform === 'win32'
-    ? [env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links') : null]
+    // User-scope and machine-scope winget installs.
+    ? [env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links') : null,
+      env.ProgramFiles ? path.join(env.ProgramFiles, 'WinGet', 'Links') : null]
     : platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin'] : [];
   for (const directory of [...pathValue.split(separator), ...managed.filter(Boolean)]) {
     if (!directory || directory === '.' || !path.isAbsolute(directory)) continue;
