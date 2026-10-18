@@ -65,6 +65,11 @@ describe('carried blockers', () => {
     expect(deferred.advisoryReason).toContain('why');
     expect(deferred).not.toHaveProperty('deferrable');
   });
+  it('keeps where a carried blocker was reported and what fails (1.13.0)', () => {
+    const carried = carriedFinding({ title: 'T', file: 'src/a.ts', priority: 'P2', line: 42, scenario: 'Logout leaves it warm.' }, 0);
+    expect(carried).toMatchObject({ line: 42, scenario: 'Logout leaves it warm.' });
+    expect(carriedFinding({ title: 'T', file: 'src/a.ts', priority: 'P2', line: 0 }, 0)).toMatchObject({ line: null, scenario: 'See the earlier report that verified it.' });
+  });
 });
 
 describe('bounded review convergence (1.8.0)', () => {
