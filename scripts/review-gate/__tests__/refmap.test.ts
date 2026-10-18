@@ -873,3 +873,34 @@ describe('reference map: C signatures with default arguments or a return type of
     expect(map).toContain('declarations are found by line patterns, not a parser');
   });
 });
+
+describe('reference map: a split signature needs a return type on the line before (1.13.0 follow-up)', () => {
+  it('does not read a multi-line top-level macro invocation as a definition', () => {
+    const lines = [
+      '#include "money.h"',
+      '',
+      'MODULE_LICENSE(',
+      '    "GPL");',
+      'static int',
+      'calculate_total (int count)',
+      '{',
+      '  return count;',
+      '}',
+      'EXPORT_SYMBOL(',
+      '    calculate_total);',
+    ];
+    const patch = [
+      'diff --git a/src/money.c b/src/money.c',
+      'new file mode 100644',
+      'index 0000000..abcdef3',
+      '--- /dev/null',
+      '+++ b/src/money.c',
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join('\n');
+    const sources = new Map([['abcdef3', lines.join('\n')]]);
+    expect(extractChangedSymbols(patch, { sources }).symbols).toEqual(['calculate_total']);
+    // The hunk lexer, without the file, reaches the same answer.
+    expect(extractChangedSymbols(patch).symbols).toEqual(['calculate_total']);
+  });
+});

@@ -75,8 +75,11 @@ const RETURN_TYPED_PATTERNS = [
 // its own and the name at the start of the next (GNU, BSD):
 //   static int
 //   calculate_total (int count)
-// A statement never starts at column 0 inside a function, and a top-level
-// macro invocation ends with \`;\`, which this pattern refuses (1.13.0).
+// Only when the line before holds a return type and nothing else
+// (RETURN_TYPE_LINE): a top-level macro invocation such as `MODULE_LICENSE(`
+// follows a blank line, a `;` or a `}`, never a bare type. A one-line
+// invocation ending in `;` is refused too (1.13.0).
+const RETURN_TYPE_LINE = /^(?!\s*(?:return|else|case|goto|typedef)\b)[A-Za-z_][\w\s*&:<>,]*[\w*&>]\s*$/;
 const SPLIT_SIGNATURE_PATTERNS = [
   /^(?:[A-Za-z_]\w*::)*~?([A-Za-z_]\w{2,})\s*\([^;{}]*\)?\s*(?:const\s*)?(?:\{|$)/g,
 ];
@@ -420,11 +423,14 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
   const unverified = [];
   let returnTyped = false;
   let splitSignatures = false;
-  const record = (line, verified) => {
+  // The previous code line of each side, for split signatures.
+  let oldPrevious = '';
+  let newPrevious = '';
+  const record = (line, verified, previous = '') => {
     const patterns = [
       ...DECLARATION_PATTERNS,
       ...(returnTyped ? RETURN_TYPED_PATTERNS : []),
-      ...(splitSignatures ? SPLIT_SIGNATURE_PATTERNS : []),
+      ...(splitSignatures && RETURN_TYPE_LINE.test(previous) ? SPLIT_SIGNATURE_PATTERNS : []),
     ];
     for (const pattern of patterns) {
       pattern.lastIndex = 0;
@@ -487,6 +493,8 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
       oldRemaining = hunk[2] === undefined ? 1 : Number(hunk[2]);
       newRemaining = hunk[4] === undefined ? 1 : Number(hunk[4]);
       oldSide.mode = 'code';
+      oldPrevious = '';
+      newPrevious = '';
       newSide.mode = 'code';
       continue;
     }
@@ -511,8 +519,8 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
     }
     if (!inCodeFile) continue;
     if (isContext) {
-      codeOnly(rawLine.slice(1), oldSide);
-      codeOnly(rawLine.slice(1), newSide);
+      oldPrevious = codeOnly(rawLine.slice(1), oldSide);
+      newPrevious = codeOnly(rawLine.slice(1), newSide);
       continue;
     }
     const lexed = isAdded ? newLexed : oldLexed;
@@ -520,9 +528,16 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
     const fromWholeFile = lexed && number > 0 ? lexed[number - 1] : undefined;
     const fallback = fromWholeFile === undefined;
     const line = fallback ? codeOnly(rawLine.slice(1), isAdded ? newSide : oldSide) : fromWholeFile;
+    // The line before this one on the same side: from the whole file when it
+    // was read, otherwise the last line the hunk lexer saw on that side.
+    const previous = fallback
+      ? (isAdded ? newPrevious : oldPrevious)
+      : (number > 1 ? lexed[number - 2] ?? '' : '');
+    if (isAdded) newPrevious = line;
+    else oldPrevious = line;
     // Without `sources` at all (a direct caller), every line is as good as the
     // hunk lexer can make it; with them, a fallback line is unverified.
-    record(line, !(sources && fallback));
+    record(line, !(sources && fallback), previous);
   }
   const all = [...production, ...testOnly, ...unverified];
   const symbols = all.slice(0, maxSymbols);
