@@ -786,6 +786,9 @@ async function runGateWithLease({
   policy,
   stateRoot,
   availableProviders,
+  // Test seam: reviewers read the context and their shard from files instead
+  // of receiving them in the prompt.
+  inlineMaterial = true,
 } = {}) {
   const context = await createGateContext(repoRootInput, { stateRoot });
   // Reviews are serialized (one per daemon, or one foreground run); the
@@ -1064,6 +1067,7 @@ async function runGateWithLease({
       openBriefs,
       followUpPatch,
       followUpBaseSha,
+      inlineMaterial,
     });
 
     bundle.modelConfig = reviewPolicy.config;

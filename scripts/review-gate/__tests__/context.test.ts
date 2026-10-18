@@ -536,3 +536,48 @@ Unrelated canvas rule.
     }
   });
 });
+
+describe('review material for the prompt (1.13.0)', () => {
+  it('carries the context and its required reads inline when they fit, and nothing when they do not', async () => {
+    const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-context-inline-'));
+    try {
+      execFileSync('git', ['-C', temporaryRoot, 'init', '-b', 'main']);
+      execFileSync('git', ['-C', temporaryRoot, 'config', 'user.email', 'test@example.com']);
+      execFileSync('git', ['-C', temporaryRoot, 'config', 'user.name', 'Test']);
+      await writeFile(path.join(temporaryRoot, 'a.ts'), 'export const a = 1;\n');
+      execFileSync('git', ['-C', temporaryRoot, 'add', '.']);
+      execFileSync('git', ['-C', temporaryRoot, 'commit', '-m', 'base']);
+      const headSha = execFileSync('git', ['-C', temporaryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const make = (charter: string, inlineMaterial = true) => createContextBundle({
+        checkout: temporaryRoot, policyRoot: temporaryRoot, policy: { charter, lessons: '# Lessons\n' },
+        baseSha: headSha, headSha, branch: 'b', author: 'human', risk: 'low', riskReasons: ['t'],
+        files: ['a.ts'], stats: { additions: 1, deletions: 0 }, patch: '+x', temporaryRoot, inlineMaterial,
+      });
+      const small = await make('# Charter\nBe exact.\n');
+      try {
+        expect(small.inline?.nonce).toMatch(/^[0-9a-f-]{36}$/);
+        const context = await readFile(small.contextPath, 'utf8');
+        expect(small.inline?.required).toContain(context);
+        expect(small.inline?.required).toContain(`===== SENTINEL ${small.inline?.nonce} BEGIN shared-review-charter.md =====\n# Charter\nBe exact.\n===== SENTINEL`);
+        expect(small.inline?.required).toContain('BEGIN bug-lessons.md');
+        expect(small.inline?.required).toContain('BEGIN open-bug-briefs.md');
+      } finally {
+        await small.cleanup();
+      }
+      const large = await make(`# Charter\n${'r'.repeat(100 * 1024)}\n`);
+      try {
+        expect(large.inline).toBeNull();
+      } finally {
+        await large.cleanup();
+      }
+      const off = await make('# Charter\n', false);
+      try {
+        expect(off.inline).toBeNull();
+      } finally {
+        await off.cleanup();
+      }
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+});

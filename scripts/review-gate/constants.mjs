@@ -87,6 +87,12 @@ export const LIMITS = Object.freeze({
   // How much of a reviewer's own summary an incomplete-review error keeps.
   incompleteSummaryChars: 400,
   shardMaxCandidates: 8,
+  // Review material carried in the prompt (1.13.0): the context and its
+  // required reads when together they fit the first bound, and a shard
+  // (or an adjudication batch) when it fits the second. Larger material is
+  // read from files, in parts, as before.
+  inlineRequiredMaxBytes: 96 * 1024,
+  inlineShardMaxBytes: 96 * 1024,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.
   coordinatorBatchSize: 5,

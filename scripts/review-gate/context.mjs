@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, open, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import {
   SCOUT_SCHEMA,
 } from './constants.mjs';
 import { cleanupAfterBestEffortMarker, removeTreeWithRetries } from './cleanup.mjs';
-import { ONE_FILE_PER_CALL, promptSafe } from './providers.mjs';
+import { inlineBlock, ONE_FILE_PER_CALL, promptSafe } from './providers.mjs';
 import { cutLine, splitPatchByFile } from './shards.mjs';
 import { runGit } from './git.mjs';
 import { hashText, readJson } from './storage.mjs';
@@ -384,6 +385,9 @@ export async function createContextBundle({
   followUpPatch = null,
   followUpBaseSha = null,
   temporaryRoot = os.tmpdir(),
+  // Inline the context and its required reads into every prompt when they
+  // fit (1.13.0). A test seam turns it off to exercise the file reads.
+  inlineMaterial = true,
 }) {
   const directory = await mkdtemp(path.join(temporaryRoot, 'rove-review-context-'));
   const reviewerSchemaPath = path.join(directory, 'reviewer.schema.json');
@@ -556,10 +560,26 @@ ${metadataOnlyFiles.length
     throw error;
   }
 
+  // The material every prompt of this review carries, in the order a reader
+  // needs it, when it fits its bound; otherwise reviewers read the files.
+  const nonce = randomUUID();
+  const lessonsText = lessonsParts.join('');
+  const briefsText = openBriefsParts.join('');
+  const required = [
+    inlineBlock({ nonce }, path.basename(contextPath), context),
+    inlineBlock({ nonce }, 'shared-review-charter.md', charter),
+    inlineBlock({ nonce }, 'bug-lessons.md', lessonsText),
+    inlineBlock({ nonce }, 'open-bug-briefs.md', briefsText),
+  ].join('\n\n');
+  const inline = inlineMaterial && Buffer.byteLength(required, 'utf8') <= LIMITS.inlineRequiredMaxBytes
+    ? { nonce, required }
+    : null;
+
   let cleaned = false;
   return {
     directory,
     contextPath,
+    inline,
     reviewerSchemaPath,
     scoutSchemaPath,
     historyPath,
