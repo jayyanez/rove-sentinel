@@ -110,4 +110,10 @@ describe('per-role model and effort (1.13.0)', () => {
       selected: ['claude'], availability: { claude: { version: '2.1.282 (Claude Code)' } },
     })).toThrow(/2\.1\.284 or later is required for claude-sonnet-5-5/);
   });
+
+  it('keeps the provider ceiling for a role that only changes its model', async () => {
+    const { profileFor } = await import('../modelSettings.mjs');
+    const config = normalizeConfig({ models: { claude: { effort: 'high', maxEffort: 'high', roles: { scout: { model: 'claude-sonnet-5-5' } } } } });
+    expect(profileFor('claude', 'Scout', config)).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'high', maxEffort: 'high' });
+  });
 });

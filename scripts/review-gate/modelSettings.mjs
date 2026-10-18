@@ -28,8 +28,8 @@ function resolveSettings(provider, settings, defaults, label) {
     throw new Error(`${label} model must be a CLI model identifier of at most 160 characters.`);
   }
   const legacyClaude = provider === 'claude' && /^claude-(?:opus|sonnet)-4-6(?:-|$)/.test(model);
-  // A model the defaults do not name brings no ceiling of its own.
-  const defaultCeiling = legacyClaude ? 'high' : (model === defaults.model ? defaults.maxEffort : PROVIDER_PROFILE[`${provider}Reviewer`].maxEffort);
+  // A role inherits its provider's ceiling, whatever model it names.
+  const defaultCeiling = legacyClaude ? 'high' : defaults.maxEffort;
   const maxEffort = settings.maxEffort ?? (EFFORTS.indexOf(effort) > EFFORTS.indexOf(defaultCeiling) ? effort : defaultCeiling);
   const supported = provider === 'claude' || model === 'gpt-6.1-sol'
     ? EFFORTS.slice(2) : EFFORTS;

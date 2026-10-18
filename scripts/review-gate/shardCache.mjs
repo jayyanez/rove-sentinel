@@ -19,7 +19,9 @@ import { hashText } from './storage.mjs';
 //     head; and
 //   - no file that differs between the two heads mentions, as a whole word,
 //     a name the shard declares or removes, or the name of one of its files
-//     without the extension (the name an import or include uses).
+//     without the extension (the name an import or include uses); and
+//   - none of the shard's files mentions, as a whole word, the name of a file
+//     that differs (a dependency the shard imports or includes).
 //
 // The last rule is what stands in for "nothing the hunks depend on
 // changed". It is a textual test, not an analysis: a dependency that names
@@ -30,6 +32,9 @@ import { hashText } from './storage.mjs';
 // diff as before.
 
 const REUSABLE_KINDS = new Set(['code', 'tests', 'scripts']);
+// Past this many distinct changed file names the dependency test is not run
+// and the shard is reviewed again.
+const MAX_CHANGED_NAMES = 200;
 
 /** The digest a reusable review of `shard` is stored under, or null. */
 export function shardCacheKey({ shard, provider, policyDigest, repository, risk, branch, author }) {
@@ -73,14 +78,26 @@ export async function rebaseReuseAllowed(repoRoot, { shard, reviewedHead, headSh
     const changed = new Set(diff.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
     if (!changed.size) return true;
     if (shard.files.some((file) => changed.has(file))) return false;
-    const grep = await run(repoRoot, [
-      'grep', '-l', '-w', '--fixed-strings', ...surface.flatMap((name) => ['-e', name]), headSha, '--',
-    ], quiet);
-    if (grep.code === 1) return true;
-    if (grep.code !== 0) return false;
-    const mentioning = grep.stdout.split(/\r?\n/).filter(Boolean)
-      .map((line) => (line.startsWith(`${headSha}:`) ? line.slice(headSha.length + 1) : line));
-    return !mentioning.some((file) => changed.has(file));
+    const filesMentioning = async (names) => {
+      const grep = await run(repoRoot, [
+        'grep', '-l', '-w', '--fixed-strings', ...names.flatMap((name) => ['-e', name]), headSha, '--',
+      ], quiet);
+      if (grep.code === 1) return new Set();
+      if (grep.code !== 0) return null;
+      return new Set(grep.stdout.split(/\r?\n/).filter(Boolean)
+        .map((line) => (line.startsWith(`${headSha}:`) ? line.slice(headSha.length + 1) : line)));
+    };
+    // Something that changed uses the shard ...
+    const users = await filesMentioning(surface);
+    if (!users || [...users].some((file) => changed.has(file))) return false;
+    // ... or the shard uses something that changed: one of its files names a
+    // changed file (an import, an include, a path). A changed file with a
+    // name shorter than three characters, or too many changed files to name,
+    // cannot be checked this way.
+    const changedNames = [...new Set([...changed].map((file) => file.split('/').pop().replace(/\.[^.]+$/, '')))];
+    if (changedNames.length > MAX_CHANGED_NAMES || changedNames.some((name) => name.length < 3)) return false;
+    const dependents = await filesMentioning(changedNames);
+    return Boolean(dependents) && !shard.files.some((file) => dependents.has(file));
   } catch {
     return false;
   }

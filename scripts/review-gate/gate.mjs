@@ -389,6 +389,9 @@ export function keptShardReview(entry, provider, roleIndex) {
       ),
       completedAt: typeof entry.completedAt === 'string' ? entry.completedAt : null,
       delivery: entry.delivery === 'part-by-part' ? 'part-by-part' : 'whole',
+      // A review a full round reused from an earlier head (1.13.0) says so,
+      // also when a checkpoint carries it into a rerun.
+      ...(typeof entry.reusedFrom === 'string' && /^[0-9a-f]{40}$/.test(entry.reusedFrom) ? { reusedFrom: entry.reusedFrom } : {}),
       executions: Array.isArray(entry.executions) ? entry.executions.filter((record) => record && typeof record === 'object') : [],
     };
   } catch {
@@ -678,6 +681,10 @@ export function createAdjudicationStream({
     },
     stop() {
       stopped = true;
+    },
+    /** Whether nothing more may be adjudicated: stopped, or past the bound. */
+    get halted() {
+      return stopped || overflow;
     },
     async drain() {
       await queue;
@@ -1434,7 +1441,7 @@ async function runGateWithLease({
       followUp,
       priorBlocking: priorBlockingList,
       canonicalize: canonicalReview,
-      dispatch: (batch, batchIndex) => pool.run(() => (adjudicationHalted
+      dispatch: (batch, batchIndex) => pool.run(() => (adjudicationHalted || adjudicationStream.halted
         ? { status: 'rejected', reason: new Error('Adjudication skipped: the round failed closed.'), retried: false }
         : runProviderWithOneRetry(() => coordinator({
           provider: plan.coordinator,
@@ -1459,6 +1466,8 @@ async function runGateWithLease({
       if (result.status === 'fulfilled') adjudicationStream.add(result.value);
       else adjudicationStream.stop();
     };
+    // Once the stream stops (a failed shard, a cleanup failure, the bound), a
+    // batch still waiting for a slot is skipped when its slot comes.
     const streamOther = (result) => {
       if (result.status === 'fulfilled') adjudicationStream.add(result.value);
       else if (processTreeCleanupFailureCode(result.reason)) adjudicationStream.stop();
@@ -1920,7 +1929,8 @@ async function runGateWithLease({
       return [{
         key: cacheKeys[index],
         review: settled.value,
-        completedAt: keptShards[index]?.reusedFrom ? keptShards[index].completedAt : new Date().toISOString(),
+        // A kept or reused review keeps its own age: its bound never renews.
+        completedAt: keptShards[index]?.completedAt ?? new Date().toISOString(),
         headSha,
         baseSha,
         delivery: keptShards[index]?.delivery ?? settled.delivery ?? 'whole',

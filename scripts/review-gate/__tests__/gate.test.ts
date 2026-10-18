@@ -1840,6 +1840,10 @@ describe('adjudication while reviewers run (1.13.0)', () => {
     await stopped.drain();
     expect(await stopped.finish()).toEqual([]);
     expect(halted.batches).toEqual([]);
+    // A batch already waiting for a slot reads this before it launches.
+    expect(stopped.halted).toBe(true);
+    expect(bounded.halted).toBe(true);
+    expect(createAdjudicationStream({ dispatch: halted.dispatch }).halted).toBe(false);
   });
 
   it('starts adjudicating a finished shard while another shard is still under review', async () => {
@@ -1972,4 +1976,19 @@ describe('streamed adjudication in a round that fails closed (1.13.0)', () => {
     expect(coordinator).toHaveBeenCalledTimes(1);
     expect(coordinator.mock.calls[0][0].candidates).toHaveLength(5);
   }, REAL_GIT_TEST_TIMEOUT);
+});
+
+describe('a reused review carried by a checkpoint (1.13.0 self-review)', () => {
+  it('keeps the head it was reviewed at and its own completion time', async () => {
+    const { keptShardReview } = await import('../gate.mjs');
+    const entry = {
+      review: { provider: 'codex', summary: 'Reviewed.', candidates: [] },
+      completedAt: '2026-10-11T00:00:00.000Z',
+      delivery: 'whole',
+      executions: [],
+      reusedFrom: 'a'.repeat(40),
+    };
+    expect(keptShardReview(entry, 'codex', 2)).toMatchObject({ completedAt: entry.completedAt, reusedFrom: 'a'.repeat(40) });
+    expect(keptShardReview({ ...entry, reusedFrom: 'not a sha' }, 'codex', 2)?.reusedFrom).toBeUndefined();
+  });
 });

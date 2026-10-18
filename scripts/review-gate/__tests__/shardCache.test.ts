@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -140,11 +140,41 @@ describe('reusing a shard review after a rebase (1.13.0)', () => {
     expect(shardReviewer).toHaveBeenCalledTimes(1);
     expect(coordinator).toHaveBeenCalledTimes(2);
     expect(second.shards).toEqual([expect.objectContaining({ reused: true, reusedFrom: first.identity.headSha })]);
+    // The reused review keeps its own age in the cache.
+    const entries = await Promise.all((await readdir(path.join(stateRoot, 'shard-cache'))).map(async (name) => JSON.parse(await readFile(path.join(stateRoot, 'shard-cache', name), 'utf8'))));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].headSha).toBe(rebased);
+    expect(entries[0].completedAt).toBe(second.shards[0].reviewedAt);
+    expect(Date.parse(entries[0].completedAt)).toBeLessThan(Date.parse(second.createdAt ?? new Date().toISOString()));
 
     const withCaller = await moveMainAndRebase(root, 'src/reports.ts', "import { readEntry } from './cache';\nexport const report = readEntry('r');\n");
     const third = await gate(withCaller);
     expect(third.status).toBe('pass');
     expect(shardReviewer).toHaveBeenCalledTimes(2);
     expect(third.shards[0].reused).toBeUndefined();
+  });
+});
+
+describe('shard reuse after the 1.13.0 self-review', () => {
+  it('reviews a shard again when a file it imports changed', async () => {
+    const root = await makeRepository();
+    const reviewedHead = git(root, 'rev-parse', 'HEAD');
+    // The branch's cache module imports a parser that main then changes.
+    git(root, 'switch', 'main');
+    await write(root, 'src/parser.ts', 'export const parse = (text: string) => text;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'add parser');
+    git(root, 'switch', 'feature/cache');
+    await write(root, 'src/cache.ts', "import { parse } from './parser';\nexport function readEntry(key: string) {\n  return parse(key).trim();\n}\n");
+    git(root, 'commit', '-am', 'Parse keys');
+    git(root, 'rebase', 'main');
+    const before = git(root, 'rev-parse', 'HEAD');
+    const [shard] = partitionShards(await readPatch(root, git(root, 'merge-base', 'main', before), before));
+    const after = await moveMainAndRebase(root, 'src/parser.ts', 'export const parse = (text: string) => text.toLowerCase();\n');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: before, headSha: after })).toBe(false);
+    // The same move without the import leaves the shard's review standing.
+    void reviewedHead;
+    const unrelated = await moveMainAndRebase(root, 'src/billing.ts', 'export const rate = 9;\n');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: after, headSha: unrelated })).toBe(true);
   });
 });
