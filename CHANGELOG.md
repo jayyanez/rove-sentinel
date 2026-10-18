@@ -75,6 +75,15 @@ reviewer started.
   always reviewed again, candidates are always adjudicated afresh, and
   `--force` reuses nothing. The test is textual, and the architecture guide
   says what it cannot see.
+- **A large file no longer has to be split for a follow-up round.** The file
+  of each prior blocker assigned to a follow-up reviewer was a required read,
+  whole: a file over one tool output (~38 KB for Codex) came back truncated
+  and failed every follow-up round closed until the file was split. The
+  reviewer now reads the code that settles the blocker, around its location
+  and by line range in a large file. Any other truncated read is not
+  incompleteness, and an adjudicator is told it is assigned candidates, not a
+  diff. With shard parts (1.12.0) and inlined material, a changed file over
+  ~40 KB or a line over ~2 KB is no longer a reason to split a change.
 - **Model and effort per role.** A provider's `roles` can give the scout,
   hypotheses, shards, the lens reviewer or the adjudicator their own model,
   effort or ceiling. The defaults set no roles, so nothing changes unless a

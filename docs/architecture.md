@@ -74,7 +74,8 @@ a patch index of each file's line range, the Git history, the full patch). The
 scout owns no part of the patch: it reads a small patch whole and otherwise
 picks files through the index. A review is incomplete when a required read was
 blocked, failed or came back truncated (the assigned diff, a required context
-read, or in a follow-up round an assigned prior blocker's file), or when no tool
+read, or in a follow-up round the code that settles an assigned prior blocker,
+read around its location, by line range in a large file), or when no tool
 host was available; a spent verification budget is not incompleteness, and the
 error keeps the reviewer's own account.
 

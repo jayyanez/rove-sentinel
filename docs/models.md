@@ -125,8 +125,9 @@ part. A failed or still-incomplete final pass cannot approve the review.
 Every provider must explicitly return `review_complete`. It is `false` when a
 required read was blocked, failed or came back truncated — the assigned diff
 (every part), a required read the review context lists, or in a follow-up round
-the file of a prior blocker assigned to the reviewer — or when no tool host was
-available. A spent verification budget or a failing verification command is not
+the code that settles a prior blocker assigned to the reviewer, which is read
+around its location (by line range in a large file, never whole) — or when no
+tool host was available. Any other truncated read is not incompleteness. A spent verification budget or a failing verification command is not
 incompleteness. An empty finding list cannot substitute for completing the
 assigned review. The error of an incomplete review keeps the reviewer's own
 account. A follow-up reviewer omits an assigned prior blocker only when it

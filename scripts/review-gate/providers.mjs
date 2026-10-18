@@ -480,7 +480,8 @@ export function reviewerPrompt({
   const reverify = round === 'follow-up' && priorBlocking.length
     ? `\n\nThis is a follow-up round with no shard of its own. The previously reviewed
 head blocked on the findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}
-(${priorBlocking.length} in total). Read each one's file at head and verify whether
+(${priorBlocking.length} in total). Read each one's code at head (its file around the
+reported location, by line range when the file is large) and verify whether
 the branch still has it: ${PRIOR_BLOCKER_RULE}`
     : '';
   return `${inline ? inlinePreamble(inline) : ''}You are an independent ${provider} reviewer in Rove Sentinel.
@@ -596,8 +597,8 @@ that head blocked on (a re-verification shard). That head blocked on the
 findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}${inShard.length ? `; the ones in your shard are:\n${inShard.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}` : '.'}
 ${inShardOverflow > 0 ? `- …and ${inShardOverflow} more in your shard, listed in ${priorBlockingPath || 'prior-blocking.md'}\n` : ''}For each one whose file is in your shard, verify whether the branch as it
 stands now still has it: ${PRIOR_BLOCKER_RULE}${unassigned.length ? `\nThese blockers live in files no shard holds (the branch never changed
-them) and are assigned to YOU; read each file at head and re-verify it the
-same way:\n${unassigned.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
+them) and are assigned to YOU; read each one's code at head (by line range
+when the file is large) and re-verify it the same way:\n${unassigned.map((finding) => `- ${promptSafe(finding.priority)} ${promptSafe(finding.file)} — ${promptSafe(finding.title)}`).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
     : '';
   // A shard handed over one part per reviewer (1.12.0): this reviewer owns
   // one part, and the other parts have reviewers of their own.
@@ -816,15 +817,22 @@ an omitted blocker as fixed, and an unverified one must not vanish.`;
 /**
  * What makes a review complete (1.11.2), given to every pass, the ceiling
  * pass included. Required reads are the diff a reviewer was assigned, every
- * required read the context lists and, in a follow-up round, the files of the
- * prior blockers assigned to it.
+ * required read the context lists and, in a follow-up round, the code that
+ * settles each prior blocker assigned to it. That code is read around the
+ * reported location (1.13.0): a whole prior-blocker file used to be a
+ * required read, so a file larger than one tool output (~38 KB for Codex)
+ * failed every follow-up round closed until the file was split.
  */
 export const COMPLETENESS_CONTRACT = `Set review_complete to true once you have read, in full, the diff you were
 assigned (every part), every required read the context lists and, in a
-follow-up round, the file of every prior blocker assigned to you, and applied
-your assignment to all of it. Return review_complete: false when one of those
-reads was blocked, failed or came back truncated, or when no tool host was
-available. Verification beyond them is bounded by your call budget: running
+follow-up round, the code that settles every prior blocker assigned to you
+(its file around the reported location; read a large file by line range,
+never whole), and applied your assignment to all of it. An adjudicator is
+assigned its candidates, not a diff. Return review_complete: false when one of
+those reads was blocked, failed or came back truncated, or when no tool host
+was available. Any other read that came back truncated (a whole large file, a
+lookup) does not make the review incomplete: read the part you need by line
+range instead. Verification beyond them is bounded by your call budget: running
 out of it, or a verification command that fails, does not make the review
 incomplete — report only new candidates whose evidence you verified, report
 again every assigned prior blocker you did not verify as fixed, and finish.
