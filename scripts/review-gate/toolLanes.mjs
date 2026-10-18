@@ -316,9 +316,9 @@ async function readAtMost(target, maxBytes) {
 }
 
 // The file gitleaks reads as its configuration from the scanned root. The
-// branch's copy is scanned as data in a directory whose name carries a
-// per-scan random part, so it can neither switch rules off nor collide with
-// another changed file. (The ignore file is read from --gitleaks-ignore-path,
+// branch's copy is scanned as data, under another name in a directory whose
+// name carries a per-scan random part, so it can neither switch rules off nor
+// collide with another changed file. (The ignore file is read from --gitleaks-ignore-path,
 // which is outside the copy.)
 const GITLEAKS_CONTROL = /^\.gitleaks\.toml$/i;
 
@@ -352,7 +352,9 @@ export async function runGitleaksLane({ checkout, files, patch, run = runProcess
         skipped += 1;
         continue;
       }
-      const copy = GITLEAKS_CONTROL.test(file) ? `${controlDirectory}/${file}` : file;
+      // gitleaks's built-in rules also skip any file named .gitleaks.toml, so
+      // the copy gets another name as well.
+      const copy = GITLEAKS_CONTROL.test(file) ? `${controlDirectory}/gitleaks-config.toml` : file;
       await mkdir(path.dirname(path.join(source, copy)), { recursive: true });
       await writeFile(path.join(source, copy), text);
       scannedAs.set(copy, file);

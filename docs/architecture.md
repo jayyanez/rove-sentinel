@@ -111,9 +111,10 @@ Installed model/effort settings and bounded escalation are described in [models]
 Deterministic lanes run beside the model review, with no model call, and
 report hits on added lines: markdownlint on changed Markdown; shellcheck on
 shell scripts (by extension or shebang); actionlint on GitHub workflows;
-gitleaks on changed text files, scanned as a copy with its built-in rules and
-`gitleaks:allow` comments ignored so nothing in the branch can switch it off,
-with secrets redacted; and ruff on Python. A lane analyzes at most 200 files
+gitleaks on changed text files, scanned as a copy with its built-in rules
+(including their own path exclusions, such as lock files and images) and with
+`gitleaks:allow` comments ignored, so nothing in the branch can switch it off;
+secrets are redacted; and ruff on Python. A lane analyzes at most 200 files
 (gitleaks 1,000, each at most 1 MiB and 32 MiB in all, never a symlink or a
 binary file), and its note says how many it left out. Those four analyze text, never execute repository code, and
 run whenever the tool is installed; a tool is found on PATH, never in the
