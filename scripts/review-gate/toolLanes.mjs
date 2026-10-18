@@ -1,10 +1,15 @@
-import { access, mkdir, mkdtemp, open, readFile, rm, symlink, unlink, writeFile, lstat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, symlink, unlink, writeFile, lstat } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
 import os from 'node:os';
+import { promisify } from 'node:util';
 import path from 'node:path';
 
 import { LIMITS } from './constants.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { addedLinesByFile } from './shards.mjs';
+
+// The operating system's own resolution: it also expands a Windows 8.3 name.
+const realpathNative = promisify(realpathCallback.native);
 
 // Linter lanes (1.13.0). CodeRabbit runs dozens of static analyzers beside
 // its model review; Sentinel ran markdownlint and an opt-in Clippy. These
@@ -49,6 +54,64 @@ export function checkoutRelative(file, checkout) {
   return null;
 }
 
+/**
+ * The absolute path of a program, found on PATH and never in the reviewed
+ * checkout (1.13.0). Windows looks in the current directory first, so a bare
+ * `ruff` launched with the checkout as its working directory would run a
+ * `ruff.exe` committed in the branch. A name with a path separator is a path
+ * the caller chose and is returned as it is.
+ */
+export async function resolveExecutable(name, { env = process.env, exclude = [], platform = process.platform } = {}) {
+  if (/[\\/]/.test(name)) return name;
+  const pathValue = env.PATH ?? env.Path ?? env.path ?? '';
+  const separator = platform === 'win32' ? ';' : ':';
+  const extensions = platform === 'win32'
+    ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((extension) => extension.toLowerCase())
+      // Batch shims cannot be started without a shell; only programs count.
+      .filter((extension) => extension === '.exe' || extension === '.com')
+    : [''];
+  const excluded = await Promise.all(exclude.filter(Boolean).map(async (directory) => {
+    const resolved = await realpath(directory).catch(() => path.resolve(directory));
+    return platform === 'win32' ? resolved.toLowerCase() : resolved;
+  }));
+  for (const directory of pathValue.split(separator)) {
+    if (!directory || directory === '.' || !path.isAbsolute(directory)) continue;
+    const real = await realpath(directory).catch(() => null);
+    if (!real) continue;
+    const comparable = platform === 'win32' ? real.toLowerCase() : real;
+    if (excluded.some((root) => comparable === root || comparable.startsWith(`${root}${path.sep}`))) continue;
+    for (const extension of extensions) {
+      const candidate = path.join(real, platform === 'win32' && name.toLowerCase().endsWith(extension) ? name : `${name}${extension}`);
+      const info = await stat(candidate).catch(() => null);
+      if (info?.isFile()) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Maps a tool's path for a file to the checkout-relative path, through the
+ * spellings the same directory can have (a Windows 8.3 short name, a macOS
+ * /var symlink): both the checkout and an absolute file are compared by
+ * their resolved real paths.
+ */
+async function checkoutRelativizer(checkout) {
+  const roots = [...new Set([checkout, await realpathNative(checkout).catch(() => checkout)])];
+  return async (file) => {
+    for (const root of roots) {
+      const relative = checkoutRelative(file, root);
+      if (relative) return relative;
+    }
+    const real = await realpathNative(file).catch(() => null);
+    if (!real) return null;
+    for (const root of roots) {
+      const relative = checkoutRelative(real, root);
+      if (relative) return relative;
+    }
+    return null;
+  };
+}
+
 /** Shape a linter hit as a deterministic finding (see lint.mjs). */
 export function toolFinding({ source, rule, title, file, line, detail, priority }) {
   return {
@@ -66,17 +129,19 @@ export function toolFinding({ source, rule, title, file, line, detail, priority 
   };
 }
 
+/** The files that are regular files at head: a symlink is never followed. */
 async function existing(checkout, files) {
   const present = [];
   for (const file of files) {
-    try {
-      await access(path.join(checkout, file));
-      present.push(file);
-    } catch {
-      // Deleted at head: nothing to analyze.
-    }
+    const info = await lstat(path.join(checkout, file)).catch(() => null);
+    if (info?.isFile()) present.push(file);
   }
   return present;
+}
+
+/** Bound a lane's file list, saying what it left out. */
+function bounded(targets, max = MAX_LANE_FILES) {
+  return { files: targets.slice(0, max), omitted: Math.max(0, targets.length - max) };
 }
 
 async function firstLine(target) {
@@ -98,10 +163,14 @@ async function firstLine(target) {
  * Run one tool and turn what can go wrong into a lane note. Only a
  * process-tree cleanup failure rejects: it must reach the gate's fence.
  */
-async function runTool(lane, command, args, { cwd, run, timeoutMs, env, input }) {
+async function runTool(lane, command, args, { cwd, run, timeoutMs, env, input, exclude = [cwd], resolve }) {
+  const executable = await (resolve ?? resolveExecutable)(command, { env, exclude });
+  if (!executable) {
+    return { lane: { lane, status: 'unavailable', note: `${command} is not installed on this host`, findings: [] } };
+  }
   try {
     return {
-      result: await run(command, args, {
+      result: await run(executable, args, {
         cwd, env, timeoutMs, input, allowFailure: true, maxOutputBytes: MAX_LANE_OUTPUT_BYTES,
       }),
     };
@@ -117,15 +186,15 @@ async function runTool(lane, command, args, { cwd, run, timeoutMs, env, input })
   }
 }
 
-function finish(lane, findings, { total, files, maxFindings = LIMITS.maxDeterministicFindings }) {
+function finish(lane, findings, { total, files, omitted = 0, maxFindings = LIMITS.maxDeterministicFindings }) {
   // Blocking hits come first, so a bound never hides one behind advisories.
   const ordered = [...findings.filter((finding) => finding.priority !== 'P3'), ...findings.filter((finding) => finding.priority === 'P3')];
-  const bounded = ordered.slice(0, maxFindings);
+  const kept = ordered.slice(0, maxFindings);
   return {
     lane,
     status: 'ok',
-    note: `${total} hit(s) in ${files} file(s); ${findings.length} on added lines${findings.length > bounded.length ? ` (bounded to ${bounded.length})` : ''}`,
-    findings: bounded,
+    note: `${total} hit(s) in ${files} file(s); ${findings.length} on added lines${findings.length > kept.length ? ` (bounded to ${kept.length})` : ''}${omitted ? `; ${omitted} changed file(s) NOT analyzed (past the lane's bounds)` : ''}`,
+    findings: kept,
   };
 }
 
@@ -143,16 +212,16 @@ function parseJson(text) {
   }
 }
 
-export async function runShellcheckLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs }) {
+export async function runShellcheckLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
   const lane = 'shellcheck';
   const candidates = [];
   for (const file of (files || []).map(normalize)) {
     if (SHELL_EXTENSION.test(file)) candidates.push(file);
     else if (!/\.[^/]+$/.test(file.split('/').pop()) && SHELL_SHEBANG.test(await firstLine(path.join(checkout, file)))) candidates.push(file);
   }
-  const targets = (await existing(checkout, candidates)).slice(0, MAX_LANE_FILES);
+  const { files: targets, omitted } = bounded(await existing(checkout, candidates));
   if (!targets.length) return { lane, status: 'skipped', note: 'no shell script changed', findings: [] };
-  const { result, lane: failed } = await runTool(lane, 'shellcheck', ['-f', 'json1', '-S', 'warning', '--', ...targets], { cwd: checkout, run, timeoutMs, env });
+  const { result, lane: failed } = await runTool(lane, 'shellcheck', ['-f', 'json1', '-S', 'warning', '--', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
   if (failed) return failed;
   const bad = exitedBadly(lane, 'shellcheck', result, [0, 1]);
   if (bad) return bad;
@@ -170,16 +239,16 @@ export async function runShellcheckLane({ checkout, files, patch, run = runProce
       detail: `${hit.message} (https://www.shellcheck.net/wiki/SC${hit.code})`,
       priority: hit.level === 'error' ? 'P2' : 'P3',
     }));
-  return finish(lane, findings, { total: parsed.comments.length, files: targets.length });
+  return finish(lane, findings, { total: parsed.comments.length, files: targets.length, omitted });
 }
 
-export async function runActionlintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs }) {
+export async function runActionlintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
   const lane = 'actionlint';
-  const targets = (await existing(checkout, (files || []).map(normalize).filter((file) => WORKFLOW_FILE.test(file)))).slice(0, MAX_LANE_FILES);
+  const { files: targets, omitted } = bounded(await existing(checkout, (files || []).map(normalize).filter((file) => WORKFLOW_FILE.test(file))));
   if (!targets.length) return { lane, status: 'skipped', note: 'no GitHub workflow changed', findings: [] };
   // Its shellcheck and pyflakes integrations are off: run-step style noise
   // would bury the workflow errors this lane is for.
-  const { result, lane: failed } = await runTool(lane, 'actionlint', ['-format', '{{json .}}', '-shellcheck=', '-pyflakes=', '-no-color', ...targets], { cwd: checkout, run, timeoutMs, env });
+  const { result, lane: failed } = await runTool(lane, 'actionlint', ['-format', '{{json .}}', '-shellcheck=', '-pyflakes=', '-no-color', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
   if (failed) return failed;
   const bad = exitedBadly(lane, 'actionlint', result, [0, 1]);
   if (bad) return bad;
@@ -197,23 +266,24 @@ export async function runActionlintLane({ checkout, files, patch, run = runProce
       detail: hit.message,
       priority: hit.kind === 'deprecated-commands' ? 'P3' : 'P2',
     }));
-  return finish(lane, findings, { total: parsed.length, files: targets.length });
+  return finish(lane, findings, { total: parsed.length, files: targets.length, omitted });
 }
 
-export async function runRuffLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs }) {
+export async function runRuffLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
   const lane = 'ruff';
-  const targets = (await existing(checkout, (files || []).map(normalize).filter((file) => PYTHON_FILE.test(file)))).slice(0, MAX_LANE_FILES);
+  const { files: targets, omitted } = bounded(await existing(checkout, (files || []).map(normalize).filter((file) => PYTHON_FILE.test(file))));
   if (!targets.length) return { lane, status: 'skipped', note: 'no Python file changed', findings: [] };
-  const { result, lane: failed } = await runTool(lane, 'ruff', ['check', '--output-format', 'json', '--no-cache', '--quiet', '--force-exclude', '--', ...targets], { cwd: checkout, run, timeoutMs, env });
+  const { result, lane: failed } = await runTool(lane, 'ruff', ['check', '--output-format', 'json', '--no-cache', '--quiet', '--force-exclude', '--', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
   if (failed) return failed;
   const bad = exitedBadly(lane, 'ruff', result, [0, 1]);
   if (bad) return bad;
   const parsed = parseJson(result.stdout);
   if (!Array.isArray(parsed)) return { lane, status: 'error', note: 'ruff output could not be read', findings: [] };
   const added = addedLinesByFile(patch);
+  const relative = await checkoutRelativizer(checkout);
   const findings = [];
   for (const hit of parsed) {
-    const file = checkoutRelative(hit.filename, checkout);
+    const file = await relative(hit.filename);
     const line = hit.location?.row;
     if (!file || !added.get(file)?.has(line)) continue;
     // Syntax errors, undefined names and misplaced statements are defects;
@@ -229,43 +299,69 @@ export async function runRuffLane({ checkout, files, patch, run = runProcess, en
       priority: blocking ? 'P2' : 'P3',
     }));
   }
-  return finish(lane, findings, { total: parsed.length, files: targets.length });
+  return finish(lane, findings, { total: parsed.length, files: targets.length, omitted });
 }
 
+/** At most `maxBytes` of a file, or null when it is larger. */
+async function readAtMost(target, maxBytes) {
+  const handle = await open(target, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return bytesRead > maxBytes ? null : buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+// Files gitleaks reads as its own configuration from the scanned root. The
+// branch's copies are scanned as data under another name, so they can
+// neither switch rules off nor hide a secret they contain.
+const GITLEAKS_CONTROL = /^\.(?:gitleaks\.toml|gitleaksignore)$/i;
+const CONTROL_SUFFIX = '.sentinel-scanned';
+
 /**
- * gitleaks over a copy of the changed text files, so a configuration or an
- * ignore file in the reviewed branch cannot switch its rules off; findings
- * are redacted and the secret never reaches the report.
+ * gitleaks over a copy of the changed text files, with its built-in rules
+ * and `gitleaks:allow` comments ignored, so nothing in the reviewed branch
+ * can switch it off; findings are redacted and the secret never reaches the
+ * report. Files past the size bounds, binary files and symlinks are not
+ * scanned, and the note says how many.
  */
-export async function runGitleaksLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, temporaryRoot = os.tmpdir() }) {
+export async function runGitleaksLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, temporaryRoot = os.tmpdir(), resolve }) {
   const lane = 'gitleaks';
   const added = addedLinesByFile(patch);
-  const targets = (await existing(checkout, (files || []).map(normalize)
-    .filter((file) => added.get(file)?.size && !/(?:^|\/)\.gitleaks(?:\.toml|ignore)$/i.test(file)))).slice(0, MAX_LANE_FILES * 5);
+  const deadline = Date.now() + timeoutMs;
+  const withAdded = (files || []).map(normalize).filter((file) => added.get(file)?.size);
+  const { files: targets, omitted: overCount } = bounded(await existing(checkout, withAdded), MAX_LANE_FILES * 5);
   if (!targets.length) return { lane, status: 'skipped', note: 'no added lines to scan', findings: [] };
   const scratch = await mkdtemp(path.join(temporaryRoot, 'rove-review-gitleaks-'));
   try {
     const source = path.join(scratch, 'source');
+    const scannedAs = new Map();
     let total = 0;
-    let copied = 0;
+    let skipped = overCount;
     for (const file of targets) {
-      try {
-        const text = await readFile(path.join(checkout, file));
-        if (text.length > MAX_SCAN_FILE_BYTES || total + text.length > MAX_SCAN_TOTAL_BYTES || text.includes(0)) continue;
-        await mkdir(path.dirname(path.join(source, file)), { recursive: true });
-        await writeFile(path.join(source, file), text);
-        total += text.length;
-        copied += 1;
-      } catch {
-        // Unreadable at head: nothing to scan.
+      if (Date.now() > deadline) {
+        return { lane, status: 'timeout', note: `preparing the gitleaks scan exceeded ${Math.round(timeoutMs / 1000)} seconds`, findings: [] };
       }
+      const text = await readAtMost(path.join(checkout, file), Math.min(MAX_SCAN_FILE_BYTES, MAX_SCAN_TOTAL_BYTES - total)).catch(() => null);
+      if (!text || text.includes(0)) {
+        skipped += 1;
+        continue;
+      }
+      const copy = GITLEAKS_CONTROL.test(file) ? `${file}${CONTROL_SUFFIX}` : file;
+      await mkdir(path.dirname(path.join(source, copy)), { recursive: true });
+      await writeFile(path.join(source, copy), text);
+      scannedAs.set(copy, file);
+      total += text.length;
     }
-    if (!copied) return { lane, status: 'skipped', note: 'no changed text file to scan', findings: [] };
+    if (!scannedAs.size) return { lane, status: 'skipped', note: `no changed text file to scan (${skipped} past the bounds or binary)`, findings: [] };
     const report = path.join(scratch, 'report.json');
     const { GITLEAKS_CONFIG: _config, GITLEAKS_CONFIG_TOML: _toml, ...cleanEnv } = env;
     const { result, lane: failed } = await runTool(lane, 'gitleaks', [
       'dir', source, '--report-format', 'json', '--report-path', report, '--no-banner', '--no-color', '--exit-code', '0', '--redact',
-    ], { cwd: scratch, run, timeoutMs, env: cleanEnv });
+      '--ignore-gitleaks-allow', '--gitleaks-ignore-path', scratch,
+    ], { cwd: scratch, run, timeoutMs: Math.max(1000, deadline - Date.now()), env: cleanEnv, exclude: [checkout], resolve });
     if (failed) return failed;
     const bad = exitedBadly(lane, 'gitleaks', result, [0]);
     if (bad) return bad;
@@ -273,7 +369,8 @@ export async function runGitleaksLane({ checkout, files, patch, run = runProcess
     if (!Array.isArray(parsed)) return { lane, status: 'error', note: 'gitleaks report could not be read', findings: [] };
     const findings = [];
     for (const hit of parsed) {
-      const file = normalize(path.relative(source, path.resolve(source, String(hit.File || ''))));
+      const scanned = normalize(path.relative(source, path.resolve(source, String(hit.File || ''))));
+      const file = scannedAs.get(scanned) ?? scanned;
       if (!added.get(file)?.has(hit.StartLine)) continue;
       findings.push(toolFinding({
         source: lane,
@@ -286,7 +383,7 @@ export async function runGitleaksLane({ checkout, files, patch, run = runProcess
         priority: TEST_PATH.test(file) ? 'P3' : 'P2',
       }));
     }
-    return finish(lane, findings, { total: parsed.length, files: copied });
+    return finish(lane, findings, { total: parsed.length, files: scannedAs.size, omitted: skipped });
   } finally {
     await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
@@ -325,7 +422,7 @@ export function parseCommandOutput(text, format) {
  * `{files}` as an argument becomes the changed files the command's `files`
  * pattern selects; `node` is this Node.js.
  */
-export async function runProjectCommandLane({ checkout, files, patch, command, run = runProcess, env = process.env }) {
+export async function runProjectCommandLane({ checkout, files, patch, command, run = runProcess, env = process.env, resolve }) {
   const lane = command.name;
   const pattern = command.files ? new RegExp(command.files) : null;
   const selected = (files || []).map(normalize).filter((file) => !pattern || pattern.test(file));
@@ -337,9 +434,11 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
     return { lane, status: 'skipped', note: `${targets.length} matching files exceed the ${MAX_LANE_FILES}-file bound for {files}`, findings: [] };
   }
   const args = command.run.flatMap((arg) => (arg === '{files}' ? targets : [arg]));
+  // `node` is this Node.js; another bare name is looked up on PATH, never in
+  // the checkout; a path names a program the project chose.
   const executable = args[0] === 'node' ? process.execPath : args[0];
   const timeoutMs = (command.timeoutMinutes ?? 5) * 60 * 1000;
-  const { result, lane: failed } = await runTool(lane, executable, args.slice(1), { cwd: checkout, run, timeoutMs, env });
+  const { result, lane: failed } = await runTool(lane, executable, args.slice(1), { cwd: checkout, run, timeoutMs, env, resolve });
   if (failed) return failed.status === 'unavailable' ? { ...failed, note: `${args[0]} could not be started` } : failed;
   const hits = parseCommandOutput(`${result.stdout}\n${result.stderr}`, command.format);
   if (result.code !== 0 && !hits.length) {
@@ -347,9 +446,10 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
     return { ...bad, note: `${bad.note} (no located diagnostic)` };
   }
   const added = addedLinesByFile(patch);
+  const relative = await checkoutRelativizer(checkout);
   const findings = [];
   for (const hit of hits) {
-    const file = checkoutRelative(hit.file, checkout);
+    const file = await relative(path.isAbsolute(hit.file) ? hit.file : path.join(checkout, hit.file));
     if (!file) continue;
     if ((command.scope ?? 'added-lines') === 'added-lines' && !added.get(file)?.has(hit.line)) continue;
     findings.push(toolFinding({
@@ -404,12 +504,14 @@ export async function linkNodeModules(checkout, repoRoot) {
  * version, or why it is not available, and whether installed policy turned
  * it off. A missing tool is not an error: its lane reports a note.
  */
-export async function detectLintTools({ config = {}, run = runProcess, env = process.env } = {}) {
+export async function detectLintTools({ config = {}, run = runProcess, env = process.env, resolve = resolveExecutable } = {}) {
   const versionArgs = { shellcheck: ['--version'], actionlint: ['-version'], gitleaks: ['version'], ruff: ['--version'] };
   const entries = await Promise.all(BUILTIN_TOOL_LANES.map(async (tool) => {
     if (config?.lintLanes?.[tool] === false) return [tool, 'turned off in installed policy'];
+    const executable = await resolve(tool, { env });
+    if (!executable) return [tool, 'not installed; its lane is skipped'];
     try {
-      const result = await run(tool, versionArgs[tool], { env, timeoutMs: 15_000, allowFailure: true, maxOutputBytes: 64 * 1024 });
+      const result = await run(executable, versionArgs[tool], { env, timeoutMs: 15_000, allowFailure: true, maxOutputBytes: 64 * 1024 });
       const text = String(result.stdout || result.stderr || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       const version = text.find((line) => /\d+\.\d+/.test(line)) || text[0] || 'available';
       return [tool, result.code === 0 ? version : `exited with code ${result.code}`];

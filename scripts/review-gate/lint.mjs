@@ -430,8 +430,8 @@ export async function runClippyLane({
  * can reject except a process-tree cleanup failure, which must reach the
  * gate's fence.
  */
-export async function runDeterministicLanes({ checkout, files, patch, stateRoot, run, env, config, repoRoot = null }) {
-  const toolOptions = { checkout, files, patch, ...(run ? { run } : {}), ...(env ? { env } : {}) };
+export async function runDeterministicLanes({ checkout, files, patch, stateRoot, run, env, config, repoRoot = null, resolve }) {
+  const toolOptions = { checkout, files, patch, ...(run ? { run } : {}), ...(env ? { env } : {}), ...(resolve ? { resolve } : {}) };
   const enabled = (lane) => config?.lintLanes?.[lane] !== false;
   const off = (lane) => Promise.resolve({ lane, status: 'skipped', note: 'turned off in installed policy', findings: [] });
   // Project commands share one node_modules link, made before they start and
@@ -440,9 +440,12 @@ export async function runDeterministicLanes({ checkout, files, patch, stateRoot,
   const nodeModules = commands.some((command) => command.nodeModules) && repoRoot
     ? await linkNodeModules(checkout, repoRoot).catch((error) => ({ linked: false, note: `node_modules could not be linked: ${error?.message || String(error)}`, release: async () => {} }))
     : null;
-  let lanes;
+  // Every lane settles before the node_modules link is removed, a lane that
+  // failed its process-tree cleanup included: a sibling still running would
+  // otherwise lose its dependencies mid-run. That failure is then rethrown.
+  let settled;
   try {
-    lanes = await Promise.all([
+    settled = await Promise.allSettled([
       runMarkdownlintLane({ checkout, files, patch }),
       config?.clippy === true
         ? runClippyLane({ checkout, files, patch, stateRoot, run, env })
@@ -458,6 +461,9 @@ export async function runDeterministicLanes({ checkout, files, patch, stateRoot,
   } finally {
     await nodeModules?.release();
   }
+  const rejected = settled.find((result) => result.status === 'rejected');
+  if (rejected) throw rejected.reason;
+  const lanes = settled.map((result) => result.value);
   // A lane that could not produce diagnostics (a host hiccup, a timeout, an
   // unparseable manifest) is a NOTE in the report and the summary, exactly
   // as the charter states — never a finding that blocks a push or needs a

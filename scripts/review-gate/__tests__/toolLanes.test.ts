@@ -20,6 +20,7 @@ import {
 if (process.platform === 'win32') vi.setConfig({ testTimeout: 30_000 });
 
 const temporary: string[] = [];
+const passthrough = async (name: string) => name;
 afterEach(async () => {
   await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -69,7 +70,7 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
       };
     });
     const patch = addedPatch({ 'scripts/run.sh': files['scripts/run.sh'], 'hooks/pre-push': files['hooks/pre-push'] });
-    const lane = await runShellcheckLane({ checkout, files: ['scripts/run.sh', 'hooks/pre-push', 'notes/readme', 'gone.sh'], patch, run });
+    const lane = await runShellcheckLane({ checkout, files: ['scripts/run.sh', 'hooks/pre-push', 'notes/readme', 'gone.sh'], patch, run, resolve: passthrough });
     // An extensionless file with a shell shebang is a script; other files and deleted ones are not passed.
     expect(calls[0].slice(-2)).toEqual(['scripts/run.sh', 'hooks/pre-push']);
     expect(lane.status).toBe('ok');
@@ -84,19 +85,19 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
     const run = async () => {
       throw Object.assign(new Error('Could not start ruff: spawn ruff ENOENT'), { code: 'SPAWN_ERROR' });
     };
-    expect(await runRuffLane({ checkout, files: ['a.py'], patch: addedPatch({ 'a.py': 'x = 1\n' }), run })).toEqual({
+    expect(await runRuffLane({ checkout, files: ['a.py'], patch: addedPatch({ 'a.py': 'x = 1\n' }), run, resolve: passthrough })).toEqual({
       lane: 'ruff', status: 'unavailable', note: 'ruff is not installed on this host', findings: [],
     });
     const timeout = async () => {
       throw Object.assign(new Error('timed out'), { code: 'TIMEOUT' });
     };
-    expect(await runRuffLane({ checkout, files: ['a.py'], patch: addedPatch({ 'a.py': 'x = 1\n' }), run: timeout, timeoutMs: 1000 }))
+    expect(await runRuffLane({ checkout, files: ['a.py'], patch: addedPatch({ 'a.py': 'x = 1\n' }), run: timeout, resolve: passthrough, timeoutMs: 1000 }))
       .toMatchObject({ status: 'timeout', findings: [] });
     // A process-tree cleanup failure must reach the gate's fence.
     const orphan = async () => {
       throw Object.assign(new Error('tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
     };
-    await expect(runRuffLane({ checkout, files: ['a.py'], patch: addedPatch({ 'a.py': 'x = 1\n' }), run: orphan })).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
+    await expect(runRuffLane({ checkout, files: ['a.py'], patch: addedPatch({ 'a.py': 'x = 1\n' }), run: orphan, resolve: passthrough })).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
   });
 
   it('maps ruff codes to priorities and reads its absolute paths', async () => {
@@ -111,7 +112,7 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
       ]),
       stderr: '',
     });
-    const lane = await runRuffLane({ checkout, files: ['app/a.py'], patch: addedPatch(files), run });
+    const lane = await runRuffLane({ checkout, files: ['app/a.py'], patch: addedPatch(files), run, resolve: passthrough });
     expect(lane.findings.map((finding: { title: string; priority: string }) => [finding.title, finding.priority])).toEqual([
       ['F821: Undefined name `undefined_name`', 'P2'],
       ['F401: `os` imported but unused', 'P3'],
@@ -132,10 +133,12 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
       ]));
       return { code: 0, stdout: '', stderr: '' };
     };
-    const lane = await runGitleaksLane({ checkout, files: Object.keys(files), patch: addedPatch(files), run, env: { PATH: 'x', GITLEAKS_CONFIG: '/allow-all.toml' } });
-    expect(seen!.copied).toEqual(['src', 'src/k.js', 'tests', 'tests/fixture.js']);
+    const lane = await runGitleaksLane({ checkout, files: Object.keys(files), patch: addedPatch(files), run, resolve: passthrough, env: { PATH: 'x', GITLEAKS_CONFIG: '/allow-all.toml' } });
+    // The branch's gitleaks configuration is scanned as data under another
+    // name, never read as configuration (1.13.0 gate review).
+    expect(seen!.copied).toEqual(['.gitleaks.toml.sentinel-scanned', 'src', 'src/k.js', 'tests', 'tests/fixture.js']);
     expect(seen!.env).toEqual({ PATH: 'x' });
-    expect(seen!.args).toContain('--redact');
+    expect(seen!.args).toEqual(expect.arrayContaining(['--redact', '--ignore-gitleaks-allow', '--gitleaks-ignore-path']));
     expect(lane.findings.map((finding: { file: string; priority: string; reason: string }) => [finding.file, finding.priority])).toEqual([
       ['src/k.js', 'P2'],
       ['tests/fixture.js', 'P3'],
@@ -159,7 +162,7 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
       return { code: 1, stdout: `${path.join(checkout, 'src', 'a.ts')}:1:10: Unexpected any [Error/no-explicit-any]\nsrc/b.ts:7:1: old [Warning/x]\n`, stderr: '' };
     };
     const command = normalizeConfig({ lintCommands: [{ name: 'eslint', run: ['node', 'node_modules/eslint/bin/eslint.js', '-f', 'unix', '{files}'], format: 'unix', files: '\\.ts$' }] }).lintCommands[0];
-    const lane = await runProjectCommandLane({ checkout, files: Object.keys(files), patch: addedPatch({ 'src/a.ts': files['src/a.ts'] }), command, run });
+    const lane = await runProjectCommandLane({ checkout, files: Object.keys(files), patch: addedPatch({ 'src/a.ts': files['src/a.ts'] }), command, run, resolve: passthrough });
     expect(runs[0].command).toBe(process.execPath);
     expect(runs[0].args).toEqual(['node_modules/eslint/bin/eslint.js', '-f', 'unix', 'src/a.ts', 'src/b.ts']);
     expect(lane.findings.map((finding: { title: string; file: string; priority: string }) => [finding.title, finding.file, finding.priority])).toEqual([
@@ -167,7 +170,7 @@ describe('linter lanes with a controlled tool (1.13.0)', () => {
     ]);
     // A failing command with no located diagnostic is a note, not a pass.
     const broken = await runProjectCommandLane({
-      checkout, files: ['src/a.ts'], patch: '', command, run: async () => ({ code: 2, stdout: '', stderr: 'Cannot find module eslint' }),
+      checkout, files: ['src/a.ts'], patch: '', command, resolve: passthrough, run: async () => ({ code: 2, stdout: '', stderr: 'Cannot find module eslint' }),
     });
     expect(broken).toMatchObject({ status: 'error', findings: [] });
     expect(broken.note).toContain('Cannot find module eslint');
@@ -250,12 +253,77 @@ describe('doctor reports the linter tools (1.13.0)', () => {
       if (command === 'gitleaks') throw Object.assign(new Error('Could not start gitleaks: spawn gitleaks ENOENT'), { code: 'SPAWN_ERROR' });
       return { code: 0, stdout: command === 'shellcheck' ? 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n' : `${command} 1.2.3\n`, stderr: '' };
     };
-    expect(await detectLintTools({ run, config: normalizeConfig({ lintLanes: { ruff: false }, lintCommands: [{ name: 'tsc', run: ['node', 'x'], format: 'tsc' }] }) })).toEqual({
+    expect(await detectLintTools({ run, resolve: passthrough, config: normalizeConfig({ lintLanes: { ruff: false }, lintCommands: [{ name: 'tsc', run: ['node', 'x'], format: 'tsc' }] }) })).toEqual({
       shellcheck: 'version: 0.11.0',
       actionlint: 'actionlint 1.2.3',
       gitleaks: 'not installed; its lane is skipped',
       ruff: 'turned off in installed policy',
       projectCommands: ['tsc'],
     });
+  });
+});
+
+describe('linter lanes after the 1.13.0 gate review', () => {
+  it('never runs a tool from the reviewed checkout, whatever PATH and the working directory say', async () => {
+    const { resolveExecutable } = await import('../toolLanes.mjs');
+    const name = 'sentinel-fake-tool';
+    const file = process.platform === 'win32' ? `${name}.exe` : name;
+    const checkout = await checkoutWith({ [file]: 'planted' });
+    const trusted = await checkoutWith({ [file]: 'installed' });
+    const env = { PATH: [checkout, '.', trusted].join(process.platform === 'win32' ? ';' : ':'), PATHEXT: '.CMD;.EXE' };
+    expect(await resolveExecutable(name, { env, exclude: [checkout] })).toBe(path.join(await (await import('node:fs/promises')).realpath(trusted), file));
+    expect(await resolveExecutable(name, { env: { PATH: checkout }, exclude: [checkout] })).toBeNull();
+    // A path the project chose is kept as it is.
+    expect(await resolveExecutable('node_modules/.bin/tool', { env })).toBe('node_modules/.bin/tool');
+    // A lane whose tool is found only in the checkout reports it missing.
+    const files = { 'a.py': 'x = 1\n' };
+    const lane = await runRuffLane({ checkout: await checkoutWith(files), files: ['a.py'], patch: addedPatch(files), env: { PATH: '' }, run: async () => { throw new Error('must not run'); } });
+    expect(lane).toMatchObject({ status: 'unavailable', note: 'ruff is not installed on this host' });
+  });
+
+  it('reads a hit reported under another spelling of the checkout path', async () => {
+    const real = await checkoutWith({ 'app/a.py': 'import os\n' });
+    const alias = path.join(await mkdtemp(path.join(os.tmpdir(), 'rove-tool-alias-')), 'checkout');
+    temporary.push(path.dirname(alias));
+    await (await import('node:fs/promises')).symlink(real, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const run = async () => ({ code: 1, stdout: JSON.stringify([{ code: 'F401', message: 'unused', filename: path.join(real, 'app', 'a.py'), location: { row: 1, column: 1 } }]), stderr: '' });
+    const lane = await runRuffLane({ checkout: alias, files: ['app/a.py'], patch: addedPatch({ 'app/a.py': 'import os\n' }), run, resolve: passthrough });
+    expect(lane.findings).toEqual([expect.objectContaining({ file: 'app/a.py', line: 1 })]);
+  });
+
+  it('bounds what the secret scan reads and says what it left out', async () => {
+    const big = 'x'.repeat(1024 * 1024 + 1);
+    const files = { 'src/big.txt': big, 'src/ok.js': 'const a = 1;\n', 'src/bin.dat': 'a\u0000b\n' };
+    const checkout = await checkoutWith(files);
+    let copied: string[] = [];
+    const run = async (_command: string, args: string[]) => {
+      copied = (await import('node:fs')).readdirSync(args[1], { recursive: true }).map(String).map((file) => file.replace(/\\/g, '/'));
+      await writeFile(args[args.indexOf('--report-path') + 1], '[]');
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const lane = await runGitleaksLane({ checkout, files: Object.keys(files), patch: addedPatch({ 'src/big.txt': 'x\n', 'src/ok.js': files['src/ok.js'], 'src/bin.dat': 'a\n' }), run, resolve: passthrough });
+    expect(copied.filter((file) => file.includes('.'))).toEqual(['src/ok.js']);
+    expect(lane.note).toContain('2 changed file(s) NOT analyzed');
+  });
+
+  it('lets every lane settle before removing the node_modules link, then reports the cleanup failure', async () => {
+    const repoRoot = await checkoutWith({ 'node_modules/tool/index.js': 'keep\n' });
+    const checkout = await checkoutWith({ 'run.sh': 'echo hi\n', 'src/a.ts': 'x\n' });
+    let modulesAtEnd = false;
+    const run = async (command: string, _args: string[], options: { cwd: string }) => {
+      if (command === 'shellcheck') throw Object.assign(new Error('tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      modulesAtEnd = await access(path.join(options.cwd, 'node_modules', 'tool', 'index.js')).then(() => true, () => false);
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const config = normalizeConfig({
+      lintLanes: { actionlint: false, gitleaks: false, ruff: false },
+      lintCommands: [{ name: 'tsc', run: ['node', 'x'], format: 'tsc', nodeModules: true }],
+    });
+    await expect(runDeterministicLanes({
+      checkout, files: ['run.sh', 'src/a.ts'], patch: addedPatch({ 'run.sh': 'echo hi\n' }), run, config, repoRoot, resolve: passthrough,
+    })).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
+    expect(modulesAtEnd).toBe(true);
+    await expect(access(path.join(checkout, 'node_modules'))).rejects.toThrow();
   });
 });
