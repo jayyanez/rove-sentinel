@@ -23,7 +23,8 @@ this one does not. Engines before 1.13.0 do not have the command.
 or workaround in project notes, agent instructions or memory without the
 engine version it was observed with. Before restructuring code for Sentinel
 (splitting files, shortening lines, splitting a branch), run `limits` and
-follow it. If the engine does not list a limit, the limit does not apply.
+follow what it reports; a workaround it lists as no longer needed is not
+needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
@@ -31,7 +32,7 @@ When a review still fails, read the report's own account of why
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
-| Change under review | Git's diff with 80 context lines a side: 4 MiB | The round fails closed; split the change into several pushes |
+| Change under review | Git's diff with 80 context lines a side: 4 MiB | The round fails closed on every push, because the diff is measured against the base: split the change into separately reviewed branches, or land part of it first |
 | A changed file's size, a line's length | None | Shards are written in parts of 24 KB, longer lines cut across parts; a shard of up to 96 KB is in the prompt |
 | Context and required reads in the prompt | 96 KB together | They are read from files in parts instead |
 | Shards per round | 8 high risk, 4 medium, 2 low, about 500 changed lines each | Shards grow instead; a shard's reviewer gets 5 to 12 minutes by size |
@@ -39,6 +40,7 @@ When a review still fails, read the report's own account of why
 | Confidence floor | 50 | Not adjudicated; the report keeps up to 40 |
 | Documentation skip | Only `.md`, `.markdown`, `.rst`, `.adoc` outside the review policy | Everything else, `.txt` and `.mdx` included, is reviewed |
 | One push | 16 refs to check, 1 still needing review; the hook waits 120 minutes | The push is refused |
+| Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
 
@@ -58,9 +60,16 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 These are real in 1.13.0; work within them rather than around them.
 
-- The 4 MiB patch bound has no setting. Measure a long branch with
-  `git diff --unified=80 $(git merge-base origin/main HEAD)...HEAD | wc -c`
-  and split before it approaches the bound.
+- The 4 MiB patch bound has no setting. Measure a long branch before it
+  approaches the bound. In PowerShell:
+
+  ```powershell
+  git diff --unified=80 --output=review.patch "$(git merge-base origin/main HEAD)...HEAD"
+  (Get-Item review.patch).Length
+  ```
+
+  In Git Bash:
+  `git diff --unified=80 "$(git merge-base origin/main HEAD)...HEAD" | wc -c`.
 - AI review can miss defects and report false ones; a PASS is not a
   guarantee. Reference discovery is a line lexer, not a parser.
 - Windows is the qualified platform ([support](support.md)).

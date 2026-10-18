@@ -18,7 +18,7 @@ export function sentinelLimits() {
       {
         id: 'patch-size',
         limit: mib(LIMITS.maxPatchBytes),
-        text: `Git's diff of the change under review, with ${LIMITS.patchContextLines} context lines a side, is at most ${mib(LIMITS.maxPatchBytes)} (reviewers then get at most ${kb(LIMITS.patchContextSideBytes)} of context a side). A larger change fails closed: split it into several pushes.`,
+        text: `Git's diff of the change under review, with ${LIMITS.patchContextLines} context lines a side, is at most ${mib(LIMITS.maxPatchBytes)} (reviewers then get at most ${kb(LIMITS.patchContextSideBytes)} of context a side). A larger change fails closed, push after push, because the diff is measured against the base: split it into separately reviewed branches, or land part of it first.`,
       },
       {
         id: 'file-size',
@@ -51,6 +51,11 @@ export function sentinelLimits() {
         id: 'push',
         limit: `${LIMITS.maxPushCandidateRefs} refs, 1 unreviewed`,
         text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review; the hook waits at most ${minutes(LIMITS.hookWaitTimeoutMs)} for it.`,
+      },
+      {
+        id: 'push-input',
+        limit: mib(LIMITS.maxHookInputBytes),
+        text: `The ref list Git hands the pre-push hook is at most ${mib(LIMITS.maxHookInputBytes)} (tens of thousands of refs); past it the push is refused.`,
       },
       {
         id: 'repair-rounds',
@@ -95,7 +100,7 @@ export function formatLimits(limits = sentinelLimits()) {
   ];
   return [
     `Rove Sentinel ${limits.version}: what this installed engine accepts and where it stops.`,
-    'These come from the engine itself. A rule an agent learned under an earlier version does not apply unless it is listed here.',
+    'These come from the engine itself. Check a Sentinel rule from notes or an earlier version against them before following it.',
     '',
     ...section('Review', limits.review),
     '',

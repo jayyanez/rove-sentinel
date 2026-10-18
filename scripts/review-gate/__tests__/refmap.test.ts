@@ -937,3 +937,10 @@ describe('reference map: an indented line is never a split signature\'s return t
     expect(extractChangedSymbols(patch).symbols).toEqual(['settle_total']);
   });
 });
+
+describe('reference map: Go generic functions (CodeRabbit on 1.13.0)', () => {
+  it('extracts a function with square-bracket type parameters', () => {
+    const patch = ['--- a/pkg/x.go', '+++ b/pkg/x.go', '+func MapSlice[T any, U any](items []T, fn func(T) U) []U {', '+func (r *Repo) FindAll[T Model](query string) []T {'].join('\n');
+    expect(extractChangedSymbols(patch).symbols).toEqual(['MapSlice', 'FindAll']);
+  });
+});
