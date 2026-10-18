@@ -58,6 +58,17 @@ const DECLARATION_PATTERNS = [
   /\b(?:record|protocol|module)\s+([A-Z]\w{2,})/g,
 ];
 
+// C, C++, Java and C# functions and methods whose signature starts with a
+// return type and no modifier (`int total(int a)`, a C++
+// `Money Ledger::post(Entry e) const {`, a header prototype, a signature that
+// continues on the next line). Only for those languages: in JavaScript
+// `await load(x);` has the same shape (1.13.0). A line that begins with a
+// statement keyword, or holds an assignment before the name, is not a
+// declaration.
+const RETURN_TYPED_PATTERNS = [
+  /^\s*(?!(?:return|else|case|new|delete|throw|goto|sizeof|typedef|using|assert|co_return|co_yield|co_await|yield|await)\b)[A-Za-z_][\w:<>,*&\s]*?[\s*&]\**(?:[A-Za-z_]\w*::)*~?([A-Za-z_]\w{2,})\s*\([^;{}=]*\)?\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:\{|;|$)/g,
+];
+
 // Declaration regexes only make sense over source code. Running them over
 // prose (Markdown, plain text) filled the bounded symbol budget with English
 // words and crowded out real declarations — the gate's own first self-review
@@ -78,6 +89,10 @@ const HASH_COMMENT_FILE = /\.(?:py|pyi|rb|php)$/i;
 // Kotlin, Scala and Swift (double quotes only).
 const TRIPLE_QUOTE_FILE = /\.(?:py|pyi|kt|kts|scala|swift)$/i;
 const PYTHON_FILE = /\.pyi?$/i;
+// Triple-quoted strings whose backslash escapes a quote: Python and Swift.
+// Kotlin and Scala triple-quoted strings are raw.
+const TRIPLE_ESCAPE_FILE = /\.(?:py|pyi|swift)$/i;
+const RETURN_TYPED_FILE = /\.(?:c|h|cc|cpp|cxx|hpp|hh|java|cs)$/i;
 const SVELTE_FILE = /\.svelte$/i;
 const RUST_FILE = /\.rs$/i;
 const CHAR_LITERAL = /^'(?:\\(?:u\{[0-9A-Fa-f]{1,6}\}|x[0-9A-Fa-f]{2}|.)|[^\\'])'/u;
@@ -96,6 +111,7 @@ function lexerFor(file, { wholeFile = false } = {}) {
     charLiterals: QUOTE_IS_CHAR_LITERAL.test(file),
     hashComments: HASH_COMMENT_FILE.test(file),
     tripleQuotes: TRIPLE_QUOTE_FILE.test(file) ? (PYTHON_FILE.test(file) ? ['"""', "'''"] : ['"""']) : [],
+    tripleEscapes: TRIPLE_ESCAPE_FILE.test(file),
     // Rust string literals (cooked and raw) may span lines.
     rust: RUST_FILE.test(file),
     closer: null,
@@ -135,6 +151,24 @@ function codeOnly(line, lexer) {
     index = end + terminator.length;
     return true;
   };
+  // The end of a triple-quoted string: a backslash escapes the next character
+  // where the language says so (a \""" inside a Python docstring does not
+  // close it).
+  const closeTriple = () => {
+    if (!lexer.tripleEscapes) return closeAt(lexer.closer);
+    while (index < line.length) {
+      if (line[index] === '\\') {
+        index += 2;
+        continue;
+      }
+      if (line.startsWith(lexer.closer, index)) {
+        index += lexer.closer.length;
+        return true;
+      }
+      index += 1;
+    }
+    return false;
+  };
   const inMarkup = () => lexer.svelte && lexer.region === 'markup';
   if (lexer.mode === 'code' && !inMarkup() && /^\s*\*(?:\s|\/|$)/.test(line)) {
     // A doc-comment continuation (` * text`) whose opener lies outside what
@@ -148,7 +182,7 @@ function codeOnly(line, lexer) {
       continue;
     }
     if (lexer.mode === 'triple') {
-      if (closeAt(lexer.closer)) {
+      if (closeTriple()) {
         lexer.mode = 'code';
         code += ' ';
       }
@@ -239,7 +273,7 @@ function codeOnly(line, lexer) {
     if (triple) {
       index += triple.length;
       lexer.closer = triple;
-      lexer.mode = closeAt(triple) ? 'code' : 'triple';
+      lexer.mode = closeTriple() ? 'code' : 'triple';
       code += ' "" ';
       continue;
     }
@@ -371,8 +405,9 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
   // of the budget, and marked as unverified in the map. A later verified
   // declaration of the same name promotes it.
   const unverified = [];
+  let returnTyped = false;
   const record = (line, verified) => {
-    for (const pattern of DECLARATION_PATTERNS) {
+    for (const pattern of returnTyped ? [...DECLARATION_PATTERNS, ...RETURN_TYPED_PATTERNS] : DECLARATION_PATTERNS) {
       pattern.lastIndex = 0;
       for (const match of line.matchAll(pattern)) {
         const symbol = match[1];
@@ -411,11 +446,13 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
       const target = rawLine.slice(4).replace(/^[ab]\//, '').trim();
       if (rawLine.startsWith('--- ')) {
         inCodeFile = CODE_FILE.test(target);
+        returnTyped = RETURN_TYPED_FILE.test(target);
         inTestFile = TEST_PATH.test(target);
         oldSide = lexerFor(target);
         oldLexed = lexedFor(oldBlob, target);
       } else {
         inCodeFile = inCodeFile || CODE_FILE.test(target);
+        returnTyped = returnTyped || RETURN_TYPED_FILE.test(target);
         if (CODE_FILE.test(target)) inTestFile = TEST_PATH.test(target);
         newSide = lexerFor(target);
         newLexed = lexedFor(newBlob, target);

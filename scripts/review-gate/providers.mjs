@@ -471,7 +471,7 @@ export function shardLens(kind) {
  */
 export function secondaryLenses(shard) {
   const kinds = Array.isArray(shard?.kinds) ? shard.kinds : [];
-  const others = kinds.filter((kind) => kind !== shard.kind && SHARD_LENSES[kind]).slice(0, 2);
+  const others = kinds.filter((kind) => kind !== shard.kind && SHARD_LENSES[kind]);
   if (!others.length) return '';
   return `${others.map((kind) => `\nThis shard also holds ${kind} files. For them apply:\n\n${SHARD_LENSES[kind]}\n`).join('')}${others.includes('tests') || shard.kind === 'tests'
     ? '\nA changed test next to the code it tests: check that it exercises the branches this diff changed, and that the code does what the test asserts.\n'

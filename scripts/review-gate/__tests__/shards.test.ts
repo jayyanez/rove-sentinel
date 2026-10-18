@@ -426,3 +426,21 @@ describe('a test shares a shard with the code it tests (1.13.0)', () => {
     expect(partitionShards(patch, { targetLines: 500, maxShards: 2 })).toEqual(shards);
   });
 });
+
+describe('test families after the 1.13.0 self-review', () => {
+  it('names test classes whose name ends in a capital letter', () => {
+    expect(familyStem('src/test/java/ATest.java')).toBe('a');
+    expect(familyStem('src/test/java/UserDAOTest.java')).toBe('userdao');
+    expect(familyStem('src/main/java/Contest.java')).toBe('contest');
+  });
+
+  it('prefers the same-named file closest to the test when shared directories tie', () => {
+    const patch = [
+      fileSection('src/deep/nested/util.ts', 5),
+      fileSection('src/util.ts', 5),
+      fileSection('src/util.test.ts', 5),
+    ].join('\n');
+    const [shard] = partitionShards(patch, { targetLines: 500, maxShards: 8 });
+    expect(shard.files.indexOf('src/util.test.ts')).toBe(shard.files.indexOf('src/util.ts') + 1);
+  });
+});

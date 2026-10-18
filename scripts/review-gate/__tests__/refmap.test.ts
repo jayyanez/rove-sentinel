@@ -771,3 +771,63 @@ describe('reference map: declarations beyond JavaScript, Rust and Go (1.13.0)', 
     expect(codeFileBlobs(patch)).toHaveLength(16);
   });
 });
+
+describe('reference map: C-family signatures and escaped triple quotes (1.13.0 self-review)', () => {
+  const sorted = (values: string[]) => [...values].sort();
+  const changed = (file: string, ...lines: string[]) => [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    `@@ -1,${lines.filter((line) => !line.startsWith('+')).length} +1,${lines.filter((line) => !line.startsWith('-')).length} @@`,
+    ...lines,
+  ].join('\n');
+
+  it('extracts return-typed C and C++ functions, prototypes and removed definitions', () => {
+    const c = changed('src/money.c',
+      '-int calculate_total(int count)',
+      '+long calculate_total(long count, int scale) {',
+      '+static double apply_discount(double value);',
+      '+struct invoice *load_invoice(const char *path,',
+      '+  int flags)',
+      '+  return compute_tax(value);',
+      '+  int result = round_cents(total);',
+      '+  else update_ledger(entry);',
+      '+  if (ready) notify_owner(entry);');
+    expect(sorted(extractChangedSymbols(c).symbols)).toEqual(sorted(['calculate_total', 'apply_discount', 'load_invoice']));
+    const cpp = changed('src/ledger.cpp',
+      '+Money Ledger::post(const Entry& entry) const {',
+      '+std::vector<Line> Ledger::linesFor(Account account) noexcept;',
+      '+  delete release_buffer(buffer);');
+    expect(sorted(extractChangedSymbols(cpp).symbols)).toEqual(sorted(['post', 'linesFor']));
+    // The same shape in JavaScript is a call.
+    expect(extractChangedSymbols(changed('src/a.ts', '+  await loadInvoice(path);', '+  yield fetchRows(query);')).symbols).toEqual([]);
+  });
+
+  it('does not end a Python docstring at an escaped quote', () => {
+    const lines = [
+      'def documented():',
+      '    """Mentions \\""" then class Phantom inside the docstring."""',
+      '    return 1',
+      'def load_invoice(invoice_id):',
+      '    pass',
+    ];
+    const patch = [
+      'diff --git a/app/a.py b/app/a.py',
+      'new file mode 100644',
+      'index 0000000..abcdef2',
+      '--- /dev/null',
+      '+++ b/app/a.py',
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join('\n');
+    const sources = new Map([['abcdef2', lines.join('\n')]]);
+    expect(sorted(extractChangedSymbols(patch, { sources }).symbols)).toEqual(sorted(['documented', 'load_invoice']));
+  });
+
+  it('keeps a long line of words linear for the C-family pattern', () => {
+    const long = `+${Array.from({ length: 3000 }, (_, index) => `word${index}`).join(' ')}`;
+    const started = Date.now();
+    extractChangedSymbols(changed('src/long.c', long));
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});

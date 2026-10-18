@@ -443,16 +443,20 @@ export function familyStem(file) {
     .replace(/\.[^.]+$/, '')
     .replace(/^tests?_/i, '')
     .replace(/_tests?$/i, '')
-    .replace(/(?<=[a-z0-9])Tests?$/, '')
+    .replace(/(?<=.)Tests?$/, '')
     .toLowerCase();
 }
 
-function sharedPrefixLength(a, b) {
+/**
+ * How close two files' directories are: more shared leading directories is
+ * closer, and among equals, fewer directories outside the shared part.
+ */
+function directoryCloseness(a, b) {
   const left = a.split('/').slice(0, -1);
   const right = b.split('/').slice(0, -1);
-  let length = 0;
-  while (length < left.length && length < right.length && left[length] === right[length]) length += 1;
-  return length;
+  let shared = 0;
+  while (shared < left.length && shared < right.length && left[shared] === right[shared]) shared += 1;
+  return [shared, -((left.length - shared) + (right.length - shared))];
 }
 
 /**
@@ -474,8 +478,8 @@ export function orderSectionFamilies(sections) {
     let best = null;
     for (const owner of owners) {
       if (familyStem(owner.file) !== stem) continue;
-      const score = sharedPrefixLength(owner.file, section.file);
-      if (!best || score > best.score) best = { owner, score };
+      const score = directoryCloseness(owner.file, section.file);
+      if (!best || score[0] > best.score[0] || (score[0] === best.score[0] && score[1] > best.score[1])) best = { owner, score };
     }
     if (!best) continue;
     if (!attached.has(best.owner)) attached.set(best.owner, []);
