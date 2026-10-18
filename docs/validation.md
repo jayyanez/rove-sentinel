@@ -27,6 +27,23 @@ kept the two candidates under the confidence floor. The new language patterns
 were exercised only by deterministic fixtures, not on a live non-JavaScript
 repository, and no round has yet run with the released 1.13.0 package.
 
+The second wave (material in the prompt on standard input, streamed
+adjudication, per-role settings, reuse after a rebase, prior blockers read
+around their location) ran live in six more follow-up rounds of the same
+branch; they found and fixed seven defects in it, and the last round passed.
+Per-role settings and the reuse after a rebase ran only in deterministic tests.
+
+One side-by-side run reviewed the same historical change (1.11.1, 17 files,
+630 changed lines, high risk, full round) with 1.12.0 and with 1.13.0, both
+with both providers and the installed policy: 5.8 minutes against 3.0. The
+reference map took 6 s against 1 s, hypotheses finished 75 s in instead of 93
+and took 29 s instead of 95, and adjudication began at 118 s instead of 188
+and took 63 s instead of 157. Both runs verified the oversized-line defect
+that 1.12.0 later fixed; 1.12.0 also verified two defects 1.13.0 did not
+report (an unescaped continuation path and part paths in the argument
+vector, which standard input removes). One run each is a timing
+observation, not a recall measurement.
+
 ## 1.12.0 shard parts and reruns — 2026-10-10
 
 Deterministic tests cover the context bound (the bounded patch applied to the
