@@ -8,6 +8,8 @@ import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
 import { formatLimits, sentinelLimits } from './limits.mjs';
+import { detectLintTools } from './toolLanes.mjs';
+import { firstUseToolsNotice, formatToolsNotice, installPlan, installTools, missingTools } from './tools.mjs';
 import { readReviewPolicy, loadInstalledReviewPolicy } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
@@ -104,6 +106,41 @@ async function readHookInput() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** The installed policy's configuration, or the repository's when none is installed. */
+async function installedConfig(repoRoot) {
+  try {
+    const root = await findRepoRoot(repoRoot);
+    const context = await createGateContext(root);
+    return (await loadInstalledReviewPolicy(context.paths)).config;
+  } catch {
+    try {
+      return (await readReviewPolicy(await findRepoRoot(repoRoot))).config;
+    } catch {
+      return {};
+    }
+  }
+}
+
+/** The first time a review runs on this machine with tools missing, say so. */
+async function toolsNoticeOnce(repoRoot) {
+  try {
+    const notice = await firstUseToolsNotice({ config: await installedConfig(repoRoot) });
+    if (notice) process.stderr.write(`${notice}\n`);
+  } catch {
+    // A notice never changes a review.
+  }
+}
+
+async function ask(question) {
+  const { createInterface } = await import('node:readline/promises');
+  const prompt = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return await prompt.question(question);
+  } finally {
+    prompt.close();
+  }
+}
+
 async function main() {
   const [command = 'help', ...rest] = process.argv.slice(2);
   const { options, positional } = parseArgs(rest);
@@ -115,6 +152,49 @@ async function main() {
   }
   if (command === '--version' || command === 'version') {
     print(GATE_VERSION);
+    return;
+  }
+  // The linter tools this machine lacks, and installing them (1.13.0).
+  if (command === 'tools') {
+    const config = await installedConfig(repoRoot);
+    const missing = await missingTools({ config });
+    if (!options.install) {
+      const plan = installPlan(missing);
+      print(options.json
+        ? { missing, manager: plan.manager, instructions: plan.instructions }
+        : formatToolsNotice(missing) || 'Every linter tool Sentinel uses is installed on this machine.', Boolean(options.json));
+      return;
+    }
+    // Every outcome is printed as JSON under --json, like the install result.
+    const outcome = (text, value) => print(options.json ? value : text, Boolean(options.json));
+    if (!missing.length) {
+      outcome('Every linter tool Sentinel uses is installed on this machine.', { installed: [], failed: [], missing: [], note: 'every linter tool is already installed' });
+      return;
+    }
+    const plan = installPlan(missing);
+    if (!plan.manager) {
+      outcome(formatToolsNotice(missing), { installed: [], failed: [], missing, note: 'no supported package manager on this platform; install them by hand', instructions: plan.instructions });
+      process.exitCode = 1;
+      return;
+    }
+    if (!options.yes) {
+      const consent = isatty(0) ? await ask(`Install ${missing.join(', ')} with ${plan.manager}? [y/N] `) : '';
+      if (!/^y(?:es)?$/i.test(consent.trim())) {
+        const note = isatty(0) ? 'Nothing was installed.' : `Nothing was installed: rerun with --yes to install ${missing.join(', ')} with ${plan.manager}.`;
+        outcome(note, { installed: [], failed: [], missing, note: isatty(0) ? 'declined' : 'consent required: rerun with --yes' });
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const result = await installTools({ config, progress: (message) => process.stderr.write(`${message}\n`) });
+    print(options.json ? result : [
+      result.installed.length ? `Installed: ${result.installed.join(', ')}.` : null,
+      ...result.failed.map((entry) => `Could not install ${entry.tool}: ${entry.detail}`),
+      !result.installed.length && !result.failed.length ? `Nothing was installed: ${result.note}.` : null,
+      ...(result.instructions || []).map((line) => `  ${line}`),
+      result.missing.length ? `Still missing: ${result.missing.join(', ')}.` : 'Every linter tool Sentinel uses is installed. Running reviews pick them up; restart the watcher if it cannot find them.',
+    ].filter(Boolean).join('\n'), Boolean(options.json));
+    if (result.missing.length) process.exitCode = 1;
     return;
   }
   // What this engine accepts (1.13.0): no repository or policy needed.
@@ -162,6 +242,9 @@ async function main() {
         return readReviewPolicy(root);
       });
     const result = await verifyPrerequisites(root, { config: policy.config });
+    result.lintTools = await detectLintTools({ config: policy.config });
+    const missingLintTools = await missingTools({ config: policy.config });
+    if (missingLintTools.length) result.lintToolsInstall = formatToolsNotice(missingLintTools);
     if (options['test-models']) result.modelChecks = await checkModels(root, {
       config: policy.config, selected: result.providers.selected,
     });
@@ -182,6 +265,7 @@ async function main() {
     return;
   }
   if (command === 'gate') {
+    if (!options.json) await toolsNoticeOnce(repoRoot);
     const result = await runGate({
       repoRoot,
       base: options.base,
@@ -278,6 +362,10 @@ async function main() {
     const result = await installGate({ repoRoot, dryRun: options['dry-run'], start: options.start !== false,
       preservePolicy: Boolean(options['preserve-policy']) });
     if (!options['dry-run'] && !options['preserve-policy']) await configureAutomaticUpdates(await createGateContext(repoRoot), process.env.ROVE_SENTINEL_AUTO_UPDATE !== '0', { onlyIfMissing: true });
+    if (!options['dry-run']) {
+      const notice = formatToolsNotice(await missingTools({ config: await installedConfig(repoRoot) }));
+      if (notice) process.stderr.write(`${notice}\n`);
+    }
     print(result, true);
     return;
   }

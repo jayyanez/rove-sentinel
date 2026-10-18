@@ -10,6 +10,7 @@ Start here:
   rove-sentinel update-check           Check for a newer stable release
   rove-sentinel updates                Inspect automatic engine updates
   rove-sentinel limits [--json]        What this engine version accepts and where it stops
+  rove-sentinel tools [--install [--yes]]  Linter tools this machine lacks; install them (asks first)
 
 Review:
   gate [--base REF] [--head REF] [--branch NAME]

@@ -41,6 +41,11 @@ export function sentinelLimits() {
         text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis); more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
       },
       {
+        id: 'linters',
+        limit: 'installed tools',
+        text: 'shellcheck, actionlint, gitleaks and ruff run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
+      },
+      {
         id: 'skip',
         limit: '.md .markdown .rst .adoc',
         text: 'A change of only Markdown, reStructuredText or AsciiDoc files outside the review policy is skipped without a model call. Plain .txt and .mdx files are reviewed.',

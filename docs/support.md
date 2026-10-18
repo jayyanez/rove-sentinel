@@ -11,7 +11,7 @@
 | Branch convention | `origin/main` by default; explicit base supported for direct review |
 | Inputs | Committed diffs; no review of uncommitted editor buffers |
 | Languages | Text review is language-flexible; no guarantee of equal language quality |
-| Deterministic tools | Markdownlint; opt-in Clippy for `src-tauri` |
+| Deterministic tools | Markdownlint; shellcheck, actionlint, gitleaks and ruff when installed on the host; project commands (`lintCommands`) and Clippy for `src-tauri` when installed policy enables them |
 | Visual evidence | Optional Rove format validation; no screenshot generation |
 | External contributors | No automatic fork PR review; same-repository author allowlist |
 | Release discovery | Cached public GitHub lookup in update-check, status and doctor; opt-out supported |
