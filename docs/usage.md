@@ -44,7 +44,10 @@ attestation. Missing evidence queues a review and waits within a bounded timeout
 Commit the repair, not just the working file.
 
 Ordinary prose-only diffs receive a documented skip attestation without model
-calls. Changes to review policy or agent instructions still require review.
+calls. Prose means Markdown, reStructuredText and AsciiDoc files; plain `.txt`
+files (such as `requirements.txt` or `CMakeLists.txt`) and MDX are reviewed.
+Changes to review policy or agent instructions still require review, and CI
+workflow and database migration changes are reviewed as high risk.
 
 ## Understand and resolve findings
 

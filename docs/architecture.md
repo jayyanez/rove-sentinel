@@ -30,15 +30,28 @@ edits are not silently included.
 The context contains a bounded textual diff, file manifest, risk reasons,
 installed charter and relevant lessons, commit history, reference map, and
 matching open bug briefs when that project convention exists. It is not a
-persistent semantic index. Reference discovery is heuristic and strongest for
-the languages covered by its parsers. Excluded files remain visible in the
-manifest; excluded binary contents are not reviewed as text.
+persistent semantic index. Reference discovery is heuristic: it extracts
+declarations from JavaScript/TypeScript, Svelte, Rust, Go, Python, Ruby, PHP,
+Java, Kotlin, Scala, C#, Swift and C/C++ files with a line lexer, not a
+parser, and sweeps each declared name with `git grep` over the head tree. The
+map reads Git objects only, so it is built from the repository while the
+review checkout is created; its Git processes run with bounded parallelism.
+Excluded files remain visible in the manifest; excluded binary contents are
+not reviewed as text.
+
+The context also quotes the messages of the commits between base and head,
+newest first and bounded to 4 KB, as the change's stated intent. They are
+untrusted evidence; an incomplete claimed fix is reviewed as a defect the
+change introduces. A PR description does not reach the review.
 
 ## Review and verification stages
 
 Low-risk work uses bounded shards. Medium and high risk add a scout and focused
 hypothesis reviews. Shards cover the included hunks; they do not guarantee that
-a model understood or detected every defect. A changed file without a textual
+a model understood or detected every defect. A changed test shares a shard with
+the changed file of the same name it tests (`a.test.ts`, `test_a.py`,
+`a_test.go`, `ATest.java`) when the shard bounds allow, and that reviewer
+applies the lens of each kind of file its shard holds. A changed file without a textual
 hunk (binary content, a rename or copy without a content change, a mode change,
 an empty file) owns no shard, because there is nothing in it to read; the
 `changed-files.md` lookup lists it with its reason and old path so reviewers can
@@ -66,6 +79,10 @@ host was available; a spent verification budget is not incompleteness, and the
 error keeps the reviewer's own account.
 Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
+A candidate under the confidence floor (50) is not adjudicated; the report
+keeps up to 40 of them, highest confidence first, as evidence for recall
+analysis only, and the `ledger` command marks an external finding in a file
+that holds one as `below-floor` rather than unseen.
 
 Author-family routing normally puts the other provider in the lead. Human
 changes use risk-based routing. The inherited `grok/` author label prefers
