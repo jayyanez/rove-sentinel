@@ -70,8 +70,9 @@ reviewer started.
 - **A rebase no longer means reviewing every hunk again.** A full round keeps
   its code, script and test shard reviews for seven days. After a rebase, a
   shard with byte-identical hunks is reused when none of its files changed
-  between the two heads, no file that changed mentions a name it declares or
-  removes or its file names, and none of its files names a file that changed. Documentation and configuration shards are
+  between the two heads, no file that changed mentions (at either head) an
+  identifier on its changed lines or its file names, and none of its files
+  names a file that changed. Documentation and configuration shards are
   always reviewed again, candidates are always adjudicated afresh, and
   `--force` reuses nothing. The test is textual, and the architecture guide
   says what it cannot see.

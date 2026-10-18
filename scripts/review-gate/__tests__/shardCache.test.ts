@@ -78,7 +78,7 @@ describe('reusing a shard review after a rebase (1.13.0)', () => {
   });
 
   it('names the shard by its file names and the declarations it changes, and refuses short names', () => {
-    expect(shardSurface(shard)).toEqual(['cache', 'evictEntry']);
+    expect(shardSurface(shard)).toEqual(['cache', 'evictEntry', 'key']);
     expect(shardSurface({ ...shard, files: ['src/io.ts'] })).toBeNull();
   });
 
@@ -220,5 +220,46 @@ describe('shard reuse: quoted paths and directory modules (1.13.0 follow-up)', (
     // Git quotes this path in its default output (core.quotePath).
     expect(git(root, 'diff', '--name-only', before, after)).toContain('\\303\\251parser');
     expect(await rebaseReuseAllowed(root, { shard, reviewedHead: before, headSha: after })).toBe(false);
+  });
+});
+
+describe('shard reuse after the official gate review of 1.13.0', () => {
+  /** A branch whose cache module calls `formatKey`, imported through a barrel. */
+  async function barrelRepository() {
+    const root = await makeRepository();
+    git(root, 'switch', 'main');
+    await write(root, 'src/text/keys.ts', 'export function formatKey(key: string) {\n  return key;\n}\n');
+    await write(root, 'src/text/all.ts', "export * from './keys';\n");
+    await write(root, 'src/audit.ts', "import { readEntry } from './cache';\nexport const audit = () => readEntry('a');\n");
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'text helpers and an audit caller');
+    git(root, 'switch', 'feature/cache');
+    await write(root, 'src/cache.ts', "import { formatKey } from './text/all';\nexport function readEntry(key: string) {\n  return formatKey(key).trim();\n}\n");
+    git(root, 'commit', '-am', 'Format keys');
+    git(root, 'rebase', 'main');
+    const before = git(root, 'rev-parse', 'HEAD');
+    const [shard] = partitionShards(await readPatch(root, git(root, 'merge-base', 'main', before), before));
+    return { root, before, shard };
+  }
+
+  it('names every identifier on the changed lines, not only declarations', async () => {
+    const { shardIdentifiers } = await import('../shardCache.mjs');
+    expect(shardIdentifiers({ patch: '+++ b/x.ts\n+  const total = computeTax(price);\n context\n-  return oldValue;\n' }))
+      .toEqual(['total', 'computeTax', 'price', 'oldValue']);
+  });
+
+  it('reviews again when a function the hunks call changed behind a re-export', async () => {
+    const { root, before, shard } = await barrelRepository();
+    const after = await moveMainAndRebase(root, 'src/text/keys.ts', 'export function formatKey(key: string) {\n  return key.toUpperCase();\n}\n');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: before, headSha: after })).toBe(false);
+  });
+
+  it('reviews again when a caller dropped its use of the shard', async () => {
+    const { root, before, shard } = await barrelRepository();
+    const after = await moveMainAndRebase(root, 'src/audit.ts', 'export const audit = () => 0;\n');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: before, headSha: after })).toBe(false);
+    // An unrelated move still allows the reuse.
+    const unrelated = await moveMainAndRebase(root, 'src/billing.ts', 'export const rate = 5;\n');
+    expect(await rebaseReuseAllowed(root, { shard, reviewedHead: after, headSha: unrelated })).toBe(true);
   });
 });

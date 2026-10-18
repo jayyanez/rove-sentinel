@@ -16,25 +16,51 @@ import { hashText } from './storage.mjs';
 //     configuration make claims about the whole tree, so they are always
 //     reviewed again);
 //   - none of its files differs between the head it was reviewed at and this
-//     head; and
-//   - no file that differs between the two heads mentions, as a whole word,
-//     a name the shard declares or removes, or the name of one of its files
-//     without the extension (the name an import or include uses); and
-//   - none of the shard's files mentions, as a whole word, the name of a file
-//     that differs (a dependency the shard imports or includes).
+//     head;
+//   - no file that differs between the two heads mentions, as a whole word, at
+//     either head, any identifier on the shard's changed lines (what it
+//     declares, calls, reads or writes) or the name of one of its files
+//     without the extension (and its directory's, for a directory module):
+//     a changed definition of anything the hunks use, a changed or removed
+//     caller, a re-export in between, all mention one of those names; and
+//   - none of the shard's files mentions the name of a file that differs.
 //
-// The last rule is what stands in for "nothing the hunks depend on
-// changed". It is a textual test, not an analysis: a dependency that names
-// neither (reached through reflection, a generic name shorter than three
-// characters, configuration) is not seen, which is why a shard whose file
-// name is shorter than three characters is never reused. Candidates are
-// always adjudicated afresh, and scouting and hypotheses run on the whole
-// diff as before.
+// That is the bounded claim: textual, not an analysis. A dependency that
+// shares no name with the hunks (reflection, configuration, a generated
+// name), or an identifier shorter than three characters, is not seen;
+// common words are not searched. Candidates are always adjudicated afresh,
+// and scouting and hypotheses run on the whole diff as before.
 
 const REUSABLE_KINDS = new Set(['code', 'tests', 'scripts']);
-// Past this many distinct changed file names the dependency test is not run
-// and the shard is reviewed again.
+// Past this many distinct changed file names, or names to search, the test is
+// not run and the shard is reviewed again.
 const MAX_CHANGED_NAMES = 200;
+const MAX_SURFACE_NAMES = 4000;
+// Words every file of a language contains: searching them would match every
+// changed file and never allow a reuse.
+const COMMON_WORDS = new Set([
+  'abstract', 'and', 'any', 'are', 'as', 'assert', 'async', 'await', 'bool', 'boolean', 'break', 'byte', 'case', 'catch',
+  'char', 'class', 'const', 'continue', 'def', 'default', 'del', 'delete', 'do', 'double', 'elif', 'else', 'enum', 'export',
+  'extends', 'false', 'final', 'finally', 'float', 'fn', 'for', 'from', 'func', 'function', 'get', 'global', 'impl',
+  'implements', 'import', 'in', 'instanceof', 'int', 'interface', 'is', 'lambda', 'let', 'long', 'match', 'mod', 'mut',
+  'new', 'none', 'not', 'null', 'number', 'object', 'of', 'or', 'override', 'package', 'pass', 'private', 'protected',
+  'pub', 'public', 'raise', 'readonly', 'return', 'self', 'set', 'static', 'str', 'string', 'struct', 'super', 'switch',
+  'the', 'this', 'throw', 'throws', 'trait', 'true', 'try', 'type', 'typeof', 'undefined', 'use', 'var', 'void', 'while',
+  'with', 'yield',
+]);
+
+/** Every identifier of three or more characters on a shard's changed lines. */
+export function shardIdentifiers(shard) {
+  const names = new Set();
+  for (const line of String(shard.patch || '').split(/\r?\n/)) {
+    const changed = (line.startsWith('+') && !line.startsWith('+++')) || (line.startsWith('-') && !line.startsWith('---'));
+    if (!changed) continue;
+    for (const match of line.slice(1).matchAll(/[A-Za-z_$][\w$]{2,}/g)) {
+      if (!COMMON_WORDS.has(match[0].toLowerCase())) names.add(match[0]);
+    }
+  }
+  return [...names];
+}
 
 /** The digest a reusable review of `shard` is stored under, or null. */
 export function shardCacheKey({ shard, provider, policyDigest, repository, risk, branch, author }) {
@@ -78,7 +104,7 @@ export function shardSurface(shard) {
   const names = shard.files.map(fileNames);
   if (names.some((entry) => entry === null)) return null;
   const { symbols } = extractChangedSymbols(shard.patch);
-  return [...new Set([...names.flat(), ...symbols])];
+  return [...new Set([...names.flat(), ...symbols, ...shardIdentifiers(shard)])];
 }
 
 /**
@@ -88,7 +114,7 @@ export function shardSurface(shard) {
 export async function rebaseReuseAllowed(repoRoot, { shard, reviewedHead, headSha, run = runGit }) {
   if (!/^[0-9a-f]{40}$/.test(String(reviewedHead)) || !/^[0-9a-f]{40}$/.test(String(headSha))) return false;
   const surface = shardSurface(shard);
-  if (!surface || !surface.length) return false;
+  if (!surface || !surface.length || surface.length > MAX_SURFACE_NAMES) return false;
   const quiet = { allowFailure: true, result: true, latchCleanupFailure: false };
   try {
     // NUL-separated output: paths arrive verbatim, never Git-quoted.
@@ -97,27 +123,32 @@ export async function rebaseReuseAllowed(repoRoot, { shard, reviewedHead, headSh
     const changed = new Set(String(diff.stdout).split('\0').filter(Boolean));
     if (!changed.size) return true;
     if (shard.files.some((file) => changed.has(file))) return false;
-    const filesMentioning = async (names) => {
-      const grep = await run(repoRoot, [
-        'grep', '-l', '-z', '-w', '--fixed-strings', ...names.flatMap((name) => ['-e', name]), headSha, '--',
-      ], quiet);
+    // The files of `tree` that mention any of `names` as a whole word. The
+    // names travel on standard input, so their number is not bound by the
+    // command line.
+    const filesMentioning = async (names, tree) => {
+      const grep = await run(repoRoot, ['grep', '-l', '-z', '-w', '--fixed-strings', '-f', '-', tree, '--'], {
+        ...quiet, input: `${names.join('\n')}\n`,
+      });
       if (grep.code === 1) return new Set();
       if (grep.code !== 0) return null;
       return new Set(String(grep.stdout).split('\0').filter(Boolean)
-        .map((line) => (line.startsWith(`${headSha}:`) ? line.slice(headSha.length + 1) : line)));
+        .map((line) => (line.startsWith(`${tree}:`) ? line.slice(tree.length + 1) : line)));
     };
-    // Something that changed uses the shard ...
-    const users = await filesMentioning(surface);
-    if (!users || [...users].some((file) => changed.has(file))) return false;
-    // ... or the shard uses something that changed: one of its files names a
-    // changed file (an import, an include, a path). A changed file with a
-    // name shorter than three characters, or too many changed files to name,
-    // cannot be checked this way.
+    // Something that changed uses or is used by the shard's names, as it is
+    // now or as it was (a caller that dropped its last use is a change too).
+    for (const tree of [headSha, reviewedHead]) {
+      const mentioning = await filesMentioning(surface, tree);
+      if (!mentioning || [...mentioning].some((file) => changed.has(file))) return false;
+    }
+    // The shard names a changed file (an import, an include, a path). A
+    // changed file with a name shorter than three characters, or too many
+    // changed files to name, cannot be checked this way.
     const named = [...changed].map(fileNames);
     if (named.some((entry) => entry === null)) return false;
     const changedNames = [...new Set(named.flat())];
     if (changedNames.length > MAX_CHANGED_NAMES) return false;
-    const dependents = await filesMentioning(changedNames);
+    const dependents = await filesMentioning(changedNames, headSha);
     return Boolean(dependents) && !shard.files.some((file) => dependents.has(file));
   } catch {
     return false;

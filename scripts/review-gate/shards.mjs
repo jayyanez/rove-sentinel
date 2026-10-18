@@ -12,6 +12,10 @@ import { LIMITS } from './constants.mjs';
 
 const DOC_FILE = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__|fixtures)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i;
+// Test files named by language convention rather than a test directory
+// (1.13.0): Go's a_test.go, Python's test_a.py and a_test.py, and a
+// capitalised ATest or ATests class file in Java, Kotlin, Scala, C# or Swift.
+const CONVENTIONAL_TEST_FILE = /(?:^|\/)(?:[^/]+_test\.(?:go|py)|test_[^/]+\.py|[^/]*[A-Za-z0-9]Tests?\.(?:java|kt|kts|scala|cs|swift))$/;
 const SCRIPT_FILE = /^(?:scripts|\.githooks|\.github|src-tauri\/launch-shim|src-tauri\/resources|sidecar)\//i;
 const CONFIG_FILE = /\.(?:json|jsonc|ya?ml|toml|lock|conf|ini)$/i;
 // Plain-text build and dependency inputs (1.13.0): reviewed with the config
@@ -23,7 +27,7 @@ export function classifyShardFile(file) {
   const normalized = String(file || '').replace(/\\/g, '/');
   // Location wins over extension: a Markdown fixture under tests/ is test
   // material and gets the tests lens, not the docs one.
-  if (TEST_FILE.test(normalized)) return 'tests';
+  if (TEST_FILE.test(normalized) || CONVENTIONAL_TEST_FILE.test(normalized)) return 'tests';
   if (TEXT_MANIFEST.test(normalized)) return 'config';
   if (DOC_FILE.test(normalized)) return 'docs';
   if (SCRIPT_FILE.test(normalized)) return 'scripts';

@@ -1992,3 +1992,87 @@ describe('a reused review carried by a checkpoint (1.13.0 self-review)', () => {
     expect(keptShardReview({ ...entry, reusedFrom: 'not a sha' }, 'codex', 2)?.reusedFrom).toBeUndefined();
   });
 });
+
+describe('a streamed adjudicator in a round that fails closed (1.13.0 gate review)', () => {
+  async function twoShardRepository() {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-halt-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    for (const name of ['a', 'b']) {
+      await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'two shards');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-stream-halt-state-'));
+    temporaryDirectories.push(stateRoot);
+    return { root, base, head, stateRoot };
+  }
+
+  function shards(releaseSlow: Promise<void>) {
+    return vi.fn(async ({ provider, roleIndex, shard }) => {
+      const file = shard.files[0];
+      if (file === 'src/b.ts') {
+        await releaseSlow;
+        throw new Error('provider timed out');
+      }
+      return {
+        provider, roleIndex, summary: 'a',
+        candidates: Array.from({ length: 5 }, (_, index) => ({
+          id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Fast defect ${index}`, priority: 'P2',
+          confidence: 90, category: 'state', file, line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+        })),
+      };
+    });
+  }
+
+  it('keeps an adjudicator\'s process-tree cleanup failure in the error the watcher pauses on', async () => {
+    const { root, base, head, stateRoot } = await twoShardRepository();
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    const orphan = Object.assign(new Error('coordinator tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
+    const coordinator = vi.fn(async () => {
+      release();
+      throw orphan;
+    });
+    const error = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer: shards(slow), coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    }).catch((caught) => caught);
+    expect(error.message).toContain('1 shard reviewer(s) failed after retry');
+    expect(error.message).toContain('coordinator tree lost');
+    expect(error.code).toBe('ORPHANED_PROCESS_TREE');
+  }, REAL_GIT_TEST_TIMEOUT);
+
+  it('does not retry an adjudicator once the round is failing closed', async () => {
+    const { root, base, head, stateRoot } = await twoShardRepository();
+    let release: () => void = () => {};
+    const slow = new Promise<void>((resolve) => { release = resolve; });
+    const coordinator = vi.fn(async () => {
+      release();
+      // The slow shard fails (twice) and stops the stream before this attempt ends.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      throw new Error('transient adjudicator failure');
+    });
+    const error = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'low',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], shardReviewer: shards(slow), coordinator,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    }).catch((caught) => caught);
+    expect(error.message).toContain('1 shard reviewer(s) failed after retry');
+    expect(coordinator).toHaveBeenCalledTimes(1);
+  }, REAL_GIT_TEST_TIMEOUT);
+});

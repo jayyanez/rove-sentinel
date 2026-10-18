@@ -65,7 +65,7 @@ export function sentinelLimits() {
       {
         id: 'rebase',
         limit: `${Math.round(LIMITS.shardCacheMaxAgeMs / 86_400_000)} days`,
-        text: `After a rebase, a code, script or test shard with identical hunks reuses its review from the last ${Math.round(LIMITS.shardCacheMaxAgeMs / 86_400_000)} days when nothing it names or that names it changed. Candidates are always adjudicated afresh.`,
+        text: `After a rebase, a code, script or test shard with identical hunks reuses its review from the last ${Math.round(LIMITS.shardCacheMaxAgeMs / 86_400_000)} days when no changed file shares a name with its changed lines or its files. Candidates are always adjudicated afresh.`,
       },
     ],
     superseded: [

@@ -444,3 +444,19 @@ describe('test families after the 1.13.0 self-review', () => {
     expect(shard.files.indexOf('src/util.test.ts')).toBe(shard.files.indexOf('src/util.ts') + 1);
   });
 });
+
+describe('test files named by language convention (1.13.0 gate review)', () => {
+  it('classifies and pairs Go, Python and capitalised test classes outside a test directory', () => {
+    expect(classifyShardFile('pkg/cache/cache_test.go')).toBe('tests');
+    expect(classifyShardFile('app/test_cache.py')).toBe('tests');
+    expect(classifyShardFile('app/cache_test.py')).toBe('tests');
+    expect(classifyShardFile('src/main/java/CacheTest.java')).toBe('tests');
+    expect(classifyShardFile('src/main/java/Contest.java')).toBe('code');
+    expect(classifyShardFile('pkg/cache/cache.go')).toBe('code');
+    const patch = [fileSection('pkg/cache/cache.go', 300), fileSection('pkg/other/other.go', 300), fileSection('pkg/cache/cache_test.go', 50)].join('\n');
+    const shards = partitionShards(patch, { targetLines: 500, maxShards: 8 });
+    const owner = shards.find((shard) => shard.files.includes('pkg/cache/cache.go'));
+    expect(owner?.files).toEqual(['pkg/cache/cache.go', 'pkg/cache/cache_test.go']);
+    expect(owner?.kinds).toEqual(['code', 'tests']);
+  });
+});
