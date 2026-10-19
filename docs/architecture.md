@@ -86,7 +86,7 @@ error keeps the reviewer's own account.
 
 The context and its required reads travel in the prompt itself when together
 they fit 96 KB, and so do a shard's hunks and an adjudication batch's
-candidates when each fits 96 KB: the reviewer starts reasoning instead of
+candidates when each fits 128 KB: the reviewer starts reasoning instead of
 spending its first turns on reads, and no tool output can come back with its
 middle elided. The material sits between markers that carry a per-review
 nonce, with the block every reviewer shares first. Prompts reach both CLIs on
@@ -153,7 +153,7 @@ to finding identity and lineage; P0/P1 are not deferrable.
 One watcher serializes reviews for a repository, while a review can use up to
 eight provider subprocesses at once. Medium/high rounds start from four/eight
 shards and a large change gets more (see above). The text patch limit is
-8 MiB; the hook waits 150 minutes with the default `maxShards`. An ordinary push may
+8 MiB; the hook waits 168 minutes with the default `maxShards`. An ordinary push may
 carry at most sixteen candidate refs and at most one that still needs review.
 The default retention is thirty days, capped at eighty attestations and fifty
 reports; audit events have separate bounds. See `constants.mjs` for all limits.

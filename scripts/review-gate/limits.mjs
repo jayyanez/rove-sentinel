@@ -122,7 +122,8 @@ export function formatLimits(limits = sentinelLimits()) {
 }
 
 /**
- * How long the hook waits for a review (1.14.0): the base bound, plus
+ * How long the hook waits for a review (1.14.0): the base bound (one
+ * active and one queued review of one wave), plus
  * `hookWaitPerExtraWaveMs` for every wave of shard reviewers past the first
  * that the project's maxShards allows.
  */
