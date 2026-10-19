@@ -770,3 +770,19 @@ describe('the hook waits for an active review past its base bound (1.14.0)', () 
     await expect(wait(paths, 'r3', { timeoutMs: 20, pollMs: 10, extendWhile: async () => true, activeMaxMs: 80 })).rejects.toThrow(/Timed out/);
   });
 });
+
+describe('a result published as the extension ends (1.14.0 gate review)', () => {
+  it('is read before the wait gives up', async () => {
+    const { mkdtemp: makeTemporary, writeFile: write } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { ensureState: ensure, waitForResult: wait } = await import('../storage.mjs');
+    const paths = await ensure(await makeTemporary(path.join(os.tmpdir(), 'rove-hook-race-')));
+    // The watcher publishes the result, then its heartbeat no longer names the request.
+    const extendWhile = async () => {
+      await write(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' }));
+      return false;
+    };
+    await expect(wait(paths, 'r1', { timeoutMs: 0, pollMs: 10, extendWhile })).resolves.toEqual({ status: 'pass' });
+  });
+});

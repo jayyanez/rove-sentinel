@@ -1067,6 +1067,14 @@ export async function waitForResult(
     }
     await sleep(pollMs, { signal });
   }
+  // The review may have published its result between the last read and the
+  // check that ended the wait (its heartbeat moves on as it completes): read
+  // once more before giving up.
+  const late = await readJson(target);
+  if (late) {
+    await removeStoredJson(target);
+    return late;
+  }
   throw new Error(`Timed out waiting for shared review request ${requestId}.`);
 }
 
