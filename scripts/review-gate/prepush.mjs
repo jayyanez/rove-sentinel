@@ -16,6 +16,7 @@ import { startDaemonDetached } from './daemon.mjs';
 import { acquireReviewLease } from './maintenance.mjs';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
+import { hookWaitTimeoutFor } from './limits.mjs';
 import { undisposedRefusal } from './dispositions.mjs';
 import { createGateContext, formatGateResult, runGate } from './gate.mjs';
 import {
@@ -514,6 +515,7 @@ export async function runPrePush({
         });
         output(`Shared review gate: checking ${branch} at ${targetSha.slice(0, 12)}…`);
         response = await waitForHookResult(context.paths, request.id, {
+          timeoutMs: hookWaitTimeoutFor(reviewPolicy.config),
           onProgress(elapsedMs) {
             output(`Shared review gate: still reviewing (${Math.round(elapsedMs / 1000)}s elapsed)…`);
           },

@@ -171,6 +171,10 @@ export const LIMITS = Object.freeze({
   // One active high-risk review plus one queued review can each consume the
   // full reviewer + coordinator budget. Keep the hook bound above that total.
   hookWaitTimeoutMs: 120 * 60 * 1000,
+  // Each wave of reviewers past the first that a project's maxShards allows
+  // adds this much to the hook's wait (1.14.0), so a permitted review never
+  // outlives the push waiting for it.
+  hookWaitPerExtraWaveMs: 30 * 60 * 1000,
   hookProgressEveryMs: 30 * 1000,
   queuePollMs: 1000,
   githubPollMs: 60 * 1000,

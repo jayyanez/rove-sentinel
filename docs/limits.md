@@ -33,14 +33,14 @@ When a review still fails, read the report's own account of why
 | Area | Limit | What happens past it |
 | --- | --- | --- |
 | Change under review | Git's diff with 80 context lines a side: 8 MiB | The round fails closed on every push, because the diff is measured against the base: split the change into separately reviewed branches, or land part of it first |
-| A changed file's size, a line's length | None | Shards are written in parts of 24 KB, longer lines cut across parts; a shard of up to 96 KB is in the prompt |
+| A changed file's size, a line's length | None | Shards are written in parts of 24 KB, longer lines cut across parts; a shard of up to 128 KB is in the prompt |
 | Context and required reads in the prompt | 96 KB together | They are read from files in parts instead |
-| Shards per round | 8 high risk (4 medium, 2 low) up to about 830 KB of patch; then one more per 104 KB, up to `maxShards` (16 by default, 8 to 128) | Past the cap shards grow and the report says they were reviewed more thinly. 8 reviewers run at a time: 16 shards add a second wave, a few minutes |
+| Shards per round | 8 high risk (4 medium, 2 low) up to about 830 KB of patch; then one more per 104 KB, up to `maxShards` (16 by default, 8 to 128) | Past the cap shards grow and the report says they were reviewed more thinly. A shard holds whole files, so one very large file's changes stay in one shard. 8 reviewers run at a time: 16 shards add a second wave, a few minutes |
 | Candidates per round | 50 after merging duplicates (4 per shard past 12 shards, at most 200; 8 per shard, 4 per hypothesis) | The round fails closed |
 | Confidence floor | 50 | Not adjudicated; the report keeps up to 40 |
 | Linters | shellcheck, actionlint, gitleaks, ruff when installed; project `lintCommands` from installed policy | A missing tool is a note in the report, not a pass |
 | Documentation skip | Only `.md`, `.markdown`, `.rst`, `.adoc` outside the review policy | Everything else, `.txt` and `.mdx` included, is reviewed |
-| One push | 16 refs to check, 1 still needing review; the hook waits 120 minutes | The push is refused |
+| One push | 16 refs to check, 1 still needing review; the hook waits 150 minutes (30 more per further wave of 8 shards a project allows) | The push is refused |
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |

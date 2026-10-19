@@ -1363,9 +1363,14 @@ async function runGateWithLease({
     }
     // Past the shard cap shards grow again, and a reviewer covers more than
     // fits its prompt: the review is thinner, and the report says so.
+    // A shard holds whole file sections, so it outgrows the prompt either
+    // because the cap was reached or because one file's section is that large;
+    // only the first is helped by more shards.
     const largestShard = Math.max(0, ...shards.map((shard) => Buffer.byteLength(shard.patch, 'utf8')));
     if (largestShard > LIMITS.inlineShardMaxBytes) {
-      const note = `This change needs more than the ${plan.maxShards} shards this project allows at ${Math.round(LIMITS.shardWaveBytes / 1024)} KB each, so its shards reach ${Math.ceil(largestShard / 1024)} KB and are reviewed more thinly, from files in parts. Split the change, or raise maxShards in .rove-sentinel.json (each 8 more shards add a wave of reviewers, a few minutes).`;
+      const note = shards.length >= plan.maxShards
+        ? `This change needs more than the ${plan.maxShards} shards this project allows at about ${Math.round(LIMITS.shardWaveBytes / 1024)} KB each, so its shards reach ${Math.ceil(largestShard / 1024)} KB and are reviewed more thinly, from files in parts. Split the change, or raise maxShards in .rove-sentinel.json (each 8 more shards add a wave of reviewers, a few minutes).`
+        : `A shard of ${Math.ceil(largestShard / 1024)} KB holds one file's changes, more than a prompt carries: it is read from files in parts, more thinly. Splitting that file's change helps; more shards do not.`;
       reviewerErrors.push(note);
       progress(note);
     }
@@ -1436,7 +1441,9 @@ async function runGateWithLease({
     // stops sending, and a batch still queued for a slot is then skipped.
     let adjudicationHalted = false;
     let adjudicationStartedAt = null;
-    const candidateBound = roundCandidateBound(shards.length);
+    // Room for every inherited blocker too: a full round of many shards may
+    // leave more blockers than a small follow-up's own bound.
+    const candidateBound = Math.min(LIMITS.maxRoundCandidates, Math.max(roundCandidateBound(shards.length), priorBlockingList.length + LIMITS.maxCandidates));
     const adjudicationStream = createAdjudicationStream({
       maxCandidates: candidateBound,
       followUp,
@@ -1839,11 +1846,11 @@ async function runGateWithLease({
       carriedForward.splice(0, carriedForward.length, ...carriedForward.filter((finding) => !gone.has(finding)));
       reviewerErrors.push(`${carriedGone.length} prior blocker(s) dropped: their file no longer exists at this head (${carriedGone.map((finding) => finding.file).join(', ')}).`);
     }
-    if (carriedForward.length > LIMITS.maxCandidates) {
+    if (carriedForward.length > LIMITS.maxRoundCandidates) {
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
-        summary: `${carriedForward.length} prior blockers could not be re-verified in this follow-up round, more than the ${LIMITS.maxCandidates}-finding bound; fix or defer (npx --no-install rove-sentinel defer, using the earlier report that verified them) enough of them to fit, then rerun.`,
+        summary: `${carriedForward.length} prior blockers could not be re-verified in this follow-up round, more than the ${LIMITS.maxRoundCandidates}-finding bound; fix or defer (npx --no-install rove-sentinel defer, using the earlier report that verified them) enough of them to fit, then rerun.`,
         errors: reviewerErrors,
       });
     }

@@ -2119,3 +2119,38 @@ describe('a change past one wave gets more shards (1.14.0)', () => {
     expect(progress.some((line) => line.includes('needs more than the 8 shards this project allows'))).toBe(true);
   }, 60_000);
 });
+
+describe('the thin-review note names its cause (1.14.0 gate review)', () => {
+  it('blames one large file, not the shard cap, when the cap was not reached', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-onefile-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(path.join(root, 'src', 'huge.ts'), `${Array.from({ length: 4000 }, (_, line) => `export const v${line} = '${'v'.repeat(36)}';`).join('\n')}\n`);
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'one large file');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-onefile-state-'));
+    temporaryDirectories.push(stateRoot);
+    const progress: string[] = [];
+    const result = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'high',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], progress: (line: string) => progress.push(line),
+      shardReviewer: async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed.', candidates: [] }),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    const note = progress.find((line) => line.includes('more thinly'));
+    expect(note).toContain("holds one file's changes");
+    expect(note).not.toContain('maxShards');
+  }, 60_000);
+});

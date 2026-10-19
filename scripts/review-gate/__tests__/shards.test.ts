@@ -490,3 +490,12 @@ describe('more shards for a larger change (1.14.0)', () => {
     expect(after.flatMap((shard) => shard.files).length).toBe(100);
   });
 });
+
+describe('the hook waits long enough for the shards a project allows (1.14.0)', () => {
+  it('adds half an hour per further wave of eight shards', async () => {
+    const { hookWaitTimeoutFor } = await import('../limits.mjs');
+    expect(hookWaitTimeoutFor({ maxShards: 8 })).toBe(120 * 60 * 1000);
+    expect(hookWaitTimeoutFor({})).toBe(150 * 60 * 1000);
+    expect(hookWaitTimeoutFor({ maxShards: 32 })).toBe(210 * 60 * 1000);
+  });
+});

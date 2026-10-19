@@ -55,7 +55,7 @@ export function sentinelLimits() {
       {
         id: 'push',
         limit: `${LIMITS.maxPushCandidateRefs} refs, 1 unreviewed`,
-        text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review; the hook waits at most ${minutes(LIMITS.hookWaitTimeoutMs)} for it.`,
+        text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review; the hook waits at most ${minutes(hookWaitTimeoutFor())} for it with the default maxShards, ${minutes(LIMITS.hookWaitPerExtraWaveMs)} more for each further wave of 8 shards a project allows.`,
       },
       {
         id: 'push-input',
@@ -119,4 +119,15 @@ export function formatLimits(limits = sentinelLimits()) {
     'No longer needed (workarounds for earlier versions):',
     ...limits.superseded.map((entry) => `  - ${entry.rule}: unnecessary since ${entry.unnecessarySince}. ${entry.why}`),
   ].join('\n');
+}
+
+/**
+ * How long the hook waits for a review (1.14.0): the base bound, plus
+ * `hookWaitPerExtraWaveMs` for every wave of shard reviewers past the first
+ * that the project's maxShards allows.
+ */
+export function hookWaitTimeoutFor(config = {}) {
+  const maxShards = config?.maxShards ?? LIMITS.maxReviewShards;
+  const extraWaves = Math.max(0, Math.ceil(maxShards / LIMITS.providerConcurrency) - 1);
+  return LIMITS.hookWaitTimeoutMs + extraWaves * LIMITS.hookWaitPerExtraWaveMs;
 }

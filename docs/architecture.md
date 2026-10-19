@@ -50,7 +50,8 @@ Low-risk work uses bounded shards. Medium and high risk add a scout and focused
 hypothesis reviews. A high-risk round has 8 shards up to about 830 KB of
 patch; a larger change gets one more shard per 104 KB, up to the project's
 `maxShards` (16 by default), so each reviewer covers about the same amount of
-code. Reviewers run 8 at a time, so 16 shards take a second wave. Past the cap
+code. A shard holds whole files, so one very large file's changes stay in one
+shard, read in parts. Reviewers run 8 at a time, so 16 shards take a second wave. Past the cap
 shards grow again, and the report says they were reviewed more thinly. Shards cover the included hunks; they do not guarantee that
 a model understood or detected every defect. A changed test shares a shard with
 the changed file of the same name it tests (`a.test.ts`, `test_a.py`,
@@ -95,8 +96,9 @@ from files in parts, as described above; inlined material counts as read.
 Candidate findings are independently
 adjudicated in fresh contexts and validated against a structured schema.
 Adjudication starts while reviewers still run: each review's candidates join
-a stream as it settles, with the same floor, identity merge and 50-candidate
-bound. A batch of five goes to a fresh adjudicator at once, and what remains
+a stream as it settles, with the same floor and identity merge, and a bound of
+50 candidates (four per shard in a round of more than 12 shards, and room for
+every inherited blocker, at most 200). A batch of five goes to a fresh adjudicator at once, and what remains
 when the last reviewer settles goes in batches of at most three. A candidate
 already sent is not replaced by a later duplicate of higher confidence. A
 round that will fail closed stops sending and waits for the batches already
@@ -149,8 +151,9 @@ to finding identity and lineage; P0/P1 are not deferrable.
 ## Operations and bounds
 
 One watcher serializes reviews for a repository, while a review can use up to
-eight provider subprocesses. Medium/high shard maxima are four/eight. The text
-patch limit is 4 MiB; the hook wait bound is 120 minutes. An ordinary push may
+eight provider subprocesses at once. Medium/high rounds start from four/eight
+shards and a large change gets more (see above). The text patch limit is
+8 MiB; the hook waits 150 minutes with the default `maxShards`. An ordinary push may
 carry at most sixteen candidate refs and at most one that still needs review.
 The default retention is thirty days, capped at eighty attestations and fifty
 reports; audit events have separate bounds. See `constants.mjs` for all limits.
