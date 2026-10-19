@@ -2117,6 +2117,7 @@ describe('a change past one wave gets more shards (1.14.0)', () => {
     expect(capped.status).toBe('pass');
     expect(shardSizes).toHaveLength(8);
     expect(progress.some((line) => line.includes('needs more than the 8 shards this project allows'))).toBe(true);
+    expect(progress.some((line) => line.includes('alone has'))).toBe(false);
   }, 60_000);
 });
 
@@ -2150,7 +2151,8 @@ describe('the thin-review note names its cause (1.14.0 gate review)', () => {
     });
     expect(result.status).toBe('pass');
     const note = progress.find((line) => line.includes('more thinly'));
-    expect(note).toContain("holds one file's changes");
+    expect(note).toContain('src/huge.ts alone has');
+    expect(note).toContain('more shards cannot split it');
     expect(note).not.toContain('maxShards');
   }, 60_000);
 });

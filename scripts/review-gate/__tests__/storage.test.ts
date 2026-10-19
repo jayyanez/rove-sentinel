@@ -756,33 +756,28 @@ describe('shared review local state', () => {
 
 describe('the hook waits for an active review past its base bound (1.14.0)', () => {
   it('keeps waiting while the review runs, and stops at the absolute bound or when it is idle', async () => {
-    const { mkdtemp: makeTemporary, writeFile: write } = await import('node:fs/promises');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const { ensureState: ensure, waitForResult: wait } = await import('../storage.mjs');
-    const paths = await ensure(await makeTemporary(path.join(os.tmpdir(), 'rove-hook-active-')));
+    const paths = await ensureState(await temporaryDirectory());
     let checks = 0;
-    setTimeout(() => write(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' })), 120);
-    await expect(wait(paths, 'r1', { timeoutMs: 20, pollMs: 10, extendWhile: async () => { checks += 1; return true; }, activeMaxMs: 5_000 }))
+    // The review publishes its result on the third check of the extension.
+    const extendWhile = async () => {
+      checks += 1;
+      if (checks === 3) await writeFile(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' }));
+      return true;
+    };
+    await expect(waitForResult(paths, 'r1', { timeoutMs: 0, pollMs: 5, extendWhile, activeMaxMs: 60_000 }))
       .resolves.toEqual({ status: 'pass' });
-    expect(checks).toBeGreaterThan(0);
-    await expect(wait(paths, 'r2', { timeoutMs: 20, pollMs: 10, extendWhile: async () => false })).rejects.toThrow(/Timed out/);
-    await expect(wait(paths, 'r3', { timeoutMs: 20, pollMs: 10, extendWhile: async () => true, activeMaxMs: 80 })).rejects.toThrow(/Timed out/);
+    expect(checks).toBe(3);
+    await expect(waitForResult(paths, 'r2', { timeoutMs: 20, pollMs: 5, extendWhile: async () => false })).rejects.toThrow(/Timed out/);
+    await expect(waitForResult(paths, 'r3', { timeoutMs: 20, pollMs: 5, extendWhile: async () => true, activeMaxMs: 80 })).rejects.toThrow(/Timed out/);
   });
-});
 
-describe('a result published as the extension ends (1.14.0 gate review)', () => {
-  it('is read before the wait gives up', async () => {
-    const { mkdtemp: makeTemporary, writeFile: write } = await import('node:fs/promises');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    const { ensureState: ensure, waitForResult: wait } = await import('../storage.mjs');
-    const paths = await ensure(await makeTemporary(path.join(os.tmpdir(), 'rove-hook-race-')));
+  it('reads a result published as the extension ends before giving up', async () => {
+    const paths = await ensureState(await temporaryDirectory());
     // The watcher publishes the result, then its heartbeat no longer names the request.
     const extendWhile = async () => {
-      await write(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' }));
+      await writeFile(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' }));
       return false;
     };
-    await expect(wait(paths, 'r1', { timeoutMs: 0, pollMs: 10, extendWhile })).resolves.toEqual({ status: 'pass' });
+    await expect(waitForResult(paths, 'r1', { timeoutMs: 0, pollMs: 5, extendWhile })).resolves.toEqual({ status: 'pass' });
   });
 });

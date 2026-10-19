@@ -1368,9 +1368,15 @@ async function runGateWithLease({
     // only the first is helped by more shards.
     const largestShard = Math.max(0, ...shards.map((shard) => Buffer.byteLength(shard.patch, 'utf8')));
     if (largestShard > LIMITS.inlineShardMaxBytes) {
-      const note = shards.length >= plan.maxShards
-        ? `This change needs more than the ${plan.maxShards} shards this project allows at about ${Math.round(LIMITS.shardWaveBytes / 1024)} KB each, so its shards reach ${Math.ceil(largestShard / 1024)} KB and are reviewed more thinly, from files in parts. Split the change, or raise maxShards in .rove-sentinel.json (each 8 more shards add a wave of reviewers, a few minutes).`
-        : `A shard of ${Math.ceil(largestShard / 1024)} KB holds one file's changes, more than a prompt carries: it is read from files in parts, more thinly. Splitting that file's change helps; more shards do not.`;
+      const largestFile = splitPatchByFile(patch)
+        .reduce((best, section) => (!best || section.text.length > best.text.length ? section : best), null);
+      const fileTooLarge = largestFile && Buffer.byteLength(largestFile.text, 'utf8') > LIMITS.inlineShardMaxBytes;
+      const capReached = shards.length >= plan.maxShards;
+      const causes = [
+        ...(capReached ? [`the change needs more than the ${plan.maxShards} shards this project allows at about ${Math.round(LIMITS.shardWaveBytes / 1024)} KB each (raise maxShards in .rove-sentinel.json: each 8 more shards add a wave of reviewers, a few minutes)`] : []),
+        ...(fileTooLarge ? [`${promptSafe(largestFile.file)} alone has ${Math.ceil(Buffer.byteLength(largestFile.text, 'utf8') / 1024)} KB of changes, and a shard holds whole files, so more shards cannot split it (split that file's change)`] : []),
+      ];
+      const note = `Shards reach ${Math.ceil(largestShard / 1024)} KB, more than a prompt carries, and are reviewed more thinly, from files in parts: ${causes.join('; and ') || 'whole files did not pack into smaller shards'}.`;
       reviewerErrors.push(note);
       progress(note);
     }
