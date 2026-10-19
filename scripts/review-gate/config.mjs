@@ -15,7 +15,7 @@ function relativeFile(value, label) {
 /** Only installation reads repository configuration; reviews use its frozen snapshot. */
 export function normalizeConfig(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Sentinel configuration must be an object.');
-  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'clippy', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands'];
+  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'clippy', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards'];
   for (const key of Object.keys(input)) {
     if (!allowed.includes(key)) throw new Error(`Unknown Sentinel configuration key: ${key}`);
   }
@@ -44,8 +44,19 @@ export function normalizeConfig(input = {}) {
     ...(input.providers !== undefined ? { providers: input.providers } : {}),
     ...(input.models !== undefined ? { models: normalizeModels(input.models) } : {}),
     ...(input.lintLanes !== undefined ? { lintLanes: normalizeLintLanes(input.lintLanes) } : {}),
+    ...(input.maxShards !== undefined ? { maxShards: normalizeMaxShards(input.maxShards) } : {}),
     ...(input.lintCommands !== undefined ? { lintCommands: normalizeLintCommands(input.lintCommands) } : {}),
   };
+}
+
+/**
+ * The most shards one round of a large change may have (1.14.0): depth
+ * against time. 8 keeps the behavior before 1.14.0; every 8 more add a wave
+ * of reviewers.
+ */
+function normalizeMaxShards(value) {
+  if (!Number.isInteger(value) || value < 8 || value > 128) throw new Error('maxShards must be a whole number from 8 to 128.');
+  return value;
 }
 
 const LINT_LANES = ['shellcheck', 'actionlint', 'gitleaks', 'ruff'];

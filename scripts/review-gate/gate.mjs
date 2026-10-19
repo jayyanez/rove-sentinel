@@ -50,7 +50,7 @@ import { detectSubscriptions } from './subscriptions.mjs';
 import { modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
 import {
-  metadataOnlySections, partitionShards, renameMapFor, renamedPaths, shardPartShards, splitPatchByFile,
+  metadataOnlySections, partitionShards, renameMapFor, renamedPaths, shardCountFor, shardPartShards, splitPatchByFile,
 } from './shards.mjs';
 import { deferCommand } from './dispositions.mjs';
 import { LIMITS } from './constants.mjs';
@@ -567,6 +567,15 @@ export function lowConfidenceCandidates(reviews, {
 }
 
 /**
+ * The candidates one round may adjudicate (1.14.0): 50, or four per shard
+ * when a large change has more shards, at most 200. A round past it fails
+ * closed rather than dropping candidates.
+ */
+export function roundCandidateBound(shardCount) {
+  return Math.min(LIMITS.maxRoundCandidates, Math.max(LIMITS.maxCandidates, 4 * Math.max(0, shardCount)));
+}
+
+/**
  * The identity two reviewers' candidates must share to be merged: file,
  * integer line, priority and normalized title (see cleanCandidates). A
  * candidate without a file or an integer line is never merged.
@@ -1077,7 +1086,17 @@ async function runGateWithLease({
   }
   const followUp = followUpBaseSha !== null && typeof followUpPatch === 'string';
   const round = followUp ? 'follow-up' : 'full';
-  const plan = reviewPlan(risk.level, author, { followUp, providers: selectedProviders });
+  const basePlan = reviewPlan(risk.level, author, { followUp, providers: selectedProviders });
+  // A change past ~830 KB gets more shards than one wave (1.14.0), up to the
+  // project's maxShards; the shards of a smaller change are unchanged.
+  const plan = basePlan.maxShards
+    ? {
+      ...basePlan,
+      maxShards: shardCountFor(followUp ? followUpPatch : patch, {
+        base: basePlan.maxShards, maxShards: reviewPolicy.config.maxShards ?? LIMITS.maxReviewShards,
+      }),
+    }
+    : basePlan;
   // Only reviews of ANCESTOR heads carry blockers into this head: after a
   // divergent force-push the abandoned side's findings are not this head's.
   const ancestorReviews = [];
@@ -1342,7 +1361,29 @@ async function runGateWithLease({
     for (const kept of keptShards) {
       for (const record of kept?.executions ?? []) providerExecutions.push({ ...record, reused: true });
     }
-    progress(`Reviewing ${shards.length - keptCount} shard(s)${keptCount ? ` (${keptCount} more completed in an earlier round of this exact head and are kept)` : ''}${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
+    // Past the shard cap shards grow again, and a reviewer covers more than
+    // fits its prompt: the review is thinner, and the report says so.
+    // A shard holds whole file sections, so it outgrows the prompt either
+    // because the cap was reached or because one file's section is that large;
+    // only the first is helped by more shards.
+    const largestShard = Math.max(0, ...shards.map((shard) => Buffer.byteLength(shard.patch, 'utf8')));
+    if (largestShard > LIMITS.inlineShardMaxBytes) {
+      // Sized in UTF-8 bytes, as the inline bound is.
+      const largestFile = splitPatchByFile(patch)
+        .map((section) => ({ ...section, bytes: Buffer.byteLength(section.text, 'utf8') }))
+        .reduce((best, section) => (!best || section.bytes > best.bytes ? section : best), null);
+      const fileTooLarge = largestFile && largestFile.bytes > LIMITS.inlineShardMaxBytes;
+      const capReached = shards.length >= plan.maxShards;
+      const causes = [
+        ...(capReached ? [`the change needs more than the ${plan.maxShards} shards this project allows at about ${Math.round(LIMITS.shardWaveBytes / 1024)} KB each (raise maxShards in .rove-sentinel.json: each 8 more shards add a wave of reviewers, a few minutes)`] : []),
+        ...(fileTooLarge ? [`${promptSafe(largestFile.file)} alone has ${Math.ceil(largestFile.bytes / 1024)} KB of changes, and a shard holds whole files, so more shards cannot split it (split that file's change)`] : []),
+      ];
+      const note = `Shards reach ${Math.ceil(largestShard / 1024)} KB, more than a prompt carries, and are reviewed more thinly, from files in parts: ${causes.join('; and ') || 'whole files did not pack into smaller shards'}.`;
+      reviewerErrors.push(note);
+      progress(note);
+    }
+    const waves = Math.ceil((shards.length - keptCount) / LIMITS.providerConcurrency);
+    progress(`Reviewing ${shards.length - keptCount} shard(s)${waves > 1 ? ` in ${waves} waves of up to ${LIMITS.providerConcurrency}` : ''}${keptCount ? ` (${keptCount} more completed in an earlier round of this exact head and are kept)` : ''}${plan.useScout ? ` while scouting up to ${plan.maxHypotheses} hypotheses` : ''}.`);
     // The prior-blocker list travels as a bundle file, never inline in the
     // provider's argument vector: fifty persisted entries would exceed the
     // Windows command-line limit and fail every shard.
@@ -1408,7 +1449,11 @@ async function runGateWithLease({
     // stops sending, and a batch still queued for a slot is then skipped.
     let adjudicationHalted = false;
     let adjudicationStartedAt = null;
+    // Room for every inherited blocker too: a full round of many shards may
+    // leave more blockers than a small follow-up's own bound.
+    const candidateBound = Math.min(LIMITS.maxRoundCandidates, Math.max(roundCandidateBound(shards.length), priorBlockingList.length + LIMITS.maxCandidates));
     const adjudicationStream = createAdjudicationStream({
+      maxCandidates: candidateBound,
       followUp,
       priorBlocking: priorBlockingList,
       canonicalize: canonicalReview,
@@ -1666,7 +1711,7 @@ async function runGateWithLease({
         baseReport,
         summary: 'The independent candidate set exceeded its safe bound; the gate failed closed.',
         errors: [
-          `Independent reviewers produced ${streamed.count} qualifying candidates; the bounded adjudication limit is ${LIMITS.maxCandidates}. The gate refuses to drop candidates or attest an incomplete review.`,
+          `Independent reviewers produced ${streamed.count} qualifying candidates; the bounded adjudication limit for this round is ${candidateBound}. The gate refuses to drop candidates or attest an incomplete review.`,
           ...(adjudicationCleanup ? [adjudicationCleanup.message] : []),
         ],
         code: adjudicationCleanup?.code || null,
@@ -1809,11 +1854,11 @@ async function runGateWithLease({
       carriedForward.splice(0, carriedForward.length, ...carriedForward.filter((finding) => !gone.has(finding)));
       reviewerErrors.push(`${carriedGone.length} prior blocker(s) dropped: their file no longer exists at this head (${carriedGone.map((finding) => finding.file).join(', ')}).`);
     }
-    if (carriedForward.length > LIMITS.maxCandidates) {
+    if (carriedForward.length > LIMITS.maxRoundCandidates) {
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
-        summary: `${carriedForward.length} prior blockers could not be re-verified in this follow-up round, more than the ${LIMITS.maxCandidates}-finding bound; fix or defer (npx --no-install rove-sentinel defer, using the earlier report that verified them) enough of them to fit, then rerun.`,
+        summary: `${carriedForward.length} prior blockers could not be re-verified in this follow-up round, more than the ${LIMITS.maxRoundCandidates}-finding bound; fix or defer (npx --no-install rove-sentinel defer, using the earlier report that verified them) enough of them to fit, then rerun.`,
         errors: reviewerErrors,
       });
     }

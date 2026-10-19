@@ -125,6 +125,7 @@ function decoratePlan(plan, risk, { followUp = false } = {}) {
     useScout,
     followUp: false,
     maxHypotheses: risk === 'high' ? 8 : risk === 'medium' ? 4 : 0,
+    // The shards of one wave; a change past 1 MB gets more (shardCountFor).
     maxShards: risk === 'high'
       ? LIMITS.shardMaxCountHigh
       : risk === 'medium'

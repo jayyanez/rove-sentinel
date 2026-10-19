@@ -753,3 +753,31 @@ describe('shared review local state', () => {
     await expect(access(`${target}.previous`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
+
+describe('the hook waits for an active review past its base bound (1.14.0)', () => {
+  it('keeps waiting while the review runs, and stops at the absolute bound or when it is idle', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    let checks = 0;
+    // The review publishes its result on the third check of the extension.
+    const extendWhile = async () => {
+      checks += 1;
+      if (checks === 3) await writeFile(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' }));
+      return true;
+    };
+    await expect(waitForResult(paths, 'r1', { timeoutMs: 0, pollMs: 5, extendWhile, activeMaxMs: 60_000 }))
+      .resolves.toEqual({ status: 'pass' });
+    expect(checks).toBe(3);
+    await expect(waitForResult(paths, 'r2', { timeoutMs: 20, pollMs: 5, extendWhile: async () => false })).rejects.toThrow(/Timed out/);
+    await expect(waitForResult(paths, 'r3', { timeoutMs: 20, pollMs: 5, extendWhile: async () => true, activeMaxMs: 80 })).rejects.toThrow(/Timed out/);
+  });
+
+  it('reads a result published as the extension ends before giving up', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    // The watcher publishes the result, then its heartbeat no longer names the request.
+    const extendWhile = async () => {
+      await writeFile(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' }));
+      return false;
+    };
+    await expect(waitForResult(paths, 'r1', { timeoutMs: 0, pollMs: 5, extendWhile })).resolves.toEqual({ status: 'pass' });
+  });
+});

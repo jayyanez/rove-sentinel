@@ -105,3 +105,13 @@ describe('standalone policy and onboarding', () => {
     expect((await listReadyPullRequests('unused', { repoSlug: 'owner/project', run, trustedAuthors: ['stranger'] })).map((pr) => pr.number)).toEqual([3]);
   });
 });
+
+describe('maxShards (1.14.0)', () => {
+  it('accepts 8 to 128 and stays omitted when unset', () => {
+    expect(normalizeConfig({ maxShards: 24 }).maxShards).toBe(24);
+    expect(normalizeConfig({})).not.toHaveProperty('maxShards');
+    expect(() => normalizeConfig({ maxShards: 4 })).toThrow(/8 to 128/);
+    expect(() => normalizeConfig({ maxShards: 200 })).toThrow(/8 to 128/);
+    expect(() => normalizeConfig({ maxShards: 9.5 })).toThrow(/8 to 128/);
+  });
+});

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runWatcher } from '../daemon.mjs';
+import { LIMITS as LIMITS_FOR_TEST } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import {
   adjudicationBatches,
@@ -2060,4 +2061,98 @@ describe('a streamed adjudicator in a round that fails closed (1.13.0 gate revie
     expect(error.message).toContain('1 shard reviewer(s) failed after retry');
     expect(coordinator).toHaveBeenCalledTimes(1);
   }, REAL_GIT_TEST_TIMEOUT);
+});
+
+describe('a change past one wave gets more shards (1.14.0)', () => {
+  async function bigRepository() {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-big-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'config', 'core.autocrlf', 'false');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    // About 1.3 MB of added code in 24 files: past one wave, under the cap.
+    for (let index = 0; index < 24; index += 1) {
+      const lines = Array.from({ length: 800 }, (_, line) => `export const value${index}_${line} = '${'v'.repeat(36)}';`);
+      await writeFile(path.join(root, 'src', `module${String(index).padStart(2, '0')}.ts`), `${lines.join('\n')}\n`);
+    }
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'big change');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-big-state-'));
+    temporaryDirectories.push(stateRoot);
+    return { root, base, head, stateRoot };
+  }
+
+  it('reviews it in more, smaller shards, and says so when the cap makes them large', async () => {
+    const { root, base, head, stateRoot } = await bigRepository();
+    const progress: string[] = [];
+    const shardSizes: number[] = [];
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => {
+      shardSizes.push(Buffer.byteLength(shard.patch, 'utf8'));
+      return { provider, roleIndex, summary: 'Reviewed.', candidates: [] };
+    });
+    const options = {
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'high' as const,
+      availableProviders: ['codex'], shardReviewer, progress: (line: string) => progress.push(line),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    };
+    const result = await runGate({ ...options, policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }) });
+    expect(result.status).toBe('pass');
+    expect(shardSizes.length).toBeGreaterThan(8);
+    expect(shardSizes.length).toBeLessThanOrEqual(16);
+    expect(Math.max(...shardSizes)).toBeLessThanOrEqual(LIMITS_FOR_TEST.inlineShardMaxBytes);
+    expect(progress.some((line) => /in 2 waves of up to 8/.test(line))).toBe(true);
+    // A project that keeps 8 shards gets the old shards, and a visible note.
+    shardSizes.splice(0);
+    progress.splice(0);
+    const capped = await runGate({ ...options, force: true, policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n', config: { maxShards: 8 } }) });
+    expect(capped.status).toBe('pass');
+    expect(shardSizes).toHaveLength(8);
+    expect(progress.some((line) => line.includes('needs more than the 8 shards this project allows'))).toBe(true);
+    expect(progress.some((line) => line.includes('alone has'))).toBe(false);
+  }, 60_000);
+});
+
+describe('the thin-review note names its cause (1.14.0 gate review)', () => {
+  it('blames one large file, not the shard cap, when the cap was not reached', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-onefile-'));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/rove.git');
+    await writeFile(path.join(root, 'README.md'), '# base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(path.join(root, 'src', 'huge.ts'), `${Array.from({ length: 4000 }, (_, line) => `export const v${line} = '${'v'.repeat(36)}';`).join('\n')}\n`);
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'one large file');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-gate-onefile-state-'));
+    temporaryDirectories.push(stateRoot);
+    const progress: string[] = [];
+    const result = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'human', risk: 'high',
+      policy: reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n' }),
+      availableProviders: ['codex'], progress: (line: string) => progress.push(line),
+      shardReviewer: async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed.', candidates: [] }),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result.status).toBe('pass');
+    const note = progress.find((line) => line.includes('more thinly'));
+    expect(note).toContain('src/huge.ts alone has');
+    expect(note).toContain('more shards cannot split it');
+    expect(note).not.toContain('maxShards');
+  }, 60_000);
 });

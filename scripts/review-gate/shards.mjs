@@ -630,6 +630,17 @@ export function partitionShards(patch, {
 }
 
 /**
+ * How many shards a patch gets (1.14.0): the `base` count (one wave of
+ * reviewers) up to `shardCountBytes` a shard, then one more shard per
+ * `shardCountBytes`, never more than `maxShards`. Up to ~830 KB that is the
+ * 8 shards a round always had.
+ */
+export function shardCountFor(patch, { base = LIMITS.shardMaxCountHigh, maxShards = LIMITS.maxReviewShards } = {}) {
+  const bytes = Buffer.byteLength(String(patch || ''), 'utf8');
+  return Math.max(1, Math.min(Math.max(base, maxShards), Math.max(base, Math.ceil(bytes / LIMITS.shardCountBytes))));
+}
+
+/**
  * Split one shard's patch into parts a reviewer reads whole, one call each
  * (1.11.1). Parts break between files where a file fits; a file larger than a
  * part is split between lines, and each continuation part starts with a line

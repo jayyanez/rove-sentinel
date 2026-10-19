@@ -32,13 +32,13 @@ export function sentinelLimits() {
       },
       {
         id: 'shards',
-        limit: `${LIMITS.shardMaxCountHigh}/${LIMITS.shardMaxCountMedium}/2`,
-        text: `A change is reviewed in shards of about ${LIMITS.shardTargetLines} changed lines, at most ${LIMITS.shardMaxCountHigh} in a high-risk round, ${LIMITS.shardMaxCountMedium} in a medium one and 2 in a low one; a larger change gets larger shards. A shard's reviewer has ${minutes(LIMITS.shardTimeoutMs)}, a minute more per further ${kb(LIMITS.shardTimeoutStepBytes)}, at most ${minutes(LIMITS.shardTimeoutMaxMs)}.`,
+        limit: `${LIMITS.shardMaxCountHigh} up to ~${Math.round((LIMITS.shardMaxCountHigh * LIMITS.shardCountBytes) / 1024)} KB, then up to ${LIMITS.maxReviewShards}`,
+        text: `A change is reviewed in shards of about ${LIMITS.shardTargetLines} changed lines: ${LIMITS.shardMaxCountHigh} in a high-risk round up to about ${Math.round((LIMITS.shardMaxCountHigh * LIMITS.shardCountBytes) / 1024)} KB of patch (${LIMITS.shardMaxCountMedium} in a medium one up to ${Math.round((LIMITS.shardMaxCountMedium * LIMITS.shardCountBytes) / 1024)} KB, 2 in a low one up to ${Math.round((2 * LIMITS.shardCountBytes) / 1024)} KB), then one more shard per ${kb(LIMITS.shardCountBytes)}, up to the project's maxShards (${LIMITS.maxReviewShards} by default, 8 to ${LIMITS.maxReviewShardsCeiling}). Reviewers run ${LIMITS.providerConcurrency} at a time, so 16 shards take a second wave, a few minutes. Past the cap shards grow and the report says they were reviewed more thinly. A shard's reviewer has ${minutes(LIMITS.shardTimeoutMs)}, a minute more per further ${kb(LIMITS.shardTimeoutStepBytes)}, at most ${minutes(LIMITS.shardTimeoutMaxMs)}.`,
       },
       {
         id: 'candidates',
         limit: String(LIMITS.maxCandidates),
-        text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis); more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
+        text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (4 per shard in a round of more than 12 shards, at most ${LIMITS.maxRoundCandidates}) ; ${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis; more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
       },
       {
         id: 'linters',
@@ -55,7 +55,7 @@ export function sentinelLimits() {
       {
         id: 'push',
         limit: `${LIMITS.maxPushCandidateRefs} refs, 1 unreviewed`,
-        text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review; the hook waits at most ${minutes(LIMITS.hookWaitTimeoutMs)} for it.`,
+        text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review. The hook waits ${minutes(LIMITS.hookWaitTimeoutMs)} for it, and longer while the watcher is reviewing that very request (at most ${Math.round(LIMITS.hookWaitActiveMaxMs / 3_600_000)} hours).`,
       },
       {
         id: 'push-input',
@@ -78,6 +78,11 @@ export function sentinelLimits() {
         rule: 'Split a changed source file over about 40 KB before a review',
         unnecessarySince: '1.13.0',
         why: 'A follow-up reviewer had to read each prior blocker\'s whole file, and a file over one tool output (~38 KB) failed the round closed. It now reads the code around the reported location, by line range.',
+      },
+      {
+        rule: 'Split a change whose review patch passes 4 MiB',
+        unnecessarySince: '1.14.0',
+        why: 'The bound is 8 MiB, and a change past about 830 KB gets more shards instead of larger ones (see maxShards).',
       },
       {
         rule: 'Keep changed lines under about 2 KB (table rows, minified text)',
@@ -115,3 +120,4 @@ export function formatLimits(limits = sentinelLimits()) {
     ...limits.superseded.map((entry) => `  - ${entry.rule}: unnecessary since ${entry.unnecessarySince}. ${entry.why}`),
   ].join('\n');
 }
+

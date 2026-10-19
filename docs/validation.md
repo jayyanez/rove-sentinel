@@ -1,5 +1,19 @@
 # Standalone validation record
 
+## 1.14.0 shards for large changes — 2026-10-19
+
+Deterministic tests cover the shard count by size (unchanged up to about
+830 KB), the per-project cap and its validation, the larger candidate bound
+and the thin-review note, including a gate run over a 1.3 MB change.
+
+One side-by-side live run reviewed the same real change, Tramoya's Colores
+batch 2 (3.6 MB review patch, 233 files), as a full high-risk round with both
+providers and Tramoya's installed policy, in isolated state: 1.13.0 (8
+shards) took 7.6 minutes and verified 7 P2 and 2 P3 findings; 1.14.0 (16
+shards, two waves) took 8.4 minutes and verified 16 P2 and 7 P3. One run
+each: it shows the time cost is small and the yield higher on this change,
+not a recall measurement; the findings were not triaged against the code.
+
 ## 1.13.0 recall and reference-map speed — 2026-10-18
 
 Deterministic tests cover the documentation skip (plain-text and MDX files are

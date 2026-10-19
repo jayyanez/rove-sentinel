@@ -460,3 +460,34 @@ describe('test files named by language convention (1.13.0 gate review)', () => {
     expect(owner?.kinds).toEqual(['code', 'tests']);
   });
 });
+
+describe('more shards for a larger change (1.14.0)', () => {
+  it('keeps one wave of shards up to about 830 KB and adds shards beyond it, up to the cap', async () => {
+    const { shardCountFor } = await import('../shards.mjs');
+    const patchOf = (kb: number) => 'x'.repeat(kb * 1024);
+    expect(shardCountFor(patchOf(500))).toBe(8);
+    expect(shardCountFor(patchOf(800))).toBe(8);
+    expect(shardCountFor(patchOf(1024))).toBe(10);
+    expect(shardCountFor(patchOf(1536))).toBe(15);
+    expect(shardCountFor(patchOf(5000))).toBe(16);
+    // 8 keeps the behavior before 1.14.0; a project may allow more.
+    expect(shardCountFor(patchOf(5000), { maxShards: 8 })).toBe(8);
+    expect(shardCountFor(patchOf(5000), { maxShards: 32 })).toBe(32);
+    // Low and medium risk keep their smaller first wave.
+    expect(shardCountFor(patchOf(10), { base: 2 })).toBe(2);
+    expect(shardCountFor(patchOf(700), { base: 4 })).toBe(7);
+  });
+
+  it('halves what each reviewer covers on a 4 MB change', () => {
+    const section = (index: number) => fileSection(`src/f${String(index).padStart(3, '0')}.ts`, 1).replace('+new 0', `+${'y'.repeat(40 * 1024)}`);
+    const patch = Array.from({ length: 100 }, (_, index) => section(index)).join('\n');
+    const before = partitionShards(patch, { maxShards: 8 });
+    const after = partitionShards(patch, { maxShards: 16 });
+    const largest = (shards: Array<{ patch: string }>) => Math.max(...shards.map((shard) => Buffer.byteLength(shard.patch, 'utf8')));
+    expect(before).toHaveLength(8);
+    expect(after).toHaveLength(16);
+    expect(largest(after)).toBeLessThanOrEqual(Math.ceil(largest(before) / 2) + 41 * 1024);
+    expect(after.flatMap((shard) => shard.files).length).toBe(100);
+  });
+});
+

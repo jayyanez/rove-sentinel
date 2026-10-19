@@ -1035,13 +1035,22 @@ export async function waitForResult(
     pollMs = LIMITS.queuePollMs,
     onProgress = () => {},
     shouldCancel = async () => null,
+    // Whether to keep waiting past timeoutMs (1.14.0): the review is still
+    // running. Bounded by hookWaitActiveMaxMs whatever it says.
+    extendWhile = async () => false,
+    activeMaxMs = LIMITS.hookWaitActiveMaxMs,
     signal,
   } = {},
 ) {
   const target = path.join(paths.results, `${requestId}.json`);
   const started = Date.now();
   let lastProgress = started;
-  while (Date.now() - started < timeoutMs) {
+  const waiting = async () => {
+    const elapsed = Date.now() - started;
+    if (elapsed < timeoutMs) return true;
+    return elapsed < Math.max(timeoutMs, activeMaxMs) && await extendWhile();
+  };
+  while (await waiting()) {
     if (signal?.aborted) throw signal.reason || new Error('Shared review wait aborted.');
     const result = await readJson(target);
     if (result) {
@@ -1057,6 +1066,14 @@ export async function waitForResult(
       onProgress(Date.now() - started);
     }
     await sleep(pollMs, { signal });
+  }
+  // The review may have published its result between the last read and the
+  // check that ended the wait (its heartbeat moves on as it completes): read
+  // once more before giving up.
+  const late = await readJson(target);
+  if (late) {
+    await removeStoredJson(target);
+    return late;
   }
   throw new Error(`Timed out waiting for shared review request ${requestId}.`);
 }
