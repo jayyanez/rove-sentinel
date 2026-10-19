@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.14.0 — a large change gets more reviewers, not thinner ones
+
+A round had at most 8 shard reviewers whatever the size of the change, so on
+a 4 MiB change each reviewer was given about 500 KB to cover, and reviewers
+of big shards finished almost as fast as small ones (2 minutes at 400 changed
+lines, 5 at 7,000 on Tramoya): they skimmed. The 4 MiB bound then refused
+anything larger.
+
+- **More shards past one wave.** Up to about 830 KB of patch a high-risk
+  round keeps its 8 shards. A larger change gets one more shard per 104 KB, up
+  to the project's `maxShards` (16 by default; 8 keeps the old behavior, at
+  most 128). Reviewers still run 8 at a time, so 16 shards take a second wave.
+  Past the cap shards grow, and the report and progress say they were
+  reviewed more thinly.
+- **Measured on a real 3.6 MB change** (Tramoya's Colores batch 2, full
+  high-risk round, both providers, one run each): 1.13.0 with 8 shards took
+  7.6 minutes and verified 7 P2 and 2 P3 findings; 1.14.0 with 16 shards took
+  8.4 minutes and verified 16 P2 and 7 P3.
+- **The review patch may be 8 MiB** (4 MiB before).
+- A round of more than 12 shards may adjudicate four candidates per shard, at
+  most 200.
+- A shard of up to 128 KB travels in the reviewer's prompt (96 KB before).
+
 ## 1.13.0 — fewer unreviewed changes, more context per reviewer, faster reviews
 
 A critical review of the engine against what external reviewers keep catching

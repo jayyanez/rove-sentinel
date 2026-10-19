@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.13.0';
+export const GATE_VERSION = '1.14.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -8,7 +8,9 @@ export const LIMITS = Object.freeze({
   // thousands of refs in one push. Past it the hook refuses in a controlled,
   // reported way rather than growing the buffer until Node's heap gives out.
   maxHookInputBytes: 4 * 1024 * 1024,
-  maxPatchBytes: 4 * 1024 * 1024,
+  // The review patch (1.14.0: 4 MiB before). Shards no longer grow with the
+  // change up to this bound; their number does (see maxReviewShards).
+  maxPatchBytes: 8 * 1024 * 1024,
   // Context around a change run in the review patch (1.12.0): up to this many
   // lines on each side, but no more than `patchContextSideBytes` of them, and
   // never fewer than `patchContextMinLines`. Lines alone made six one-line
@@ -26,6 +28,8 @@ export const LIMITS = Object.freeze({
   // structured-output bound killed coordinators that had already written JSON.
   maxProcessStderrBytes: 256 * 1024,
   maxCandidates: 50,
+  // A round of many shards may adjudicate four candidates a shard (1.14.0).
+  maxRoundCandidates: 200,
   maxReviewerCandidates: 12,
   // Candidates below this confidence do not reach adjudication. They are no
   // longer discarded without trace (1.13.0): up to `maxReportedLowConfidence`
@@ -59,6 +63,23 @@ export const LIMITS = Object.freeze({
   // whole shard in one bounded read instead of a 100-300 KB diff blob
   // behind a 12-read budget. A shard reviewer verifies, it does not hunt.
   shardTargetLines: 500,
+  // More shards for a larger change (1.14.0). Up to ~830 KB a round has the 8
+  // shards it always had (one wave of the 8 reviewers that run at once).
+  // Past it, a shard stays at about this size and the change gets more
+  // shards, up to the project's maxShards (16 by default: at most a second
+  // wave, measured at about +2 to 4 minutes); only past that do shards grow.
+  // Before 1.14.0 a round had at most 8 shards whatever the size, so a 4 MiB
+  // change gave each reviewer ~500 KB to cover; shard time hardly grew with
+  // size (about 2 minutes at 400 changed lines, 5 at 7,000: Tramoya,
+  // 2026-10-18), because reviewers skimmed.
+  shardWaveBytes: 128 * 1024,
+  // Shards are counted at this size, below the 128 KB a shard may reach, so
+  // packing whole files into them stays under it.
+  shardCountBytes: 104 * 1024,
+  maxReviewShards: 16,
+  maxReviewShardsCeiling: 128,
+  // Shard caps of a single round kept for the follow-up re-verification
+  // split; the full and follow-up waves use maxReviewShards.
   shardMaxCountHigh: 8,
   shardMaxCountMedium: 4,
   shardToolCallBudget: 8,
@@ -92,7 +113,7 @@ export const LIMITS = Object.freeze({
   // (or an adjudication batch) when it fits the second. Larger material is
   // read from files, in parts, as before.
   inlineRequiredMaxBytes: 96 * 1024,
-  inlineShardMaxBytes: 96 * 1024,
+  inlineShardMaxBytes: 128 * 1024,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.
   coordinatorBatchSize: 5,

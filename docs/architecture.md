@@ -47,7 +47,11 @@ change introduces. A PR description does not reach the review.
 ## Review and verification stages
 
 Low-risk work uses bounded shards. Medium and high risk add a scout and focused
-hypothesis reviews. Shards cover the included hunks; they do not guarantee that
+hypothesis reviews. A high-risk round has 8 shards up to about 830 KB of
+patch; a larger change gets one more shard per 104 KB, up to the project's
+`maxShards` (16 by default), so each reviewer covers about the same amount of
+code. Reviewers run 8 at a time, so 16 shards take a second wave. Past the cap
+shards grow again, and the report says they were reviewed more thinly. Shards cover the included hunks; they do not guarantee that
 a model understood or detected every defect. A changed test shares a shard with
 the changed file of the same name it tests (`a.test.ts`, `test_a.py`,
 `a_test.go`, `ATest.java`) when the shard bounds allow, and that reviewer

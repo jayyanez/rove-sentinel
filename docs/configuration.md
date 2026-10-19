@@ -24,6 +24,7 @@ Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 | `trustedAuthors` | GitHub logins allowed for automatic same-repository PR review; empty means the repository owner |
 | `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
 | `models` | Optional per-provider `model`, `effort`, `maxEffort` and per-role `roles`; see [models](models.md) |
+| `maxShards` | Most shards one round of a large change may have, 8 to 128; 16 by default. Each 8 more add a wave of reviewers (a few minutes) and read less per reviewer |
 | `lintLanes` | Turn a built-in linter lane off: `{ "ruff": false }`; all four are on by default |
 | `lintCommands` | Project lint commands to run in the review checkout; see below |
 
