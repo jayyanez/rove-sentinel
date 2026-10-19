@@ -55,7 +55,7 @@ export function sentinelLimits() {
       {
         id: 'push',
         limit: `${LIMITS.maxPushCandidateRefs} refs, 1 unreviewed`,
-        text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review; the hook waits at most ${minutes(hookWaitTimeoutFor())} for it with the default maxShards, ${minutes(LIMITS.hookWaitPerExtraWaveMs)} more for each further wave of 8 shards a project allows.`,
+        text: `One push may carry at most ${LIMITS.maxPushCandidateRefs} refs to check and at most one that still needs a review; the hook waits at most ${minutes(hookWaitTimeoutFor())} for it with the default maxShards (a worst-case bound), ${minutes(LIMITS.hookWaitPerExtraWaveMs)} more for each further wave of 8 shards a project allows.`,
       },
       {
         id: 'push-input',

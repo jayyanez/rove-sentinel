@@ -153,7 +153,8 @@ to finding identity and lineage; P0/P1 are not deferrable.
 One watcher serializes reviews for a repository, while a review can use up to
 eight provider subprocesses at once. Medium/high rounds start from four/eight
 shards and a large change gets more (see above). The text patch limit is
-8 MiB; the hook waits 168 minutes with the default `maxShards`. An ordinary push may
+8 MiB; the hook waits 204 minutes with the default `maxShards` (a bound for the worst
+case of two reviews, not a typical time). An ordinary push may
 carry at most sixteen candidate refs and at most one that still needs review.
 The default retention is thirty days, capped at eighty attestations and fifty
 reports; audit events have separate bounds. See `constants.mjs` for all limits.

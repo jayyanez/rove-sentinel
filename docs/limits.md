@@ -40,7 +40,7 @@ When a review still fails, read the report's own account of why
 | Confidence floor | 50 | Not adjudicated; the report keeps up to 40 |
 | Linters | shellcheck, actionlint, gitleaks, ruff when installed; project `lintCommands` from installed policy | A missing tool is a note in the report, not a pass |
 | Documentation skip | Only `.md`, `.markdown`, `.rst`, `.adoc` outside the review policy | Everything else, `.txt` and `.mdx` included, is reviewed |
-| One push | 16 refs to check, 1 still needing review; the hook waits 168 minutes (48 more per further wave of 8 shards a project allows) | The push is refused |
+| One push | 16 refs to check, 1 still needing review; the hook waits at most 204 minutes, a worst-case bound (84 more per further wave of 8 shards a project allows) | The push is refused |
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
