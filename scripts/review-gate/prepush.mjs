@@ -16,7 +16,6 @@ import { startDaemonDetached } from './daemon.mjs';
 import { acquireReviewLease } from './maintenance.mjs';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
-import { hookWaitTimeoutFor } from './limits.mjs';
 import { undisposedRefusal } from './dispositions.mjs';
 import { createGateContext, formatGateResult, runGate } from './gate.mjs';
 import {
@@ -515,7 +514,13 @@ export async function runPrePush({
         });
         output(`Shared review gate: checking ${branch} at ${targetSha.slice(0, 12)}…`);
         response = await waitForHookResult(context.paths, request.id, {
-          timeoutMs: hookWaitTimeoutFor(reviewPolicy.config),
+          // Past the base bound the wait goes on while the healthy watcher is
+          // reviewing this request (1.14.0): a large change takes more waves.
+          async extendWhile() {
+            const heartbeat = await readJson(context.paths.heartbeat).catch(() => null);
+            return heartbeat?.activity === 'review' && heartbeat.requestId === request.id
+              && !(await waitingWatcherProblem(context.paths, reviewPolicy.policyDigest));
+          },
           onProgress(elapsedMs) {
             output(`Shared review gate: still reviewing (${Math.round(elapsedMs / 1000)}s elapsed)…`);
           },

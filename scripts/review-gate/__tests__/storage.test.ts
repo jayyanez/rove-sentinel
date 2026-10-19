@@ -753,3 +753,20 @@ describe('shared review local state', () => {
     await expect(access(`${target}.previous`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
+
+describe('the hook waits for an active review past its base bound (1.14.0)', () => {
+  it('keeps waiting while the review runs, and stops at the absolute bound or when it is idle', async () => {
+    const { mkdtemp: makeTemporary, writeFile: write } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { ensureState: ensure, waitForResult: wait } = await import('../storage.mjs');
+    const paths = await ensure(await makeTemporary(path.join(os.tmpdir(), 'rove-hook-active-')));
+    let checks = 0;
+    setTimeout(() => write(path.join(paths.results, 'r1.json'), JSON.stringify({ status: 'pass' })), 120);
+    await expect(wait(paths, 'r1', { timeoutMs: 20, pollMs: 10, extendWhile: async () => { checks += 1; return true; }, activeMaxMs: 5_000 }))
+      .resolves.toEqual({ status: 'pass' });
+    expect(checks).toBeGreaterThan(0);
+    await expect(wait(paths, 'r2', { timeoutMs: 20, pollMs: 10, extendWhile: async () => false })).rejects.toThrow(/Timed out/);
+    await expect(wait(paths, 'r3', { timeoutMs: 20, pollMs: 10, extendWhile: async () => true, activeMaxMs: 80 })).rejects.toThrow(/Timed out/);
+  });
+});

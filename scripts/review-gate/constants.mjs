@@ -171,12 +171,12 @@ export const LIMITS = Object.freeze({
   // One active high-risk review plus one queued review can each consume the
   // full reviewer + coordinator budget. Keep the hook bound above that total.
   hookWaitTimeoutMs: 120 * 60 * 1000,
-  // Each wave of reviewers past the first that a project's maxShards allows
-  // adds this much to the hook's wait (1.14.0). One wave of 8 shards of up to
-  // 128 KB costs at most a 12-minute attempt plus, for a shard reported
-  // incomplete, its part-by-part retry: 8 shards x 6 parts of 5 minutes on 8
-  // slots, 30 minutes; 42 in all, for the active review and the queued one.
-  hookWaitPerExtraWaveMs: 84 * 60 * 1000,
+  // The hook keeps waiting past hookWaitTimeoutMs while the healthy watcher
+  // is reviewing the very request it waits for (1.14.0): a review's every
+  // stage has its own time limit, so a larger change (more shard waves) ends
+  // on its own, and a stopped watcher is caught by its heartbeat. This bounds
+  // that wait in any case.
+  hookWaitActiveMaxMs: 12 * 60 * 60 * 1000,
   hookProgressEveryMs: 30 * 1000,
   queuePollMs: 1000,
   githubPollMs: 60 * 1000,

@@ -491,13 +491,3 @@ describe('more shards for a larger change (1.14.0)', () => {
   });
 });
 
-describe('the hook waits long enough for the shards a project allows (1.14.0)', () => {
-  it('adds a wave's worst case, twice, per further wave of eight shards', async () => {
-    const { hookWaitTimeoutFor } = await import('../limits.mjs');
-    expect(hookWaitTimeoutFor({ maxShards: 8 })).toBe(120 * 60 * 1000);
-    expect(hookWaitTimeoutFor({})).toBe(204 * 60 * 1000);
-    expect(hookWaitTimeoutFor({ maxShards: 32 })).toBe(372 * 60 * 1000);
-    // A wave: a 12-minute attempt, then 8 shards x 6 parts x 5 minutes on 8 slots; two reviews.
-    expect(hookWaitTimeoutFor({ maxShards: 64 })).toBeGreaterThanOrEqual(120 * 60 * 1000 + 2 * 7 * (12 + 30) * 60 * 1000);
-  });
-});
