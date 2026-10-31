@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **`install --no-github`.** A second computer on one repository keeps its hook
+  and its local reviews, and its watcher does not review pull requests too.
+
 ## 1.14.0 — a large change gets more reviewers, not thinner ones
 
 A round had at most 8 shard reviewers whatever the size of the change, so on

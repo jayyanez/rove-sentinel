@@ -5,6 +5,7 @@ import { isatty } from 'node:tty';
 import { fileURLToPath } from 'node:url';
 
 import { GATE_VERSION, LIMITS } from './constants.mjs';
+import { atomicWriteJson, ensureState } from './storage.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
 import { formatLimits, sentinelLimits } from './limits.mjs';
@@ -359,6 +360,10 @@ async function main() {
     return;
   }
   if (command === 'install') {
+    if (!options['dry-run']) {
+      const paths = await ensureState((await createGateContext(repoRoot)).stateRoot);
+      await atomicWriteJson(paths.watcherOptions, { github: options.github !== false });
+    }
     const result = await installGate({ repoRoot, dryRun: options['dry-run'], start: options.start !== false,
       preservePolicy: Boolean(options['preserve-policy']) });
     if (!options['dry-run'] && !options['preserve-policy']) await configureAutomaticUpdates(await createGateContext(repoRoot), process.env.ROVE_SENTINEL_AUTO_UPDATE !== '0', { onlyIfMissing: true });

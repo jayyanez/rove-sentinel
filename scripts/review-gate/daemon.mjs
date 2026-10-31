@@ -22,6 +22,7 @@ import {
   recordEvent,
   readJson,
   readPause,
+  readWatcherGithub,
   removeStoredJson,
   recoverClaims,
   sleep,
@@ -280,6 +281,7 @@ export async function runWatcher({
   once = false,
   github = true,
   progress = () => {},
+  syncPulls = syncPullRequests,
   recoverResources = recoverStaleReviewResources,
   recoverQueuedClaims = recoverClaims,
   pause = pauseGate,
@@ -290,6 +292,9 @@ export async function runWatcher({
   const context = await createGateContext(repoRoot, { stateRoot });
   try {
     context.policy = await loadWatcherPolicy(context);
+    // Every start of this watcher, the scheduler's or a hook's, honours the
+    // machine's choice: `install --no-github`.
+    github = github && await readWatcherGithub(context.paths);
     await clearDaemonError(context.paths);
     const lock = await acquireDaemonLock(context.paths);
     if (!lock) return { alreadyRunning: true, stateRoot: context.stateRoot };
@@ -344,7 +349,7 @@ export async function runWatcher({
               await runWithHeartbeat(
                 context,
                 { activity: 'github-review' },
-                () => syncPullRequests({
+                () => syncPulls({
                   context,
                   runGate: (options) => runGate({ ...options, policy: context.policy }),
                   progress,

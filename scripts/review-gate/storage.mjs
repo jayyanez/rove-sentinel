@@ -96,6 +96,7 @@ export function statePaths(root) {
     daemonError: path.join(root, 'daemon-error.json'),
     paused: path.join(root, 'paused.json'),
     policy: path.join(root, 'policy.json'),
+    watcherOptions: path.join(root, 'watcher-options.json'),
   };
 }
 
@@ -107,6 +108,11 @@ export async function ensureState(root) {
     ),
   );
   return paths;
+}
+
+/** This machine's choice that its watcher leaves GitHub alone. */
+export async function readWatcherGithub(paths) {
+  return (await readJson(paths.watcherOptions, null))?.github !== false;
 }
 
 export async function atomicWriteJson(target, value) {

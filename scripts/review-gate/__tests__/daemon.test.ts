@@ -22,6 +22,34 @@ import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
+describe('a computer whose watcher leaves GitHub alone', () => {
+  async function pollsGitHub(options?: { github: boolean }) {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    if (options) await atomicWriteJson(paths.watcherOptions, options);
+    const syncPulls = vi.fn(async () => {});
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, syncPulls,
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      return syncPulls.mock.calls.length > 0;
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  }
+
+  it('reviews no pull request once installed with --no-github, whoever starts it', async () => {
+    expect(await pollsGitHub({ github: false })).toBe(false);
+  });
+
+  it('polls GitHub by default, and after installing again without the flag', async () => {
+    expect(await pollsGitHub()).toBe(true);
+    expect(await pollsGitHub({ github: true })).toBe(true);
+  });
+});
+
 describe('review watcher heartbeat coverage', () => {
   it('keeps the pause acknowledgement visible during the idle wait for updater handoff', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-pause-ack-'));
