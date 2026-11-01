@@ -106,13 +106,15 @@ export function windowsTaskXml({ user, command, args }) {
 }
 
 /**
- * A task an earlier engine registered from an elevated shell belongs to
- * administrators: a limited token may run and end it, but neither replace nor
- * delete it (measured). Once replaced from an elevated shell, it is the user's.
+ * A task registered from an elevated shell belongs to administrators, whatever
+ * its trigger: a limited token may run and end it, but neither replace nor delete
+ * it, and an elevated install leaves it so (all measured). Only a task the
+ * limited token registers itself stays its own, so the way out is to delete the
+ * task once, as an administrator, and to install from the limited shell.
  */
-export function windowsTaskRefusal(error, taskExisted) {
+export function windowsTaskRefusal(error, taskExisted, taskName) {
   if (!taskExisted || !/access is denied/i.test(error?.message || '')) return error;
-  return new Error('The review watcher\'s scheduled task was registered by an administrator, so this limited shell cannot replace it. Run npx --no-install rove-sentinel install once from an elevated shell; after that the task is your own, and no install or update needs elevation.', { cause: error });
+  return new Error(`The review watcher's scheduled task was registered from an elevated shell, so this limited shell cannot replace it. From an elevated shell run schtasks /Delete /TN ${taskName} /F, then run npx --no-install rove-sentinel install from this shell, not the elevated one: the task is then your own, and no install or update needs elevation.`, { cause: error });
 }
 
 /** The account a task of this user's own logon names. */
@@ -612,7 +614,7 @@ export async function executeInstallTransaction(
       try {
         await run(plan.create.command, plan.create.args, { timeoutMs: 120_000 });
       } catch (error) {
-        throw windowsTaskRefusal(error, schedulerWasInstalled);
+        throw windowsTaskRefusal(error, schedulerWasInstalled, plan.taskName);
       }
       schedulerReplaced = schedulerWasInstalled;
       if (start) {

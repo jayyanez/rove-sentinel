@@ -270,13 +270,14 @@ describe('review-gate native installer plans', () => {
     expect(plan.taskXml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
   });
 
-  it('says how to take over a task an earlier engine registered as an administrator, and only then', () => {
+  it('says how to take over a task registered from an elevated shell, and only then', () => {
     const denied = new Error('schtasks.exe exited with code 1: ERROR: Access is denied.');
-    expect(windowsTaskRefusal(denied, true).message).toMatch(/once from an elevated shell/);
-    expect(windowsTaskRefusal(denied, true).cause).toBe(denied);
-    expect(windowsTaskRefusal(denied, false)).toBe(denied);
+    expect(windowsTaskRefusal(denied, true, 'Example-Task').message).toContain('schtasks /Delete /TN Example-Task /F');
+    expect(windowsTaskRefusal(denied, true, 'Example-Task').message).toContain('install from this shell');
+    expect(windowsTaskRefusal(denied, true, 'Example-Task').cause).toBe(denied);
+    expect(windowsTaskRefusal(denied, false, 'Example-Task')).toBe(denied);
     const other = new Error('schtasks.exe exited with code 1: ERROR: The task XML is malformed.');
-    expect(windowsTaskRefusal(other, true)).toBe(other);
+    expect(windowsTaskRefusal(other, true, 'Example-Task')).toBe(other);
   });
 
   it('does not try again a replacement the scheduler refused, which changed nothing', async () => {
@@ -291,7 +292,7 @@ describe('review-gate native installer plans', () => {
       });
       await expect(executeInstallTransaction({
         context: { paths, repoRoot: stateRoot, stateRoot }, plan, policy: { policyDigest: 'p' }, currentHooks: '.githooks', start: false,
-      }, { run })).rejects.toThrow(/once from an elevated shell/);
+      }, { run })).rejects.toThrow(/schtasks \/Delete/);
       expect(run.mock.calls.filter(([, args]) => args.includes('/Create'))).toHaveLength(1);
     } finally {
       await rm(stateRoot, { recursive: true, force: true });

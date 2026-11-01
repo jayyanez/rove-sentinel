@@ -5,10 +5,11 @@
 - **The Windows watcher needs no administrator.** Its logon task now names its own user.
   `schtasks /SC ONLOGON` means any user's logon, so `install` failed with `Access is denied`
   from an administrator's limited token, and an automatic update, which installs from the
-  watcher's limited token, could not replace the task. **A task an earlier engine registered
-  from an elevated shell stays an administrator's:** where the watcher runs limited, run
-  `install` once from an elevated shell to take it over, or automatic updates keep failing
-  as they did. A shell without elevation is told so.
+  watcher's limited token, could not replace the task. **A task registered from an elevated
+  shell, by this engine or an earlier one, stays an administrator's,** and a limited shell
+  may neither replace nor delete it. Where the watcher runs limited, delete that task once
+  as an administrator and run `install` from the limited shell, or automatic updates keep
+  failing as they did. The limited shell is told how.
 - **A scheduled watcher finds what the installing shell found.** A task starts with the
   stored environment, so a watcher whose Git or provider CLI is on `PATH` only through a
   profile or an activation script stopped at once. `watch.cmd` now carries the shell's
