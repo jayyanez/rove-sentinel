@@ -111,11 +111,13 @@ export async function ensureState(root) {
 }
 
 /** Whether this machine's watcher polls GitHub. An install under way says what
- *  it is choosing, for as long as its process lives: one killed midway leaves
+ *  it is choosing, while its process lives and for no longer than an install
+ *  can last, whatever process comes to reuse its id: one killed midway leaves
  *  the choice as it was, with nothing to undo. */
 export async function readWatcherGithub(paths) {
   const options = await readJson(paths.watcherOptions, null);
-  if (Number.isInteger(options?.pending?.pid) && processIsAlive(options.pending.pid)) return options.pending.github !== false;
+  const pending = options?.pending;
+  if (Number.isInteger(pending?.pid) && Date.now() < pending.until && processIsAlive(pending.pid)) return pending.github !== false;
   return options?.github !== false;
 }
 

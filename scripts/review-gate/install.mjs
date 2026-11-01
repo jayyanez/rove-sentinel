@@ -506,7 +506,7 @@ export async function executeInstallTransaction(
     // at once, and it is gone if this install is killed (readWatcherGithub)
     if (github !== undefined) {
       const before = await readJson(context.paths.watcherOptions, null);
-      await atomicWriteJson(context.paths.watcherOptions, { github: before?.github !== false, pending: { github, pid: process.pid } });
+      await atomicWriteJson(context.paths.watcherOptions, { github: before?.github !== false, pending: { github, pid: process.pid, until: Date.now() + LIMITS.installPendingMs } });
     }
     if (configuredHooks) {
       await git(context.repoRoot, ['config', 'core.hooksPath', '.githooks']);

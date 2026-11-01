@@ -24,7 +24,7 @@ import { reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
 describe('a computer whose watcher leaves GitHub alone', () => {
-  async function pollsGitHub(options?: { github: boolean; pending?: { github: boolean; pid: number } }) {
+  async function pollsGitHub(options?: { github: boolean; pending?: { github: boolean; pid: number; until: number } }) {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));
     const paths = await ensureState(stateRoot);
     await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
@@ -51,10 +51,13 @@ describe('a computer whose watcher leaves GitHub alone', () => {
   });
 
   it('honours an install under way from the first poll, and forgets one that was killed', async () => {
-    expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid } })).toBe(false);
+    const until = Date.now() + 60_000;
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid, until } })).toBe(false);
+    // a live process past the time an install can last has reused the id
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid, until: Date.now() - 1 } })).toBe(true);
     const dead = Number(spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim());
-    expect(await pollsGitHub({ github: true, pending: { github: false, pid: dead } })).toBe(true);
-    expect(await pollsGitHub({ github: false, pending: { github: true, pid: dead } })).toBe(false);
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: dead, until } })).toBe(true);
+    expect(await pollsGitHub({ github: false, pending: { github: true, pid: dead, until } })).toBe(false);
   });
 });
 
