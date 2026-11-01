@@ -114,8 +114,9 @@ configuration. Contributors without access skip this section.
 Update affected guides when behavior changes. Every release updates
 [limits](docs/limits.md) and `scripts/review-gate/limits.mjs` (`rove-sentinel
 limits`): the current limits and the workarounds it makes unnecessary, so
-consuming projects never follow a rule from an earlier engine. Windows is the qualified platform;
-do not claim macOS/Linux support or new provider integrations without evidence.
+consuming projects never follow a rule from an earlier engine. Windows is the qualified platform,
+and macOS on Apple silicon as a second computer; do not claim other platform
+support or new provider integrations without evidence.
 Keep limitations and the [validation record](docs/validation.md) accurate.
 
 Never export private Rove source, logs, credentials, or personal fixtures. Use

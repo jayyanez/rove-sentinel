@@ -50,7 +50,7 @@ posts status comments. It does not merge PRs or replace GitHub branch protection
 
 ## What you need
 
-- Windows for the first supported release; macOS and Linux qualification is pending.
+- Windows, or macOS on Apple silicon as a second computer; Linux qualification is pending.
 - Node.js 22+, Git, and authenticated GitHub CLI (`gh`).
 - **At least one of Claude Code or Codex CLI**, separately installed and on PATH.
 - Claude Code authenticated through a Claude subscription; Codex through ChatGPT.

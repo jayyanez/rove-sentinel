@@ -8,13 +8,14 @@ import { describe, expect, it } from 'vitest';
 
 const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
   .split(/\r?\n/)
-  .filter((file) => file && existsSync(file) && !/\.(tgz|png|lock|ya?ml)$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
+  .filter((file) => file && existsSync(file) && !/\.(tgz|png)$|^pnpm-lock\.yaml$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
 const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 
 const PRIVATE = [
   ['a tailnet address', /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
+  ['a private network address', /\b(?:192\.168|10\.(?!0\.\d{4,5}\b)\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/],
   ['a tailnet name', /\b[a-z0-9-]+\.[a-z0-9-]+\.ts\.net\b/i],
-  ['a path on a computer', /\b[A-Z]:[\\/]Workspaces\b|\/Users\/(?!me\b|example\b|runner\b)[a-z]/],
+  ['a path on a computer', /\b[A-Z]:[\\/]+Workspaces\b|\b[A-Z]:[\\/]+Users[\\/]+(?!me\b|example\b|runner\b)\w|\/(?:Users|home)\/(?!me\b|example\b|runner\b)\w/i],
   ['an email address', /\b[\w.+-]+@(?!example\.|github\.com|users\.noreply\.github\.com|noreply\.|anthropic\.com)[a-z0-9-]+\.[a-z]{2,}\b/i]
 ];
 

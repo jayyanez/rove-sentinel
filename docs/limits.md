@@ -60,7 +60,7 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 ## Limits that remain
 
-These are real in 1.14.0; work within them rather than around them.
+These are real in 1.15.0; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:
@@ -74,4 +74,5 @@ These are real in 1.14.0; work within them rather than around them.
   `git diff --unified=80 "$(git merge-base origin/main HEAD)...HEAD" | wc -c`.
 - AI review can miss defects and report false ones; a PASS is not a
   guarantee. Reference discovery is a line lexer, not a parser.
-- Windows is the qualified platform ([support](support.md)).
+- Windows is the qualified platform; macOS on Apple silicon is qualified as a
+  second computer ([support](support.md)).

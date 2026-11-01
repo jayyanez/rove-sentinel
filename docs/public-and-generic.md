@@ -22,11 +22,15 @@ Sentinel behaves the same for every repository. Anything one project needs is
 configuration that any project could set, named for what it does, never for who
 asked for it. A hard-coded folder layout, framework or project name is a defect.
 
+Two remain, and are being generalized: the Clippy lane's `src-tauri` folder and the
+`guiEvidence` mode named after one project.
+
 ## How this is kept
 
-`publicRepository.test.ts` runs with the suite and fails on a private address, a
-personal path, a real email address, or a repository of the maintainer other than
-this one. Names it cannot know go, one per line, in the ignored file
+`publicRepository.test.ts` runs with the suite and reads every tracked text file.
+It fails on a tailnet or private network address, a tailnet name, a personal folder
+on Windows, macOS or Linux, a real email address, or another repository of the
+maintainer's that is not public. Names it cannot know go, one per line, in the ignored file
 `.private-names`, which only a maintainer's machine holds, so the list of what is
 private is never published. The rest is on whoever writes the change: read the diff
 and the text around it for such names before pushing.
