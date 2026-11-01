@@ -1,4 +1,4 @@
-import { access, open } from 'node:fs/promises';
+import { access, open, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -24,7 +24,7 @@ import {
 // it never fails the review and it never becomes a PASS on its own.
 
 const MARKDOWN_FILE = /\.(?:md|markdown)$/i;
-const RUST_FILE = /^src-tauri\/.*\.rs$/i;
+const RUST_FILE = /\.rs$/i;
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
 const MARKDOWNLINT_CONFIG_FILES = ['.markdownlint.jsonc', '.markdownlint.json', '.markdownlint.yaml', '.markdownlint.yml'];
 
@@ -289,9 +289,10 @@ async function markdownlintLaneBody({
  * Parse `cargo clippy --message-format json` output. Warnings count only on
  * added lines; a compile ERROR is reported wherever it is, because a head
  * that does not compile is a defect the deterministic gates never see
- * (`pnpm verify` builds no Rust).
+ * (`pnpm verify` builds no Rust). `spanRoot` is the folder rustc ran in, which
+ * its file names are relative to: the crate's, or its workspace's.
  */
-export function parseClippyMessages(output, { addedLines, crateRoot = 'src-tauri', maxFindings = LIMITS.maxDeterministicFindings } = {}) {
+export function parseClippyMessages(output, { addedLines, crateRoot = '', spanRoot = crateRoot, maxFindings = LIMITS.maxDeterministicFindings } = {}) {
   const findings = [];
   let warnings = 0;
   let errors = 0;
@@ -323,14 +324,14 @@ export function parseClippyMessages(output, { addedLines, crateRoot = 'src-tauri
         index: findings.length,
         rule,
         title: `Rust compile error: ${message.message}`,
-        file: `${crateRoot}/Cargo.toml`,
+        file: path.posix.join(crateRoot, 'Cargo.toml'),
         line: null,
         detail: `rustc reported an error without a source location in this head: ${message.message}`,
         priority: 'P2',
       }));
       continue;
     }
-    const file = normalizePath(path.posix.join(crateRoot, normalizePath(span.file_name)));
+    const file = normalizePath(path.posix.join(spanRoot, normalizePath(span.file_name)));
     const line = span.line_start;
     const onAddedLine = addedLines?.get(file)?.has(line);
     if (message.level === 'warning' && !onAddedLine) continue;
@@ -360,35 +361,77 @@ export function parseClippyMessages(output, { addedLines, crateRoot = 'src-tauri
 }
 
 /**
- * Clippy over the head checkout's `src-tauri` crate. Uses a dedicated target
- * directory under the gate's state root so the cache is warm across reviews
- * without contending with the developer's own build. The first run on a
- * machine is a cold check and may hit the bound; the lane then reports a
- * timeout note and the next run resumes from the cached artifacts.
+ * The crates of the changed Rust files, as folders of the checkout ('' is its
+ * root). Installed policy can list them (`clippyCrates`): a file then belongs to
+ * the deepest listed folder that holds it. Otherwise crates are found by their
+ * manifests: every one on the way to the file, because a crate nested in another
+ * is usually built by it and can break it. The one at the root counts only when
+ * there is no other, for in a repository of several crates it is usually just
+ * their workspace, and may be unrelated to them.
  */
-export async function runClippyLane({
-  checkout,
-  files,
-  patch,
-  stateRoot,
-  run = runProcess,
-  timeoutMs = LIMITS.clippyTimeoutMs,
-  env = process.env,
-}) {
-  const targets = (files || []).map(normalizePath).filter((file) => RUST_FILE.test(file));
-  if (!targets.length) return { lane: 'clippy', status: 'skipped', note: 'no Rust file under src-tauri changed', findings: [] };
-  const crateDir = path.join(checkout, 'src-tauri');
-  try {
-    await access(path.join(crateDir, 'Cargo.toml'));
-  } catch {
-    return { lane: 'clippy', status: 'skipped', note: 'src-tauri/Cargo.toml is absent at head', findings: [] };
+export async function clippyCratesFor({ checkout, files, configured = null }) {
+  const manifests = new Map();
+  const hasManifest = (folder) => {
+    if (!manifests.has(folder)) {
+      manifests.set(folder, access(path.join(checkout, folder, 'Cargo.toml')).then(() => true, () => false));
+    }
+    return manifests.get(folder);
+  };
+  const listed = configured?.map((folder) => (folder === '.' ? '' : folder))
+    .sort((left, right) => right.length - left.length);
+  const crates = new Set();
+  for (const file of files) {
+    if (listed) {
+      const crate = listed.find((folder) => !folder || file.startsWith(`${folder}/`));
+      if (crate !== undefined && await hasManifest(crate)) crates.add(crate);
+      continue;
+    }
+    const parts = file.split('/').slice(0, -1);
+    const above = parts.map((_, index) => parts.slice(0, index + 1).join('/'));
+    const holding = [];
+    for (const folder of above) {
+      if (await hasManifest(folder)) holding.push(folder);
+    }
+    if (!holding.length && await hasManifest('')) holding.push('');
+    for (const folder of holding) crates.add(folder);
   }
-  let result;
+  return [...crates].sort();
+}
+
+/**
+ * The folder of the checkout rustc runs in for a crate: Cargo runs it in the
+ * workspace's root, as Cargo itself reports, and that is the crate's own folder
+ * outside a workspace. Anything unexpected falls back to the crate.
+ */
+async function rustcFolder({ checkout, crate, run, env, timeoutMs }) {
+  const located = await run('cargo', ['locate-project', '--workspace', '--message-format', 'plain'], {
+    cwd: path.join(checkout, crate),
+    env,
+    timeoutMs,
+    allowFailure: true,
+    maxOutputBytes: 64 * 1024,
+  });
+  const manifest = String(located.stdout || '').trim();
+  if (located.code !== 0 || !path.isAbsolute(manifest) || path.basename(manifest) !== 'Cargo.toml') return crate;
   try {
+    const relative = path.relative(await realpath(checkout), await realpath(path.dirname(manifest)));
+    return relative.startsWith('..') || path.isAbsolute(relative) ? crate : normalizePath(relative);
+  } catch {
+    return crate;
+  }
+}
+
+async function clippyCrate({ checkout, crate, added, stateRoot, run, deadline, boundMs, env }) {
+  const crateDir = path.join(checkout, crate);
+  const remaining = () => Math.max(1, deadline - Date.now());
+  let result;
+  let spanRoot;
+  try {
+    spanRoot = await rustcFolder({ checkout, crate, run, env, timeoutMs: remaining() });
     result = await run('cargo', ['clippy', '--no-deps', '--quiet', '--message-format', 'json'], {
       cwd: crateDir,
       env: { ...env, CARGO_TARGET_DIR: path.join(stateRoot, 'cargo-target') },
-      timeoutMs,
+      timeoutMs: remaining(),
       allowFailure: true,
       maxOutputBytes: 16 * 1024 * 1024,
     });
@@ -396,31 +439,84 @@ export async function runClippyLane({
     // The §5 process-tree fence applies to every subprocess the gate launches.
     if (processTreeCleanupFailureCode(error)) throw error;
     if (error?.code === 'TIMEOUT') {
-      return { lane: 'clippy', status: 'timeout', note: `cargo clippy exceeded ${Math.round(timeoutMs / 60000)} minutes (a cold cache resumes on the next review)`, findings: [] };
+      return { status: 'timeout', note: `cargo clippy exceeded ${Math.round(boundMs / 60000)} minutes (a cold cache resumes on the next review)`, findings: [] };
     }
     if (error?.code === 'ENOENT' || /ENOENT/.test(error?.message || '')) {
-      return { lane: 'clippy', status: 'unavailable', note: 'cargo is not installed on this host', findings: [] };
+      return { status: 'unavailable', note: 'cargo is not installed on this host', findings: [] };
     }
-    return { lane: 'clippy', status: 'error', note: `cargo clippy failed: ${error?.message || String(error)}`, findings: [] };
+    return { status: 'error', note: `cargo clippy failed: ${error?.message || String(error)}`, findings: [] };
   }
-  const parsed = parseClippyMessages(result.stdout, { addedLines: addedLinesByFile(patch) });
+  const parsed = parseClippyMessages(result.stdout, {
+    addedLines: added,
+    crateRoot: crate,
+    spanRoot,
+  });
   const compileErrors = parsed.findings.filter((finding) => finding.priority === 'P2');
   if (result.code !== 0 && !compileErrors.length) {
     // Cargo failed without a parseable compiler error (manifest, lockfile,
     // dependency resolution, toolchain): never a silent "ok".
     const stderr = String(result.stderr || '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ');
     return {
-      lane: 'clippy',
       status: 'error',
       note: `cargo clippy exited with code ${result.code} without a located compiler error${stderr ? `: ${stderr.slice(0, 400)}` : ''}`,
       findings: parsed.findings,
     };
   }
   return {
-    lane: 'clippy',
     status: 'ok',
     note: `${parsed.warnings} warning(s), ${parsed.errors} error(s); ${parsed.findings.length} reported${parsed.truncated ? ' (bounded)' : ''}`,
     findings: parsed.findings,
+  };
+}
+
+/**
+ * Clippy over the head checkout's crates that hold a changed Rust file, one
+ * after another under one time bound. They share a dedicated target directory
+ * under the gate's state root, so the cache is warm across reviews without
+ * contending with the developer's own build. The first run on a machine is a
+ * cold check and may hit the bound; the lane then reports a timeout note and
+ * the next run resumes from the cached artifacts.
+ */
+export async function runClippyLane({
+  checkout,
+  files,
+  patch,
+  stateRoot,
+  crates: configured = null,
+  run = runProcess,
+  timeoutMs = LIMITS.clippyTimeoutMs,
+  maxCrates = LIMITS.maxClippyCrates,
+  maxFindings = LIMITS.maxDeterministicFindings,
+  env = process.env,
+}) {
+  const targets = (files || []).map(normalizePath).filter((file) => RUST_FILE.test(file));
+  if (!targets.length) return { lane: 'clippy', status: 'skipped', note: 'no Rust file changed', findings: [] };
+  const crates = await clippyCratesFor({ checkout, files: targets, configured });
+  if (!crates.length) return { lane: 'clippy', status: 'skipped', note: 'no Cargo.toml at head holds a changed Rust file', findings: [] };
+  const added = addedLinesByFile(patch);
+  const deadline = Date.now() + timeoutMs;
+  const outcomes = [];
+  for (const crate of crates.slice(0, maxCrates)) {
+    const outcome = deadline > Date.now()
+      ? await clippyCrate({ checkout, crate, added, stateRoot, run, deadline, boundMs: timeoutMs, env })
+      : { status: 'timeout', note: 'not started: the lane ran out of time', findings: [] };
+    outcomes.push({ crate, ...outcome });
+    if (outcome.status === 'unavailable') break;
+  }
+  // A crate and one it depends on report the same diagnostic: keep it once.
+  const merged = [...new Map(outcomes.flatMap((outcome) => outcome.findings)
+    .map((finding) => [`${finding.file}:${finding.line}:${finding.title}`, finding])).values()];
+  const bounded = [...merged.filter((finding) => finding.priority === 'P2'), ...merged.filter((finding) => finding.priority !== 'P2')]
+    .slice(0, maxFindings).map((finding, index) => ({ ...finding, candidate_id: `clippy-${index}` }));
+  const leftOut = crates.slice(outcomes.length);
+  const notes = crates.length === 1
+    ? outcomes[0].note
+    : outcomes.map((outcome) => `${outcome.crate || '.'}: ${outcome.note}`).join('; ');
+  return {
+    lane: 'clippy',
+    status: ['error', 'timeout', 'unavailable'].find((status) => outcomes.some((outcome) => outcome.status === status)) ?? 'ok',
+    note: `${notes}${merged.length > bounded.length ? `; bounded to ${bounded.length}` : ''}${leftOut.length ? `; ${leftOut.length} more crate(s) not run: ${leftOut.map((crate) => crate || '.').join(', ')}` : ''}`,
+    findings: bounded,
   };
 }
 
@@ -459,7 +555,7 @@ export async function runDeterministicLanes({ checkout, files, patch, stateRoot,
     settled = await Promise.allSettled([
       runMarkdownlintLane({ checkout, files, patch }),
       config?.clippy === true
-        ? runClippyLane({ checkout, files, patch, stateRoot, run, env })
+        ? runClippyLane({ checkout, files, patch, stateRoot, run, env, crates: config.clippyCrates })
         : Promise.resolve({ lane: 'clippy', status: 'skipped', note: 'execution of project build scripts is not enabled in installed policy', findings: [] }),
       enabled('shellcheck') ? runShellcheckLane(toolOptions) : off('shellcheck'),
       enabled('actionlint') ? runActionlintLane(toolOptions) : off('actionlint'),

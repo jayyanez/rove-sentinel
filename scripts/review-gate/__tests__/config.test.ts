@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizeConfig } from '../config.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from '../context.mjs';
 import { classifyRisk, isOrdinaryDocumentationSkip } from '../risk.mjs';
@@ -28,11 +28,11 @@ describe('standalone policy and onboarding', () => {
     await writeFile(path.join(root, '.git/hooks/pre-push'), '# existing');
     await expect(assertDefaultHookAbsent(root)).rejects.toThrow(/would be shadowed/);
   });
-  it('works without Rove documents and makes project integrations opt-in', async () => {
+  it('works without any project document and makes project integrations opt-in', async () => {
     const policy = await readReviewPolicy(await temp());
     expect(policy.charter).toContain('Rove Sentinel review charter');
     expect(policy.config).toMatchObject({ clippy: false, guiEvidence: 'none', trustedAuthors: [] });
-    expect(await guiEvidenceRefusal({ config: policy.config, identity: { baseSha: 'a', headSha: 'b' }, listChanged: () => { throw Error('must not read Rove evidence'); } })).toBeNull();
+    expect(await guiEvidenceRefusal({ config: policy.config, identity: { baseSha: 'a', headSha: 'b' }, listChanged: () => { throw Error('must not read evidence'); } })).toBeNull();
     const lanes = await runDeterministicLanes({ files: ['src-tauri/src/lib.rs'], config: policy.config, run: () => { throw Error('must not build untrusted code'); } });
     expect(lanes.lanes.find((lane) => lane.lane === 'clippy').status).toBe('skipped');
   });
@@ -44,6 +44,29 @@ describe('standalone policy and onboarding', () => {
     expect(initial.policyDigest).not.toBe(enabled.policyDigest);
     expect(() => reviewPolicySnapshot({ ...initial, config: { guiEvidence: 'rove' } })).toThrow(/digest/);
     expect(reviewPolicySnapshot(initial)).toEqual(initial);
+  });
+
+  it('keeps the earlier guiEvidence spelling as written, so an installed policy keeps its digest', async () => {
+    const input = { charter: '# Rules', lessons: '# Lessons', config: { guiEvidence: 'rove' } };
+    const installed = reviewPolicySnapshot(input);
+    expect(installed.config.guiEvidence).toBe('rove');
+    expect(reviewPolicySnapshot(installed)).toEqual(installed);
+    expect(reviewPolicySnapshot({ ...input, config: { guiEvidence: 'required' } }).policyDigest).not.toBe(installed.policyDigest);
+  });
+
+  it.each([['required', 1], ['rove', 1], ['none', 0]])('with guiEvidence %s reads the changed files %i time(s)', async (guiEvidence, reads) => {
+    const listChanged = vi.fn(async () => []);
+    const config = normalizeConfig({ guiEvidence });
+    await expect(guiEvidenceRefusal({ config, identity: { baseSha: 'a', headSha: 'b' }, listChanged })).resolves.toBeNull();
+    expect(listChanged).toHaveBeenCalledTimes(reads as number);
+  });
+
+  it('takes Clippy crates as folders of the repository, sorted, and leaves them out when not listed', () => {
+    expect(normalizeConfig({ clippyCrates: ['crates/b', '.', 'crates/a', 'crates/a'] }).clippyCrates).toEqual(['.', 'crates/a', 'crates/b']);
+    expect(normalizeConfig({})).not.toHaveProperty('clippyCrates');
+    for (const clippyCrates of [[], 'crates/a', [1], ['../outside'], ['/absolute'], ['crates/a/'], Array(65).fill('a')]) {
+      expect(() => normalizeConfig({ clippyCrates })).toThrow(/clippyCrates/);
+    }
   });
 
   it('does not skip configured policy paths even when all files are prose', () => {

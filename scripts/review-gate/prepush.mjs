@@ -14,6 +14,7 @@ import {
 } from './git.mjs';
 import { startDaemonDetached } from './daemon.mjs';
 import { acquireReviewLease } from './maintenance.mjs';
+import { requiresGuiEvidence } from './config.mjs';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
 import { undisposedRefusal } from './dispositions.mjs';
@@ -234,7 +235,7 @@ export async function guiEvidenceRefusal({
   readRegistry = showFileAtCommit,
   readBlobAtHead = showBlobAtCommit,
 }) {
-  if (config && config.guiEvidence !== 'rove') return null;
+  if (config && !requiresGuiEvidence(config)) return null;
   if (!identity?.baseSha || !identity?.headSha) return null;
   const files = await listChanged(repoRoot, identity.baseSha, identity.headSha);
   if (!isGuiDiff(files)) return null;

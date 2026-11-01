@@ -4,6 +4,13 @@ import { normalizeModels } from './modelSettings.mjs';
 
 export const CONFIG_FILE = '.rove-sentinel.json';
 
+// `rove` is the earlier spelling of `required`. It stays as written, never
+// rewritten to the new name: an installed policy's digest covers these values.
+const GUI_EVIDENCE_MODES = ['none', 'required', 'rove'];
+const REQUIRES_GUI_EVIDENCE = ['required', 'rove'];
+
+export const requiresGuiEvidence = (config) => REQUIRES_GUI_EVIDENCE.includes(config?.guiEvidence);
+
 function relativeFile(value, label) {
   if (typeof value !== 'string' || !value || value.includes('\\') || value.includes(':') ||
       value.startsWith('/') || value.split('/').some((part) => !part || part === '.' || part === '..')) {
@@ -15,13 +22,13 @@ function relativeFile(value, label) {
 /** Only installation reads repository configuration; reviews use its frozen snapshot. */
 export function normalizeConfig(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Sentinel configuration must be an object.');
-  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'clippy', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards'];
+  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'clippy', 'clippyCrates', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards'];
   for (const key of Object.keys(input)) {
     if (!allowed.includes(key)) throw new Error(`Unknown Sentinel configuration key: ${key}`);
   }
   if (input.schemaVersion !== undefined && input.schemaVersion !== 1) throw new Error('Unsupported Sentinel configuration schema.');
   const guiEvidence = input.guiEvidence ?? 'none';
-  if (!['none', 'rove'].includes(guiEvidence)) throw new Error('guiEvidence must be none or rove.');
+  if (!GUI_EVIDENCE_MODES.includes(guiEvidence)) throw new Error('guiEvidence must be none or required.');
   const clippy = input.clippy ?? false;
   if (typeof clippy !== 'boolean') throw new Error('clippy must be a boolean.');
   const trustedAuthors = input.trustedAuthors ?? [];
@@ -41,12 +48,19 @@ export function normalizeConfig(input = {}) {
     trustedAuthors: [...new Set(trustedAuthors.map((name) => name.toLowerCase()))].sort(),
     // Omitted new fields stay omitted so an existing installed policy remains
     // reproducible. Engine defaults are bound separately by GATE_VERSION.
+    ...(input.clippyCrates !== undefined ? { clippyCrates: normalizeClippyCrates(input.clippyCrates) } : {}),
     ...(input.providers !== undefined ? { providers: input.providers } : {}),
     ...(input.models !== undefined ? { models: normalizeModels(input.models) } : {}),
     ...(input.lintLanes !== undefined ? { lintLanes: normalizeLintLanes(input.lintLanes) } : {}),
     ...(input.maxShards !== undefined ? { maxShards: normalizeMaxShards(input.maxShards) } : {}),
     ...(input.lintCommands !== undefined ? { lintCommands: normalizeLintCommands(input.lintCommands) } : {}),
   };
+}
+
+/** The folders of the crates Clippy runs in; without this list it finds them by their Cargo.toml. */
+function normalizeClippyCrates(input) {
+  if (!Array.isArray(input) || !input.length || input.length > 64) throw new Error('clippyCrates must be a list of 1 to 64 folders.');
+  return [...new Set(input.map((folder) => (folder === '.' ? folder : relativeFile(folder, 'clippyCrates entry'))))].sort();
 }
 
 /**
