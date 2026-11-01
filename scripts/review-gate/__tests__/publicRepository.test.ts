@@ -14,10 +14,14 @@ const tracked = pathnames
 const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 
 // fc00::/7 and fe80::/10, whole, written in full, compressed or ending in IPv4;
-// a path in Rust or C++ such as fd00::new only starts like one, and a lone colon
-// after an address is a separator, as in a YAML key
+// a path in Rust or C++ such as fd00::new or a call such as fd00::add() only
+// starts like one. A lone colon delimits an address on either side, as in a YAML
+// key or peer:fd00::1, unless a hextet before it makes this the tail of another
+// address; an underscore delimits one too, as in a file name.
 const HEXTET = '[0-9a-f]{1,4}';
-const LOCAL_V6 = new RegExp(`(?<![0-9a-z:])(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:(?::${HEXTET}){7}|(?::${HEXTET}){5}:\\d{1,3}(?:\\.\\d{1,3}){3}|(?::${HEXTET}){0,6}::(?:${HEXTET}(?::${HEXTET}){0,6})?)(?!\\w|:[\\w:])`, 'i');
+const BEFORE_V6 = `(?<![0-9a-z]|::|(?<![0-9a-z])${HEXTET}:)`;
+const AFTER_V6 = '(?![0-9a-z]|:[\\w:]|\\w*\\()';
+const LOCAL_V6 = new RegExp(`${BEFORE_V6}(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:(?::${HEXTET}){7}|(?::${HEXTET}){5}:\\d{1,3}(?:\\.\\d{1,3}){3}|(?::${HEXTET}){0,6}::(?:${HEXTET}(?::${HEXTET}){0,6})?)${AFTER_V6}`, 'i');
 
 // An address counts as synthetic only whole, so neither a real mailbox at these
 // companies nor a real domain that starts like one of these gets through.
@@ -28,7 +32,8 @@ const LOCAL_CHARACTER = '[^\\s()<>[\\]:;@\\\\,"]';
 const OPENING = "(?:['`]|//)?";
 const SYNTHETIC_MAILBOX = String.raw`(?:git@github\.com|noreply@anthropic\.com)${END}`;
 const SYNTHETIC_DOMAIN = String.raw`(?:(?:[a-z0-9-]+\.)*(?:example(?:\.(?:com|net|org))?|test|invalid)|users\.noreply\.github\.com)${END}`;
-const EMAIL = new RegExp(String.raw`(?<!${LOCAL_CHARACTER})(?!${OPENING}${SYNTHETIC_MAILBOX})${LOCAL_CHARACTER}+@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
+const QUOTED_LOCAL = String.raw`"(?:[^"\\\r\n]|\\.){1,128}"`;
+const EMAIL = new RegExp(String.raw`(?:(?<!${LOCAL_CHARACTER})(?!${OPENING}${SYNTHETIC_MAILBOX})${LOCAL_CHARACTER}+|${QUOTED_LOCAL})@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
 
 const PRIVATE: [string, RegExp][] = [
   ['a tailnet address', /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
@@ -92,7 +97,8 @@ describe('what the guard catches', () => {
   it.each([
     'fd00::1', 'fc00::', 'fd7a:115c:a1e0::53', 'fe80::1%eth0', 'FE80::ABCD', 'febf::1', '[fd12:3456::1]:8080',
     'fd12:3456:789a:1:2:3:4:5', 'fe80:0:0:0:1:2:3:4', 'fd00:1:2:3:4:5:192.0.2.1', 'fd00::192.0.2.1', 'fd00::/8',
-    'fd00::1:', 'fc00:::', 'fe80:0:0:0:1:2:3:4:'
+    'fd00::1:', 'fc00:::', 'fe80:0:0:0:1:2:3:4:', 'peer:fd00::1', 'peer:fe80::1', 'a=peer:fc00::', 'docs/fd00::1_backup.md',
+    'fd00::1_backup', 'backup_fe80::1.md'
   ])('finds the IPv6 address %s', (address) => {
     expect(LOCAL_V6.test(`host ${address} up`)).toBe(true);
   });
@@ -100,7 +106,8 @@ describe('what the guard catches', () => {
   it.each([
     '2001:db8::1', '::1', '::ffff:192.0.2.1', 'fec0::1', 'fd::new', 'fd0::1', 'fe80', 'fd12:3456', 'abfd00::1',
     '0xfe80::1', 'Foo::fd00::Bar', 'fd00::new', 'fd00::new()', 'fe80::Thing', 'fc00::from_raw', 'fd00::1new', 'fd00:1::abcde',
-    'fd00:1:2:3:4:5:6:7new', 'fd00::1:new', 'fd00:::new'
+    'fd00:1:2:3:4:5:6:7new', 'fd00::1:new', 'fd00:::new', 'fd00::add()', 'fd00::add(1)', 'fe80::add_one()', 'fd00::add_one(1)',
+    '2001:fd00::1', '2001:db8:fd00::1', '1:2:fe80::1'
   ])('leaves %s alone', (text) => {
     expect(LOCAL_V6.test(`host ${text} up`)).toBe(false);
   });
@@ -111,7 +118,9 @@ describe('what the guard catches', () => {
     'someone@example.some-company.io', 'someone@example.com.some-company.io', 'token:secret@github.com',
     'a=git@github.com', 'a!git@github.com', 'a=noreply@anthropic.com', 'a$git@github.com', 'a*git@github.com',
     'a|noreply@anthropic.com', 'a{git@github.com', 'é.git@github.com', "o'git@github.com", 'a`git@github.com',
-    'a/git@github.com', "a'noreply@anthropic.com", "'git@github.com.some-company.io"
+    'a/git@github.com', "a'noreply@anthropic.com", "'git@github.com.some-company.io",
+    '"some one"@some-company.io', '"some.one"@some-company.io', '"a@b"@some-company.io', '"a\\"b"@some-company.io', '"git"@github.com',
+    '<"some one"@some-company.io>'
   ])('finds the email address %s', (address) => {
     expect(EMAIL.test(`write to ${address}.`)).toBe(true);
   });
@@ -120,7 +129,8 @@ describe('what the guard catches', () => {
     'someone@example.com', 'someone@mail.example.org', 'someone@example.net', 'someone@host.example',
     'someone@site.test', 'someone@site.invalid', 'git@github.com', 'noreply@anthropic.com',
     '123+someone@users.noreply.github.com', 'https://token:secret@example.com/owner/repo.git',
-    "'git@github.com:owner/repo.git'", 'ssh://git@github.com/owner/repo', '<noreply@anthropic.com>', '`git@github.com`'
+    "'git@github.com:owner/repo.git'", 'ssh://git@github.com/owner/repo', '<noreply@anthropic.com>', '`git@github.com`',
+    '"some one"@example.com', '"a quote" and "another"'
   ])('accepts the synthetic address %s', (address) => {
     expect(EMAIL.test(`write to ${address}.`)).toBe(false);
   });
