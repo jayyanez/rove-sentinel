@@ -11,7 +11,7 @@ import { detachedWatcherEnvironment, startDaemonDetached } from './daemon.mjs';
 import { createGateContext } from './gate.mjs';
 import { recoverStaleReviewResources, runGit } from './git.mjs';
 import { runProcess } from './process.mjs';
-import { uninstallGeneratedHook } from './init.mjs';
+import { hookCallsSentinel, uninstallGeneratedHook } from './init.mjs';
 import {
   daemonOwnerIsHealthy,
   atomicWriteJson,
@@ -707,7 +707,7 @@ export function watcherState({ running, compatible, heartbeat, lock, daemonError
       ? { state: 'running', pid: heartbeat.pid }
       : { state: 'outdated', pid: heartbeat.pid, action: 'Run npx --no-install rove-sentinel install from your trusted checkout.' };
   }
-  if (!installed && !lock && !heartbeat && !daemonError) return { state: 'not-installed' };
+  if (!installed && !lock && !heartbeat) return { state: 'not-installed' };
   return {
     state: 'stopped',
     reason: daemonError?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
@@ -816,8 +816,8 @@ export async function gateStatus(
       heartbeat,
       lock,
       daemonError,
-      // Linux has no supported scheduler, so policy and hook count as well.
-      installed: Boolean(scheduler.installed || installedPolicy || hooksPathIsOurs(context.repoRoot, hooksPath)),
+      // Linux has no supported scheduler, so the hook counts as well.
+      installed: Boolean(scheduler.installed || await hookCallsSentinel(context.repoRoot)),
     }),
     watcherVersionCompatible,
     watcherPolicyCompatible,

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +22,7 @@ import {
 } from '../install.mjs';
 import { atomicWriteJson, ensureState, readJson, writeDaemonError } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
+import { hookCallsSentinel, initializeRepository, uninstallGeneratedHook } from '../init.mjs';
 
 describe('what a person is told of the watcher', () => {
   const heartbeat = { pid: 12 };
@@ -47,6 +49,57 @@ describe('what a person is told of the watcher', () => {
 
   it('says so when no watcher was ever installed', () => {
     expect(watcherState({ running: false, installed: false })).toEqual({ state: 'not-installed' });
+  });
+
+  it('does not call a watcher stopped for an old refusal once it is uninstalled', () => {
+    expect(watcherState({ running: false, installed: false, daemonError: { message: 'old refusal' } })).toEqual({ state: 'not-installed' });
+  });
+
+  describe('reading the repository', () => {
+    const missingService = async () => ({ code: 1, stdout: '', stderr: process.platform === 'darwin'
+      ? 'Could not find service' : 'ERROR: The system cannot find the file specified.' });
+
+    async function installedRepository() {
+      const repoRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-watcher-state-'));
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+      await initializeRepository(repoRoot);
+      const stateRoot = path.join(repoRoot, '.state');
+      const paths = await ensureState(stateRoot);
+      await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Rules', lessons: '# Lessons' }));
+      const status = async () => (await gateStatus({ repoRoot }, {
+        createContext: async () => ({ repoRoot, stateRoot, paths }),
+        getHooksPath: async () => '.githooks',
+        run: missingService,
+      })).watcher;
+      return { repoRoot, status };
+    }
+
+    it('counts the generated hook as installed, and not after uninstall', async () => {
+      const { repoRoot, status } = await installedRepository();
+      try {
+        await expect(hookCallsSentinel(repoRoot)).resolves.toBe(true);
+        await expect(status()).resolves.toMatchObject({ state: 'stopped' });
+
+        await expect(uninstallGeneratedHook(repoRoot)).resolves.toBe('removed-generated-hook');
+
+        await expect(hookCallsSentinel(repoRoot)).resolves.toBe(false);
+        await expect(status()).resolves.toEqual({ state: 'not-installed' });
+      } finally {
+        await rm(repoRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('counts a project\'s own hook only while it calls Sentinel', async () => {
+      const { repoRoot, status } = await installedRepository();
+      try {
+        await writeFile(path.join(repoRoot, '.githooks/pre-push'), '#!/bin/sh\nnpx --no-install rove-sentinel pre-push "$@"\n');
+        await expect(status()).resolves.toMatchObject({ state: 'stopped' });
+        await writeFile(path.join(repoRoot, '.githooks/pre-push'), '#!/bin/sh\nmake lint\n');
+        await expect(status()).resolves.toEqual({ state: 'not-installed' });
+      } finally {
+        await rm(repoRoot, { recursive: true, force: true });
+      }
+    });
   });
 });
 
