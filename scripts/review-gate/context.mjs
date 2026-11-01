@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdtemp, open, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -353,11 +353,10 @@ export function reviewPolicySnapshot(policy) {
  * a broken one fails here too. Only a repository with none falls back to its own.
  */
 export async function policyForLocalCheck(paths, repoRoot) {
-  const installed = await access(paths.policy).then(() => true, (error) => {
-    if (error?.code === 'ENOENT') return false;
-    throw error;
-  });
-  return installed ? await loadInstalledReviewPolicy(paths) : await readReviewPolicy(repoRoot);
+  const none = Symbol('no installed policy');
+  // readJson also finds the copy a replacement left, as the hook's read does.
+  const stored = await readJson(paths.policy, none).catch(() => null);
+  return stored === none ? await readReviewPolicy(repoRoot) : await loadInstalledReviewPolicy(paths);
 }
 
 export async function loadInstalledReviewPolicy(paths) {

@@ -74,10 +74,15 @@ describe('standalone policy and onboarding', () => {
     const root = await temp();
     const paths = await ensureState(path.join(root, 'state'));
     await expect(policyForLocalCheck(paths, root)).resolves.toMatchObject({ config: { guiEvidence: 'none' } });
-    for (const broken of ['null', 'false', '0', '""', '{"charter":"x"}']) {
+    for (const broken of ['null', 'false', '0', '""', '{"charter":"x"}', 'not json']) {
       await writeFile(paths.policy, broken);
       await expect(policyForLocalCheck(paths, root)).rejects.toThrow();
     }
+    // A replacement that stopped midway leaves the installed policy in its copy.
+    await rm(paths.policy);
+    const installed = reviewPolicySnapshot({ charter: '# Rules', lessons: '# Lessons', config: { guiEvidence: 'required' } });
+    await writeFile(`${paths.policy}.previous`, JSON.stringify(installed));
+    await expect(policyForLocalCheck(paths, root)).resolves.toMatchObject({ config: { guiEvidence: 'required' } });
   });
 
   it('takes project paths as files or folders of the repository, sorted', () => {
