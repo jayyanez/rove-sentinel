@@ -280,13 +280,15 @@ export async function createDetachedWorktree(
   };
 }
 
+// Only ESRCH says a process is gone. EPERM says it exists and may not be
+// signalled, and its review checkout must stay.
 function processIsAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
   }
 }
 

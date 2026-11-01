@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   changedFiles,
@@ -127,6 +127,27 @@ describe('review-gate git inputs', () => {
       isAlive: () => false,
     })).toBe(1);
     expect(await isWorktreeRegistered(root, worktree.checkout)).toBe(false);
+  });
+
+  it.each([
+    ['EPERM', 'keeps', 0],
+    ['ESRCH', 'recovers', 1],
+  ])('with %s from a process check, %s the review worktree', async (code, _what, recovered) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rove-review-git-test-'));
+    const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-recovery-root-'));
+    temporaryDirectories.push(root, temporaryRoot);
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'commit', '--allow-empty', '-m', 'base');
+    const worktree = await createDetachedWorktree(root, git(root, 'rev-parse', 'HEAD'), { temporaryRoot });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error(code), { code }); });
+    try {
+      expect(await recoverStaleReviewResources(root, { temporaryRoot })).toBe(recovered);
+    } finally {
+      kill.mockRestore();
+    }
+    expect(await isWorktreeRegistered(root, worktree.checkout)).toBe(recovered === 0);
   });
 
   it('recovers cleanup-pending review resources even while the daemon PID is live', async () => {
