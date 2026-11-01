@@ -42,6 +42,23 @@ or policy changes. Review uses the installed snapshot, including configuration,
 not the version proposed by the branch being reviewed. Its digest is part of
 each attestation. Commit configuration and policy alongside the project.
 
+## Adopting a new setting
+
+A key newer than a repository's pinned launcher breaks that repository's `install`, and a
+fresh checkout has no engine that accepts it. So the key and the pin that knows it land in
+one change:
+
+1. If the project relies on behaviour the new release changes, run `updates --disable` in it
+   before its watcher activates that release. This holds the repository's selected engine,
+   which keeps its behaviour, so there is no gap. It is per repository: the shared engine
+   store is only a cache.
+2. In one pull request, add the keys and move the pin to the release.
+3. After it merges, run `updates --enable`, then `update`, then `install` from your trusted
+   checkout.
+
+Without step 1, an automatic update applies the release's defaults from its activation until
+step 3.
+
 ## GUI evidence
 
 With `guiEvidence: "required"`, a change to the GUI cannot be pushed without its
@@ -81,7 +98,7 @@ spelling was the only one. To say the same with `required`, set:
 ```
 
 Reinstalling is not needed to keep `rove`. Moving to `required` is a policy change,
-reviewed and installed as any other, and needs an engine that knows the word.
+reviewed and installed as any other, and follows [adopting a new setting](#adopting-a-new-setting).
 
 ## How a change is reviewed
 
