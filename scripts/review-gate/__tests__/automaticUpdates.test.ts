@@ -162,6 +162,21 @@ describe('shared immutable runtime distribution', () => {
     });
     return { root, fetchImpl, npm };
   }
+  it('installs an engine without the user\'s npm configuration', async () => {
+    const d = await distribution();
+    await ensureEngine('1.11.0', { ...d, env: {
+      PATH: 'kept', HTTPS_PROXY: 'kept', npm_config_allow_scripts: 'true', NPM_CONFIG_REGISTRY: 'https://registry.example.com/', npm_config_userconfig: 'mine',
+    } });
+    const [args, options] = d.npm.mock.calls[0];
+    const value = (flag: string) => args[args.indexOf(flag) + 1];
+    expect(args).toEqual(expect.arrayContaining(['--ignore-scripts']));
+    expect(value('--registry')).toBe('https://registry.npmjs.org/');
+    // npm refuses to load one path as both configurations.
+    expect(value('--userconfig')).not.toBe(value('--globalconfig'));
+    for (const file of [value('--userconfig'), value('--globalconfig')]) expect(file.startsWith(options.cwd)).toBe(true);
+    expect(Object.keys(options.env).sort()).toEqual(['HTTPS_PROXY', 'PATH']);
+  });
+
   it('checks SHA-256 before npm, disables scripts, and reuses a verified engine across projects', async () => {
     const d = await distribution();
     const target = await ensureEngine('1.11.0', d);

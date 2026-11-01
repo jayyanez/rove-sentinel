@@ -695,6 +695,27 @@ export async function executeUninstall({
   }
 }
 
+/**
+ * What a person needs to know of the watcher: `running`, `outdated` (running
+ * another version or policy), `stopped`, or `not-installed`. A scheduler's task
+ * can report success while its watcher refused to start, so this reads the
+ * watcher's own records.
+ */
+export function watcherState({ running, compatible, heartbeat, lock, daemonError, scheduler }) {
+  if (running) {
+    return compatible
+      ? { state: 'running', pid: heartbeat.pid }
+      : { state: 'outdated', pid: heartbeat.pid, action: 'Run npx --no-install rove-sentinel install from your trusted checkout.' };
+  }
+  if (!scheduler?.installed && !lock && !heartbeat && !daemonError) return { state: 'not-installed' };
+  return {
+    state: 'stopped',
+    reason: daemonError?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
+    ...(daemonError?.at ? { since: daemonError.at } : {}),
+    action: 'Pushes wait for a review nobody runs. Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.',
+  };
+}
+
 export async function gateStatus(
   { repoRoot = process.cwd() } = {},
   {
@@ -789,6 +810,14 @@ export async function gateStatus(
     watcherHealthy: watcherPolicyCompatible && daemonOwnerIsHealthy(lock, heartbeat, {
       maxAgeMs: 30_000,
     }),
+    watcher: watcherState({
+      running: daemonOwnerIsHealthy(lock, heartbeat, { maxAgeMs: 30_000 }),
+      compatible: watcherPolicyCompatible,
+      heartbeat,
+      lock,
+      daemonError,
+      scheduler,
+    }),
     watcherVersionCompatible,
     watcherPolicyCompatible,
     installedPolicyDigest: installedPolicy?.policyDigest ?? null,
@@ -841,6 +870,7 @@ export async function recoverStaleDaemonState(
     throw new Error(`The shared review watcher is healthy at PID ${lock.pid}; use review:uninstall for a controlled stop instead of stale-state recovery.`);
   }
   await rm(context.paths.lock, { force: true });
+  await rm(`${context.paths.lock}.takeover`, { force: true });
   await rm(context.paths.queueSubmitLock, { force: true });
   await removeStoredJson(context.paths.heartbeat);
   const [technicalOutcomesCleared, claimsRecovered, resourcesRecovered] = await Promise.all([

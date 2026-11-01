@@ -12,6 +12,7 @@ import {
   executeUninstall,
   executeInstallTransaction,
   gateStatus,
+  watcherState,
   heartbeatIsHealthy,
   recoverStaleDaemonState,
   schedulerQueryInstalled,
@@ -20,6 +21,34 @@ import {
 } from '../install.mjs';
 import { atomicWriteJson, ensureState, readJson, writeDaemonError } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
+
+describe('what a person is told of the watcher', () => {
+  const heartbeat = { pid: 12 };
+  const lock = { pid: 12 };
+  const installed = { installed: true };
+
+  it('says it runs, or runs another version', () => {
+    expect(watcherState({ running: true, compatible: true, heartbeat, lock, scheduler: installed })).toEqual({ state: 'running', pid: 12 });
+    expect(watcherState({ running: true, compatible: false, heartbeat, lock, scheduler: installed })).toMatchObject({ state: 'outdated', action: expect.stringContaining('install') });
+  });
+
+  it('says it is stopped when the scheduler reports it installed but nothing runs', () => {
+    expect(watcherState({ running: false, scheduler: installed })).toMatchObject({ state: 'stopped', reason: 'no watcher is running', action: expect.stringContaining('install') });
+  });
+
+  it('gives the watcher\'s own refusal as the reason', () => {
+    const daemonError = { at: '2026-11-01T00:00:00.000Z', message: 'Review daemon lock names live PID 12' };
+    expect(watcherState({ running: false, lock, daemonError, scheduler: installed })).toMatchObject({ state: 'stopped', reason: daemonError.message, since: daemonError.at });
+  });
+
+  it('names a lock with no fresh heartbeat', () => {
+    expect(watcherState({ running: false, lock, scheduler: installed }).reason).toContain('PID 12');
+  });
+
+  it('says so when no watcher was ever installed', () => {
+    expect(watcherState({ running: false, scheduler: { installed: false } })).toEqual({ state: 'not-installed' });
+  });
+});
 
 describe('review-gate native installer plans', () => {
   it('names the provider when its authentication output is not valid JSON', async () => {

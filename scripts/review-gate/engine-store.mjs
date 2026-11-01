@@ -152,10 +152,14 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     const archivePath = path.join(stage, name);
     await writeFile(archivePath, archive);
     await writeFile(path.join(stage, 'package.json'), '{"name":"sentinel-managed-runtime","private":true}\n');
-    const cleanEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !/(TOKEN|SECRET|KEY|PASSWORD|NODE_OPTIONS|NODE_PATH)/i.test(key)));
+    const cleanEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !/(TOKEN|SECRET|KEY|PASSWORD|NODE_OPTIONS|NODE_PATH)|^npm_config_/i.test(key)));
+    // An engine installs the same on every machine: two paths that hold nothing
+    // stand in for the user's and the global npm configuration, whose settings
+    // npm can refuse. npm refuses one path for both.
     // Local checksum-verified archive: npm never follows an unchecked release URL.
-    await npm(['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=dev', '--cache', path.join(stage, '.npm-cache'), archivePath],
-      { cwd: stage, env: cleanEnv, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024 });
+    await npm(['install', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=dev', '--userconfig', path.join(stage, '.no-user-npmrc'), '--globalconfig', path.join(stage, '.no-global-npmrc'),
+      '--registry', 'https://registry.npmjs.org/', '--cache', path.join(stage, '.npm-cache'), archivePath],
+    { cwd: stage, env: cleanEnv, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024 });
     const pkg = JSON.parse(await readFile(path.join(stage, 'node_modules/rove-sentinel/package.json'), 'utf8'));
     if (pkg.name !== 'rove-sentinel' || pkg.version !== version || pkg.sentinelEngineProtocol !== 1) {
       throw new Error('Downloaded package identity or engine protocol is unsupported.');

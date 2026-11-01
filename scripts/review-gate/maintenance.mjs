@@ -26,6 +26,73 @@ async function processStartedAt(pid) {
 }
 let ownStart;
 
+/** When a process started, on any platform; null when that cannot be read. */
+export async function processStartTime(pid, { run = runProcess, platform = process.platform } = {}) {
+  if (platform === 'win32') return processStartedAt(pid);
+  if (!Number.isInteger(pid) || pid < 1) return null;
+  try {
+    const result = await run('ps', ['-o', 'lstart=', '-p', String(pid)],
+      { timeoutMs: 5000, maxOutputBytes: 4096, env: { ...process.env, LC_ALL: 'C' } });
+    const value = Date.parse(result.stdout.trim());
+    return Number.isFinite(value) ? value : null;
+  } catch { return null; }
+}
+
+/**
+ * True only with proof that the process that wrote a record at `writtenAt` is
+ * gone: its id no longer exists, or the process holding that id started after
+ * the record was written, as a reused id after a restart does. A process that
+ * cannot be inspected is not proof.
+ */
+export async function processIsGone(pid, writtenAt, { isAlive = alive, startedAt = processStartTime } = {}) {
+  if (!isAlive(pid)) return true;
+  if (!Number.isInteger(pid) || pid < 1 || !Number.isFinite(writtenAt)) return false;
+  const observed = await startedAt(pid);
+  return observed !== null && observed > writtenAt + 1000;
+}
+
+async function entriesOf(directory) {
+  return await readdir(directory).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
+}
+
+async function writtenAt(file) {
+  const details = await stat(file).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+  return details?.mtimeMs ?? null;
+}
+
+/**
+ * The work whose owner may still run, described for a refusal: review leases,
+ * claims, and a queue submission in progress. A queued request has no owner: it
+ * is what a watcher is for. A record whose owner cannot be read counts as live.
+ */
+export async function liveWork(paths, { gone = processIsGone } = {}) {
+  const live = [];
+  const check = async (label, pid, file) => {
+    const at = await writtenAt(file);
+    if (at !== null && !(await gone(pid, at))) live.push(label);
+  };
+  const leases = path.join(paths.root, 'active-reviews');
+  for (const entry of await entriesOf(leases)) {
+    await check(`review lease ${entry}`, Number(/^(\d+)-/.exec(entry)?.[1]), path.join(leases, entry));
+  }
+  for (const entry of await entriesOf(paths.claims)) {
+    if (entry.endsWith('.claim')) {
+      await check(`claim ${entry}`, Number(/\.(\d+)\.[^.]+\.claim$/.exec(entry)?.[1]), path.join(paths.claims, entry));
+    } else if (entry.endsWith('.lock')) {
+      const file = path.join(paths.claims, entry);
+      const pid = await readFile(file, 'utf8').then((text) => Number(text.trim()), (error) => { if (error.code === 'ENOENT') return null; throw error; });
+      if (pid !== null) await check(`claim lock ${entry}`, pid, file);
+    }
+  }
+  const submitter = await readFile(paths.queueSubmitLock, 'utf8').then((text) => text, (error) => { if (error.code === 'ENOENT') return null; throw error; });
+  if (submitter !== null) {
+    let pid;
+    try { pid = JSON.parse(submitter)?.pid; } catch { pid = null; }
+    await check('a queue submission', pid, paths.queueSubmitLock);
+  }
+  return live;
+}
+
 export const updateMarker = (paths) => path.join(paths.root, 'update-in-progress.json');
 
 /** Readers register before a second check; an updater excludes subsequent readers. */

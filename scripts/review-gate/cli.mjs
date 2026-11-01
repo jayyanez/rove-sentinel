@@ -107,6 +107,10 @@ async function readHookInput() {
 }
 
 /** The installed policy's configuration, or the repository's when none is installed. */
+function warnOfStoppedWatcher(watcher) {
+  if (watcher?.state === 'stopped') process.stderr.write(`The review watcher is stopped: ${watcher.reason} ${watcher.action}\n`);
+}
+
 async function installedConfig(repoRoot) {
   try {
     const root = await findRepoRoot(repoRoot);
@@ -250,6 +254,8 @@ async function main() {
     });
     result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
+    result.watcher = (await gateStatus({ repoRoot: root })).watcher;
+    warnOfStoppedWatcher(result.watcher);
     print(result, true);
     return;
   }
@@ -380,6 +386,7 @@ async function main() {
     result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
     result.engine = await updateInformation((await createGateContext(repoRoot)).paths);
+    warnOfStoppedWatcher(result.watcher);
     print(result, true);
     return;
   }
