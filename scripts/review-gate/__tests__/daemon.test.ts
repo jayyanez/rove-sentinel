@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -18,12 +19,12 @@ import {
   startDaemonDetached,
   waitForWatcherDelay,
 } from '../daemon.mjs';
-import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
+import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
 describe('a computer whose watcher leaves GitHub alone', () => {
-  async function pollsGitHub(options?: { github: boolean }) {
+  async function pollsGitHub(options?: { github: boolean; pending?: { github: boolean; pid: number } }) {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));
     const paths = await ensureState(stateRoot);
     await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
@@ -49,8 +50,11 @@ describe('a computer whose watcher leaves GitHub alone', () => {
     expect(await pollsGitHub({ github: true })).toBe(true);
   });
 
-  it('leaves an install the time to record its choice before the first poll', () => {
-    expect(LIMITS.githubFirstPollDelayMs).toBeGreaterThanOrEqual(30_000);
+  it('honours an install under way from the first poll, and forgets one that was killed', async () => {
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid } })).toBe(false);
+    const dead = Number(spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim());
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: dead } })).toBe(true);
+    expect(await pollsGitHub({ github: false, pending: { github: true, pid: dead } })).toBe(false);
   });
 });
 

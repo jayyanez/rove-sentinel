@@ -110,9 +110,13 @@ export async function ensureState(root) {
   return paths;
 }
 
-/** This machine's choice that its watcher leaves GitHub alone. */
+/** Whether this machine's watcher polls GitHub. An install under way says what
+ *  it is choosing, for as long as its process lives: one killed midway leaves
+ *  the choice as it was, with nothing to undo. */
 export async function readWatcherGithub(paths) {
-  return (await readJson(paths.watcherOptions, null))?.github !== false;
+  const options = await readJson(paths.watcherOptions, null);
+  if (Number.isInteger(options?.pending?.pid) && processIsAlive(options.pending.pid)) return options.pending.github !== false;
+  return options?.github !== false;
 }
 
 export async function atomicWriteJson(target, value) {

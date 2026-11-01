@@ -438,8 +438,7 @@ export async function executeInstallTransaction(
     prerequisites = {},
     previousDaemonActive = false,
     start = true,
-    // undefined keeps this machine's choice; it is written last, so a failed
-    // or interrupted install leaves it as it was
+    // undefined keeps this machine's choice
     github,
   },
   {
@@ -470,8 +469,9 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, artifactBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, artifactBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
+    snapshotFile(context.paths.watcherOptions),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
   ]);
   const configuredHooks = !currentHooks;
@@ -502,6 +502,12 @@ export async function executeInstallTransaction(
     }
 
     await atomicWriteJson(context.paths.policy, policy);
+    // pending while this process lives: the watcher started below honours it
+    // at once, and it is gone if this install is killed (readWatcherGithub)
+    if (github !== undefined) {
+      const before = await readJson(context.paths.watcherOptions, null);
+      await atomicWriteJson(context.paths.watcherOptions, { github: before?.github !== false, pending: { github, pid: process.pid } });
+    }
     if (configuredHooks) {
       await git(context.repoRoot, ['config', 'core.hooksPath', '.githooks']);
       hooksConfiguredByAttempt = true;
@@ -589,6 +595,7 @@ export async function executeInstallTransaction(
       await attempt(() => run(plan.remove.command, plan.remove.args, { allowFailure: true, timeoutMs: 30_000 }));
     }
     await attempt(() => restoreFile(context.paths.policy, policyBefore, { storedJson: true }));
+    await attempt(() => restoreFile(context.paths.watcherOptions, watcherOptionsBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
     if (

@@ -298,9 +298,7 @@ export async function runWatcher({
     context.daemonOwnerToken = lock.ownerToken;
 
     let stopped = false;
-    // An install records this machine's choice as its last step, once this
-    // watcher answers, so the first poll leaves it the time to.
-    let nextGithubAt = once ? 0 : Date.now() + LIMITS.githubFirstPollDelayMs;
+    let nextGithubAt = 0;
     let githubBackoffMs = LIMITS.githubPollMs;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };

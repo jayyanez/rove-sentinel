@@ -292,7 +292,7 @@ describe('linter lanes after the 1.13.0 gate review', () => {
     expect(await resolveExecutable('node_modules/.bin/tool', { env })).toBe('node_modules/.bin/tool');
     // A lane whose tool is found only in the checkout reports it missing.
     const files = { 'a.py': 'x = 1\n' };
-    const lane = await runRuffLane({ checkout: await checkoutWith(files), files: ['a.py'], patch: addedPatch(files), env: { PATH: '' }, run: async () => { throw new Error('must not run'); } });
+    const lane = await runRuffLane({ checkout: await checkoutWith(files), files: ['a.py'], patch: addedPatch(files), env: { PATH: '' }, resolve: (name: string, options: object) => resolveExecutable(name, { ...options, platform: 'linux' }), run: async () => { throw new Error('must not run'); } });
     expect(lane).toMatchObject({ status: 'unavailable', note: 'ruff is not installed on this host' });
   });
 
