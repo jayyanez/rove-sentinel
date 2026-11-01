@@ -17,10 +17,18 @@ and Node's `fetch` did only with `NODE_USE_ENV_PROXY=1`. Node releases before 22
 not run. npm 12.0.1 reproduced `EALLOWSCRIPTS` with `npm_config_allow_scripts` set, and
 an install with the new flags and no such variable succeeded.
 
-The suite passed on macOS: 756 tests passed and 1 was skipped, a linter not installed
-there. Each change went through the review gate.
-No project has yet run this engine's new ratings on real changes, and no automatic
-update to it has been exercised.
+The suite passed on macOS: 756 tests passed and 1 was skipped, a WinGet test that runs
+only on Windows. Each change went through the review gate.
+
+`scripts/runtime-smoke.mjs` passed on Windows on this release's code, with synthetic
+1.16.1 and 1.16.2 engines: a busy project waited while a second activated the shared
+runtime, two projects reused one download, pinned launchers selected the new runtime
+without editing their dependencies, a working-tree policy was kept out of activation, and
+the real scheduler restored the previous watcher after an injected failure. No fixture
+task or process remained, and the real watchers were not touched.
+
+No project has yet run this engine's new ratings on real changes, and no update from
+1.15.0 to this release has been exercised.
 
 ## 1.15.0 several computers, and macOS — 2026-10-31
 

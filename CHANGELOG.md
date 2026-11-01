@@ -18,6 +18,8 @@ automatic update applies it by itself. See the review bullet below.
   reach the install, which uses the public registry. `--ignore-scripts` and the checksum
   stay. A proxy set in `.npmrc` must move to `HTTPS_PROXY`,
   and the release download needs `NODE_USE_ENV_PROXY=1` beside it, on Node 22.21 or later.
+  The upgrade to this release still runs the previous engine's install; see
+  [troubleshooting](docs/troubleshooting.md) if it fails with `EALLOWSCRIPTS`.
 - **Clippy finds your crates.** The lane runs for each crate that holds a changed
   Rust file, found by its `Cargo.toml` or listed in the new `clippyCrates`, no longer
   for one folder name only. Messages from a crate in a workspace now land on the
