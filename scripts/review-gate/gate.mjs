@@ -887,7 +887,7 @@ export function createStageClock() {
  * from enforcement (gate self-review).
  */
 export function followUpShards({
-  followUpPatch, patch, incrementFiles, priorBlocking, maxShards, excludedFiles = [],
+  followUpPatch, patch, incrementFiles, priorBlocking, maxShards, excludedFiles = [], scriptPaths = [],
 }) {
   const bound = Math.max(1, maxShards);
   const fullSections = splitPatchByFile(patch);
@@ -908,13 +908,13 @@ export function followUpShards({
   const sections = uncovered.length
     ? fullSections.filter((section) => uncovered.includes(section.file))
     : [];
-  if (!sections.length) return partitionShards(followUpPatch, { maxShards: bound, excludedFiles });
+  if (!sections.length) return partitionShards(followUpPatch, { maxShards: bound, excludedFiles, scriptPaths });
   // The re-verification shards share the round's shard cap with the
   // incremental ones: the wave never exceeds maxShards reviewers.
-  const incremental = partitionShards(followUpPatch, { maxShards: Math.max(1, bound - 1), excludedFiles });
+  const incremental = partitionShards(followUpPatch, { maxShards: Math.max(1, bound - 1), excludedFiles, scriptPaths });
   const reverifyPatch = `${sections.map((section) => section.text).join('\n')}\n`;
   const reverify = partitionShards(reverifyPatch, {
-    maxShards: Math.max(1, bound - incremental.length), excludedFiles,
+    maxShards: Math.max(1, bound - incremental.length), excludedFiles, scriptPaths,
   }).map((shard) => ({ ...shard, reverify: true }));
   return [...incremental, ...reverify].map((shard, index) => ({ ...shard, index }));
 }
@@ -1312,9 +1312,9 @@ async function runGateWithLease({
       : [];
     const shards = followUp
       ? followUpShards({
-        followUpPatch, patch, incrementFiles, priorBlocking: priorBlockingList, maxShards: plan.maxShards, excludedFiles,
+        followUpPatch, patch, incrementFiles, priorBlocking: priorBlockingList, maxShards: plan.maxShards, excludedFiles, scriptPaths: reviewPolicy.config.scriptPaths,
       })
-      : partitionShards(patch, { maxShards: plan.maxShards, excludedFiles });
+      : partitionShards(patch, { maxShards: plan.maxShards, excludedFiles, scriptPaths: reviewPolicy.config.scriptPaths });
     // A prior blocker in a file no shard holds (a usage-site file the branch
     // never changed) is flagged so every shard reviewer may re-verify it by
     // reading the file at head.

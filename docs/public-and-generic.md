@@ -22,11 +22,11 @@ Sentinel behaves the same for every repository. Anything one project needs is
 configuration that any project could set, named for what it does, never for who
 asked for it. A hard-coded folder layout, framework or project name is a defect.
 
-The Clippy lane finds crates by their `Cargo.toml` or by `clippyCrates`, and
-`guiEvidence: "required"` is named for what it does; `rove` remains only as the
-earlier spelling, so that no installed policy breaks. Still tied to one layout: the
-GUI evidence check's folders and file patterns, and a few folder names in the review's
-default risk and shard lists, which change only how a change is reviewed.
+What a project needs of the review is configuration: `clippyCrates`,
+`guiEvidenceLayout`, `highRiskPaths` and `scriptPaths`. The defaults are rules that hold
+for any repository, or name Sentinel's own files. One exception stands so that no
+installed policy breaks: `guiEvidence: "rove"`, the earlier spelling of `required`, keeps
+the layout of a SvelteKit application it always meant.
 
 ## How this is kept
 

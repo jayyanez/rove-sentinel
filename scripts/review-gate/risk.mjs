@@ -1,3 +1,4 @@
+import { isUnderPaths } from './config.mjs';
 import { LIMITS } from './constants.mjs';
 
 // Prose markup only (1.13.0). Plain `.txt` names build and dependency inputs
@@ -7,14 +8,16 @@ const DOC_ONLY = /\.(?:md|markdown|rst|adoc)$/i;
 const TEST_FILE = /(?:^|\/)(?:tests?|__tests__)(?:\/|$)|\.(?:test|spec)\.[^.]+$/i;
 
 const HIGH_RISK_PATHS = [
-  /^src-tauri\//,
-  /^sidecar\//,
-  /^\.githooks\//,
+  // What instructs an agent, in any repository.
   /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/,
-  /^\.(?:agents|claude|grok)\/skills\/rove-review\//,
-  /^docs\/(?:shared-review-charter\.md|engineering-process\.md|review-gate-recall-ledger\.md|bugs\/lessons\.md)$/,
-  /^scripts\/review-gate\//,
+  /^\.(?:agents|claude|grok)\/skills\//,
+  // Sentinel's own files: its hook and configuration in any repository, and its
+  // engine and policy templates where they live. A project adds its own paths
+  // with `highRiskPaths`.
+  /^\.githooks\//,
   /^\.rove-sentinel\.json$/,
+  /^docs\/review-gate-recall-ledger\.md$/,
+  /^scripts\/review-gate\//,
   /^templates\//,
   /^(?!.*\.(?:md|markdown|rst|adoc)$).*(?:permissions|capabilities)/i,
   // Generic trust boundaries (1.13.0): CI definitions run with repository
@@ -22,7 +25,9 @@ const HIGH_RISK_PATHS = [
   /^\.github\/workflows\//,
   /(?:^|\/)\.gitlab-ci\.ya?ml$/i,
   /(?:^|\/)migrations?\//i,
-  /(?:package|pnpm-lock|vite\.config|svelte\.config|tauri\.conf)\.(?:json|yaml|yml|js|ts)$/i,
+  // Dependency manifests, and any tool's own configuration file.
+  /(?:package|pnpm-lock)\.(?:json|yaml|yml)$/i,
+  /\.(?:config|conf)\.(?:json|yaml|yml|js|mjs|cjs|ts)$/i,
 ];
 
 const HIGH_RISK_TOKENS = [
@@ -45,7 +50,7 @@ export function changedPatchText(patch) {
 function classifyAutomaticRisk({ files, patch, changedLines, config = {} }) {
   if (files.length === 0) return { level: 'skip', reasons: ['no changed files'] };
   const reasons = [];
-  const riskyPaths = files.filter((file) => [config.charter, config.lessons].includes(file) || HIGH_RISK_PATHS.some((pattern) => pattern.test(file)));
+  const riskyPaths = files.filter((file) => [config.charter, config.lessons].includes(file) || isUnderPaths(file, config.highRiskPaths) || HIGH_RISK_PATHS.some((pattern) => pattern.test(file)));
   if (riskyPaths.length) reasons.push(`high-risk paths: ${riskyPaths.slice(0, 5).join(', ')}`);
   if (!riskyPaths.length && files.every((file) => DOC_ONLY.test(file))) {
     return { level: 'skip', reasons: ['documentation-only diff'] };

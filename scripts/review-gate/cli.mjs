@@ -4,6 +4,7 @@ import path from 'node:path';
 import { isatty } from 'node:tty';
 import { fileURLToPath } from 'node:url';
 
+import { readConfig } from './config.mjs';
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
@@ -25,6 +26,7 @@ import {
   startDetachedGate,
 } from './detach.mjs';
 import { currentBranch, findRepoRoot, mergeBase, resolveCommit } from './git.mjs';
+import { evidenceLayout } from './guiEvidence.mjs';
 import { guiEvidenceRefusal } from './prepush.mjs';
 import { deferFindings } from './dispositions.mjs';
 import { buildLedgerEntries, formatLedgerResult } from './ledger.mjs';
@@ -348,7 +350,7 @@ async function main() {
       throw new Error(`--ref-type must be "branch" or "tag"; received ${JSON.stringify(refType)}.`);
     }
     const refusal = await guiEvidenceRefusal({
-      repoRoot: root, identity: { baseSha, headSha }, branch, refType,
+      repoRoot: root, identity: { baseSha, headSha }, branch, refType, layout: evidenceLayout(await readConfig(root)),
     });
     if (refusal) {
       process.stderr.write(`${refusal}\n`);

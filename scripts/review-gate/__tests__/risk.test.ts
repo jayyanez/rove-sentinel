@@ -7,7 +7,7 @@ describe('shared review risk routing', () => {
   it('treats ordinary prose as a hook skip and policy Markdown as a review', () => {
     expect(isOrdinaryDocumentationSkip(['docs/design/example.md'])).toBe(true);
     expect(isOrdinaryDocumentationSkip([])).toBe(false);
-    expect(isOrdinaryDocumentationSkip(['docs/shared-review-charter.md'])).toBe(false);
+    expect(isOrdinaryDocumentationSkip(['AGENTS.md'])).toBe(false);
     expect(isOrdinaryDocumentationSkip(['docs/note.md', 'src/lib/example.ts'])).toBe(false);
   });
 
@@ -41,9 +41,6 @@ describe('shared review risk routing', () => {
 
   it('reviews Markdown that controls the gate or either agent adapter as high risk', () => {
     for (const file of [
-      'docs/shared-review-charter.md',
-      'docs/bugs/lessons.md',
-      'docs/engineering-process.md',
       'docs/review-gate-recall-ledger.md',
       'AGENTS.md',
       'CLAUDE.md',
@@ -69,11 +66,46 @@ describe('shared review risk routing', () => {
     }
   });
 
+  describe('for a repository that sets nothing', () => {
+    const rate = (file: string, config = {}) => classifyRisk({ files: [file], changedLines: 12, config }).level;
+
+    it('gives no folder name a higher risk', () => {
+      for (const file of ['src-tauri/src/lib.rs', 'sidecar/mesh/main.go', 'native/src/lib.rs']) expect(rate(file)).toBe('low');
+    });
+
+    it('skips documents that only one project treated as policy', () => {
+      for (const file of ['docs/shared-review-charter.md', 'docs/engineering-process.md', 'docs/bugs/lessons.md']) expect(rate(file)).toBe('skip');
+    });
+
+    it('rates what holds for any repository as high', () => {
+      for (const file of [
+        '.claude/skills/deploy/SKILL.md', '.agents/skills/any/notes.md', '.grok/skills/any/SKILL.md',
+        'eslint.config.js', 'tailwind.config.ts', 'next.config.mjs', 'vite.config.ts', 'svelte.config.js', 'src/tauri.conf.json', 'app/package.json',
+      ]) expect(rate(file)).toBe('high');
+    });
+
+    it('leaves near names alone', () => {
+      for (const file of ['src/config.ts', 'src/app.configure.ts', 'src/skills/one.ts', '.claude/settings.ts']) expect(rate(file)).toBe('low');
+    });
+  });
+
+  it('rates what a project lists in highRiskPaths as high, a file or all under a folder', () => {
+    const config = { highRiskPaths: ['docs/engineering-process.md', 'sidecar', 'src-tauri'] };
+    const rate = (file: string) => classifyRisk({ files: [file], changedLines: 12, config });
+    for (const file of ['docs/engineering-process.md', 'sidecar/mesh/main.go', 'src-tauri/src/lib.rs']) {
+      expect(rate(file)).toMatchObject({ level: 'high', reasons: [expect.stringContaining(file)] });
+    }
+    expect(rate('sidecar2/main.go').level).toBe('low');
+    expect(rate('src/sidecar/main.go').level).toBe('low');
+    expect(isOrdinaryDocumentationSkip(['docs/engineering-process.md'], config)).toBe(false);
+  });
+
   it('routes native and config changes as high risk', () => {
     const result = classifyRisk({
       files: ['src-tauri/src/lib.rs'],
       patch: '+const timer = setInterval(cleanup, 1000);',
       changedLines: 12,
+      config: { highRiskPaths: ['src-tauri'] },
     });
     expect(result.level).toBe('high');
     expect(result.reasons.some((reason) => reason.includes('src-tauri'))).toBe(true);

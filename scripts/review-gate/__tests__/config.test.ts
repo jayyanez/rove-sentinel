@@ -69,6 +69,26 @@ describe('standalone policy and onboarding', () => {
     }
   });
 
+  it('takes project paths as files or folders of the repository, sorted', () => {
+    expect(normalizeConfig({ highRiskPaths: ['b/', 'a/file.md', 'b'] }).highRiskPaths).toEqual(['a/file.md', 'b']);
+    expect(normalizeConfig({ scriptPaths: ['tools'] }).scriptPaths).toEqual(['tools']);
+    const none = normalizeConfig({});
+    for (const key of ['highRiskPaths', 'scriptPaths', 'guiEvidenceLayout']) expect(none).not.toHaveProperty(key);
+    for (const key of ['highRiskPaths', 'scriptPaths']) {
+      for (const value of [[], 'a', [1], ['../outside'], ['/absolute'], ['.'], Array(65).fill('a')]) {
+        expect(() => normalizeConfig({ [key]: value })).toThrow(new RegExp(key));
+      }
+    }
+  });
+
+  it('takes a GUI evidence layout, and refuses what is not one', () => {
+    const layout = { guiFiles: ['^ui/'], reviewsFolder: 'qa/shots', controlRegistry: 'qa/controls.md', controlSources: '\\.vue$', sharedPrimitives: '^ui/shared/', captureCommand: 'make shots' };
+    expect(normalizeConfig({ guiEvidenceLayout: layout }).guiEvidenceLayout).toEqual(layout);
+    for (const guiEvidenceLayout of [[], 'x', { typo: 1 }, { guiFiles: [] }, { guiFiles: ['('] }, { guiFiles: [1] }, { reviewsFolder: '../x' }, { controlRegistry: '/x' }, { controlSources: '(' }, { sharedPrimitives: 'a'.repeat(201) }, { captureCommand: '' }]) {
+      expect(() => normalizeConfig({ guiEvidenceLayout })).toThrow(/guiEvidenceLayout/);
+    }
+  });
+
   it('does not skip configured policy paths even when all files are prose', () => {
     const config = normalizeConfig({ charter: 'team/rules.md', lessons: 'team/lessons.txt' });
     expect(classifyRisk({ files: ['team/rules.md'], config }).level).toBe('high');
