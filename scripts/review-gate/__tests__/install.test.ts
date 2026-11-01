@@ -117,7 +117,7 @@ describe('what a person is told of the watcher', () => {
       await expect(status()).resolves.toMatchObject({ state: 'stopped', reason: expect.stringContaining('unreadable') });
     });
 
-    it('survives a scheduler that cannot even be started, and says so apart', async () => {
+    it.skipIf(process.platform === 'linux')('survives a scheduler that cannot even be started, and says so apart', async () => {
       const { repoRoot, paths, stateRoot } = await installedRepository();
       const status = await gateStatus({ repoRoot }, {
         createContext: async () => ({ repoRoot, stateRoot, paths }),
