@@ -1,6 +1,6 @@
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 
-// What this engine version accepts and where it stops (1.13.0), from the
+// What this engine version accepts and where it stops (1.15.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the

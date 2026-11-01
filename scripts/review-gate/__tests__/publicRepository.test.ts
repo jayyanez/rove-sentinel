@@ -6,8 +6,8 @@ import { existsSync, readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
-  .split(/\r?\n/)
+const list = (...args: string[]) => execFileSync('git', args, { encoding: 'utf8' }).split('\0').filter(Boolean);
+const tracked = list('ls-files', '-z')
   .filter((file) => file && existsSync(file) && !/\.(tgz|png)$|^pnpm-lock\.yaml$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
 const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 
@@ -22,8 +22,15 @@ const PRIVATE = [
 // the maintainer's other repositories, in any spelling; these two are public
 const OTHER_REPOSITORY = /\bjayyanez\/(?!rove-sentinel\b|rove-memory\b)[\w.-]+/i;
 
+// what a commit would take: the working file, and what is staged if it differs
+const staged = new Set(list('diff', '--cached', '--name-only', '-z', '--diff-filter=d'));
+const versions = (file: string) => [
+  readFileSync(file, 'utf8'),
+  ...(staged.has(file) ? [execFileSync('git', ['show', `:${file}`], { encoding: 'utf8', maxBuffer: 2 ** 28 })] : [])
+];
+
 function hits(pattern: RegExp) {
-  return tracked.filter((file) => file !== THIS_FILE && pattern.test(readFileSync(file, 'utf8')));
+  return tracked.filter((file) => file !== THIS_FILE && versions(file).some((text) => pattern.test(text)));
 }
 
 describe('a public repository any project can adopt', () => {
