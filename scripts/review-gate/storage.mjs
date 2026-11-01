@@ -1310,7 +1310,11 @@ export async function acquireDaemonLock(
   if (daemonLockOutlivedOwner(existing, heartbeat, { isAlive, bootTime })) {
     try {
       return await withTakeoverMarker(paths, async () => {
-        const current = await read(paths.lock, missingLock).catch(() => null);
+        // A lock that does not parse is its new owner's, still being written.
+        const current = await read(paths.lock, missingLock).catch((error) => {
+          if (error instanceof SyntaxError) return null;
+          throw error;
+        });
         if (current !== missingLock) {
           if (current?.ownerToken !== existing.ownerToken) return null;
           await remove(paths.lock, { force: true });

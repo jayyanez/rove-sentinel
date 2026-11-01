@@ -11,8 +11,10 @@
 - **A restart no longer stops a watcher.** A restart left the lock of a dead process, and every
   later start refused until someone ran `recover` and `install`. A starter now replaces a lock
   only when the machine booted after that lock's last heartbeat and its process is gone
-  (`ESRCH`). Anything else keeps the refusal: a logoff, a crash or a kill in the same boot, a
-  torn heartbeat, a reused process id, or a boot time that cannot be read. A new
+  (`ESRCH`). Anything else keeps the refusal: a logoff, a crash or a kill in the same boot
+  unless the clock later moved past that heartbeat, a torn heartbeat, a reused process id, or a
+  boot time that cannot be read. By its documentation, a Windows shut down with Fast Startup
+  does not count as a boot; that has not been measured. A new
   `takeover.lock` lets one process at a time remove a lock it did not write, and `stop` and
   `recover` honour it. If its holder dies, starts refuse until `recover`. No real restart has
   run through this yet.

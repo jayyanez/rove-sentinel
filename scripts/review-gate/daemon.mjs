@@ -320,6 +320,17 @@ export async function runWatcher({
     const stopMonitoring = monitorDaemonStopRequests(context, stop);
 
     try {
+      if (lock.replaced) {
+        // The dead owner's heartbeat would make this live owner look stale all
+        // through recovery, and tell whoever looks to run `recover` over it.
+        await writeHeartbeat(context.paths, {
+          repoRoot: context.repoRoot,
+          ownerToken: context.daemonOwnerToken,
+          gateVersion: GATE_VERSION,
+          charterVersion: CHARTER_VERSION,
+          policyDigest: context.policy.policyDigest,
+        }).catch(() => {});
+      }
       await recoverResources(context.repoRoot);
       await recoverQueuedClaims(context.paths);
       do {

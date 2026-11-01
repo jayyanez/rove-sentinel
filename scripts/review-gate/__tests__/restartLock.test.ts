@@ -14,6 +14,7 @@ import {
   atomicWriteJson,
   bootTimeMs,
   daemonLockOutlivedOwner,
+  daemonOwnerIsHealthy,
   ensureState,
   readJson,
   withTakeoverMarker,
@@ -166,6 +167,13 @@ describe('what proves a lock outlived its owner', () => {
     const heartbeatAt = BOOT - 10_000;
     const bootTime = () => bootTimeMs({ now: () => BOOT + 240_000 - hour, uptime: () => 240 });
     expect(daemonLockOutlivedOwner(LOCK, { ...HEARTBEAT, at: new Date(heartbeatAt).toISOString() }, { isAlive: () => false, bootTime })).toBe(false);
+  });
+
+  it('takes a crash in this boot once the clock moved forward past its heartbeat: the process really is gone', () => {
+    const day = 86_400_000;
+    const heartbeat = { ...HEARTBEAT, at: new Date(BOOT + 60_000).toISOString() };
+    const bootTime = () => bootTimeMs({ now: () => BOOT + 120_000 + day, uptime: () => 120 });
+    expect(daemonLockOutlivedOwner(LOCK, heartbeat, { isAlive: () => false, bootTime })).toBe(true);
   });
 
   it('refuses a live owner when the clock moved forward past its heartbeat', () => {
@@ -329,6 +337,21 @@ describe('starters meeting over a lock left by a restart', () => {
     expect(await readFile(paths.lock, 'utf8')).toBe('');
   });
 
+  it('gives way to nothing when the second look fails for another reason', async () => {
+    const paths = await leftByRestart();
+    const failure = Object.assign(new Error('disk'), { code: 'EIO' });
+    let looks = 0;
+    const read = async (target: string, fallback?: unknown) => {
+      if (target === paths.lock && ++looks === 2) throw failure;
+      return await readJson(target, fallback);
+    };
+
+    await expect(acquireDaemonLock(paths, { ...proofOptions, read })).rejects.toBe(failure);
+
+    await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
+    expect(await exists(paths.takeover)).toBe(false);
+  });
+
   it('takes the name when the lock vanished before it held the marker', async () => {
     const paths = await leftByRestart();
     const hold = heldAt(paths.takeover);
@@ -420,6 +443,9 @@ describe('starters meeting over a lock left by a restart', () => {
       const owners = outcomes.filter(({ owner }) => owner).map(({ owner }) => owner);
       expect(outcomes).toHaveLength(8);
       expect(owners).toHaveLength(1);
+      for (const { refused } of outcomes.filter((outcome) => outcome.refused)) {
+        expect(refused).toMatch(/refusing/);
+      }
       await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: owners[0] });
       expect(await exists(paths.takeover)).toBe(false);
     }
@@ -526,12 +552,17 @@ describe('a watcher started after a restart', () => {
     const paths = await leftByRestart({ pid, at: '2001-01-01T00:00:00.000Z' }, { pid });
     await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
 
+    let duringRecovery = false;
     const outcome = await runWatcher({
       repoRoot: process.cwd(), stateRoot: paths.root, once: true, github: false,
-      recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      recoverResources: async () => {
+        duringRecovery = daemonOwnerIsHealthy(await readJson(paths.lock), await readJson(paths.heartbeat));
+      },
+      recoverQueuedClaims: async () => {},
     });
 
     expect(outcome).toMatchObject({ alreadyRunning: false });
+    expect(duringRecovery).toBe(true);
     expect(await exists(paths.lock)).toBe(false);
     const events = await Promise.all((await readdir(paths.events)).map((name) => readJson(path.join(paths.events, name))));
     expect(events).toContainEqual(expect.objectContaining({
