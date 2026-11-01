@@ -347,8 +347,13 @@ async function main() {
     if (refType !== 'branch' && refType !== 'tag') {
       throw new Error(`--ref-type must be "branch" or "tag"; received ${JSON.stringify(refType)}.`);
     }
+    // The installed policy, as the hook reads it: a broken one fails here too.
+    const policy = await loadInstalledReviewPolicy((await createGateContext(root)).paths).catch(async (error) => {
+      if (!String(error.message).includes('no installed policy snapshot')) throw error;
+      return readReviewPolicy(root);
+    });
     const refusal = await guiEvidenceRefusal({
-      repoRoot: root, identity: { baseSha, headSha }, branch, refType, config: await installedConfig(root),
+      repoRoot: root, identity: { baseSha, headSha }, branch, refType, config: policy.config,
     });
     if (refusal) {
       process.stderr.write(`${refusal}\n`);

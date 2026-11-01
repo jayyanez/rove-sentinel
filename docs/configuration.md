@@ -59,7 +59,7 @@ Leave `guiEvidence` at `none` and none of this applies.
 | `testFiles` | A regular expression for the files that do not count as GUI even if `guiFiles` matches them; by default test and story files and `tests/`, `__tests__/` and `e2e/` folders |
 | `reviewsFolder` | The folder holding one evidence folder per branch |
 | `captureCommand` | The command the refusal tells the author to run |
-| `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, and a new or moved one must change its row |
+| `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, a table row of seven cells with the backticked id first, and a new or moved one must change its row |
 | `controlRegistry` | The registry's file; `docs/design/control-registry.md` by default |
 | `sharedPrimitives` | A regular expression for shared components that may forward `{dataControl}` instead of a literal id |
 

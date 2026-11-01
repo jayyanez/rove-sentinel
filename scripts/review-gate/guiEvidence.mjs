@@ -76,7 +76,7 @@ import { branchEvidenceSlug } from './evidenceSlug.mjs';
 const ANY_REPOSITORY = {
   guiFiles: [/\.(?:svelte|vue|tsx|jsx|css|scss|sass|less|html)$/i],
   // Tests are text ABOUT the GUI, not the GUI.
-  testFiles: /(?:^|\/)(?:tests?|__tests__|e2e)\/|\.(?:test|spec|stories)\.[^./]+$/i,
+  testFiles: /(?:^|\/)(?:tests?|__tests__|e2e|cypress)\/|\.(?:test|spec|cy|stories)\.[^./]+$/i,
   reviewsFolder: 'docs/design/reviews',
   controlRegistry: 'docs/design/control-registry.md',
   controlSources: null,
@@ -585,7 +585,7 @@ export function guiEvidenceProblems({ files, branch, refType = 'branch', patch =
     const missing = controls.filter((id) => !registered.has(id));
     if (missing.length) {
       problems.push(
-        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one row per control with surface · zone · order · visibility rule · precedent and commit it.`,
+        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one table row per control, seven cells with the backticked id first, and commit it.`,
       );
     }
     // A registered id that appears in a file where it did not exist at base
