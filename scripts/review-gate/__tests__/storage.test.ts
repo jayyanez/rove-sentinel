@@ -83,15 +83,17 @@ describe('a hook waiting across a clock step', () => {
   it('neither expires nor stops', async () => {
     const paths = await ensureState(await temporaryDirectory());
     const real = Date.now;
-    let jumped = false;
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + (jumped ? 3_600_000 : 0));
+    let polls = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + (polls > 0 ? 3_600_000 : 0));
     try {
+      // The clock steps at the first poll and the result comes at a later one:
+      // a wait timed by the clock has ended by then, and its last read finds nothing.
       const waiting = waitForResult(paths, 'request-1', {
-        timeoutMs: 400,
+        timeoutMs: 2_000,
         pollMs: 10,
         shouldCancel: async () => {
-          jumped = true;
-          await writeFile(path.join(paths.results, 'request-1.json'), '{"requestId":"request-1"}');
+          polls += 1;
+          if (polls === 3) await writeFile(path.join(paths.results, 'request-1.json'), '{"requestId":"request-1"}');
           return null;
         },
       });
