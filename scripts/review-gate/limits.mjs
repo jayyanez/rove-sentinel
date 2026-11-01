@@ -48,7 +48,7 @@ export function sentinelLimits() {
       {
         id: 'clippy',
         limit: `${LIMITS.maxClippyCrates} crates`,
-        text: `With clippy on, at most ${LIMITS.maxClippyCrates} crates of a change are linted, one after another under one bound of ${minutes(LIMITS.clippyTimeoutMs)}; the lane's note names any left out.`,
+        text: `With clippy on, at most ${LIMITS.maxClippyCrates} crates of a change are linted, one after another under one bound of ${minutes(LIMITS.clippyTimeoutMs)}; the lane's note names any left out. A timeout is a note, not a pass.`,
       },
       {
         id: 'skip',

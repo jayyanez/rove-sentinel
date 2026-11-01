@@ -17,7 +17,8 @@ and Node's `fetch` did only with `NODE_USE_ENV_PROXY=1`. Node releases before 22
 not run. npm 12.0.1 reproduced `EALLOWSCRIPTS` with `npm_config_allow_scripts` set, and
 an install with the new flags and no such variable succeeded.
 
-The suite passed on macOS, 756 tests. Each change went through the review gate.
+The suite passed on macOS: 756 tests passed and 1 was skipped, a linter not installed
+there. Each change went through the review gate.
 No project has yet run this engine's new ratings on real changes, and no automatic
 update to it has been exercised.
 
