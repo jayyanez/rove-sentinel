@@ -18,9 +18,10 @@ import {
   runPrePush,
   submitAndStartReview,
   unattestedRefusal,
+  waitForFirstHeartbeat,
   waitForHookResult,
-  watcherIsGone,
   watcherKeeper,
+  watcherProblem,
   waitingWatcherProblem,
 } from '../prepush.mjs';
 import {
@@ -158,6 +159,67 @@ describe('shared review pre-push enforcement', () => {
     })).rejects.toThrow('queue is full');
 
     expect(start).toHaveBeenCalledOnce();
+  });
+
+  describe('the wait for a first heartbeat', () => {
+    const context = { repoRoot: 'C:\\repo', stateRoot: 'C:\\state', paths: {} };
+    const noOwner = () => Object.assign(new Error('no heartbeat'), { code: 'NO_WATCHER_HEARTBEAT' });
+
+    it('starts again when the owner it gave way to has gone', async () => {
+      const start = vi.fn(async () => {});
+      const clearError = vi.fn(async () => {});
+      const wait = vi.fn(async () => {
+        if (start.mock.calls.length === 0) throw noOwner();
+        return { pid: 1 };
+      });
+      await expect(waitForFirstHeartbeat(context, {}, { wait, start, clearError })).resolves.toEqual({ pid: 1 });
+      expect(start).toHaveBeenCalledOnce();
+      expect(clearError).toHaveBeenCalledOnce();
+    });
+
+    it('refuses once its attempts are spent', async () => {
+      const start = vi.fn(async () => {});
+      await expect(waitForFirstHeartbeat(context, {}, {
+        wait: async () => { throw noOwner(); },
+        start,
+        clearError: async () => {},
+        attempts: 3,
+      })).rejects.toThrow('no heartbeat');
+      expect(start).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a watcher that answers wrongly or failed to start', async () => {
+      const start = vi.fn(async () => {});
+      await expect(waitForFirstHeartbeat(context, {}, {
+        wait: async () => { throw new Error('incompatible policy'); },
+        start,
+        clearError: async () => {},
+      })).rejects.toThrow('incompatible policy');
+      expect(start).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('one reading of a watcher', () => {
+    it('calls a watcher with no records gone, and one wrong policy not gone', async () => {
+      const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-watcher-problem-'));
+      const paths = await ensureState(stateRoot);
+      try {
+        await expect(watcherProblem(paths)).resolves.toMatchObject({ gone: true, message: expect.stringContaining('stopped') });
+        await expect(waitingWatcherProblem(paths)).resolves.toContain('stopped');
+        const ownerToken = 'owner-token';
+        await atomicWriteJson(paths.lock, { pid: process.pid, ownerToken });
+        await atomicWriteJson(paths.heartbeat, {
+          pid: process.pid,
+          ownerToken,
+          at: new Date().toISOString(),
+          gateVersion: 'another',
+          charterVersion: 'another',
+        });
+        await expect(watcherProblem(paths)).resolves.toMatchObject({ gone: false, message: expect.stringContaining('incompatible') });
+      } finally {
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('a hook whose watcher goes away', () => {

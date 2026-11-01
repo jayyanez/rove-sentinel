@@ -9,7 +9,6 @@ import {
   attestationIdentity,
   attestationFileName,
   acquireDaemonLock,
-  waitForResult,
   isProcessAlive,
   atomicWriteJson,
   cancelQueuedRequest,

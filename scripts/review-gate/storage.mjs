@@ -1242,9 +1242,9 @@ export async function waitForDaemonHeartbeat(
   _requestingRepoRoot,
   { timeoutMs = 15_000, pollMs = 250, policyDigest } = {},
 ) {
-  const started = Date.now();
+  const started = performance.now();
   let incompatibleHeartbeat = null;
-  while (Date.now() - started < timeoutMs) {
+  while (performance.now() - started < timeoutMs) {
     const [lock, heartbeat, daemonError] = await Promise.all([
       readJson(paths.lock).catch(() => null),
       readJson(paths.heartbeat).catch(() => null),
@@ -1268,7 +1268,9 @@ export async function waitForDaemonHeartbeat(
   if (incompatibleHeartbeat) {
     throw new Error(`The running shared review watcher has policy identity ${incompatibleHeartbeat.gateVersion || 'unknown'}/${incompatibleHeartbeat.charterVersion || 'unknown'}/${incompatibleHeartbeat.policyDigest || 'unknown'}, but this caller requires ${GATE_VERSION}/${CHARTER_VERSION}/${policyDigest || 'any installed digest'}. Run npx --no-install rove-sentinel install from your trusted main checkout.`);
   }
-  throw new Error('The shared review watcher did not produce a fresh matching owner heartbeat.');
+  throw Object.assign(new Error('The shared review watcher did not produce a fresh matching owner heartbeat.'), {
+    code: 'NO_WATCHER_HEARTBEAT',
+  });
 }
 
 export async function readPause(paths) {
