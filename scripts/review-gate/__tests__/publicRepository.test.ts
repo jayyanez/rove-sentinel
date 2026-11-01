@@ -20,8 +20,8 @@ const LOCAL_V6 = new RegExp(`(?<![0-9a-z:])(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:
 // An address counts as synthetic only whole, so neither a real mailbox at these
 // companies nor a real domain that starts like one of these gets through.
 const END = String.raw`(?![\w-]|\.\w)`;
-// what a local part may hold, but for what delimits an address in prose and code
-const LOCAL_CHARACTER = String.raw`[\w.+=!#%&?^~-]`;
+// a local part runs back to whatever delimits an address in prose and code
+const LOCAL_CHARACTER = '[^\\s<>()[\\]"\'`,;:/\\\\@]';
 const SYNTHETIC_MAILBOX = String.raw`(?:git@github\.com|noreply@anthropic\.com)${END}`;
 const SYNTHETIC_DOMAIN = String.raw`(?:(?:[a-z0-9-]+\.)*(?:example(?:\.(?:com|net|org))?|test|invalid)|users\.noreply\.github\.com)${END}`;
 const EMAIL = new RegExp(String.raw`(?<!${LOCAL_CHARACTER})(?!${SYNTHETIC_MAILBOX})${LOCAL_CHARACTER}+@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
@@ -103,7 +103,8 @@ describe('what the guard catches', () => {
     'someone@github.com', 'someone@anthropic.com', 'someone@noreply.some-company.io', 'agit@github.com',
     'anoreply@anthropic.com', 'git@github.com.some-company.io', 'noreply@anthropic.com.some-company.io',
     'someone@example.some-company.io', 'someone@example.com.some-company.io', 'token:secret@github.com',
-    'a=git@github.com', 'a!git@github.com', 'a=noreply@anthropic.com'
+    'a=git@github.com', 'a!git@github.com', 'a=noreply@anthropic.com', 'a$git@github.com', 'a*git@github.com',
+    'a|noreply@anthropic.com', 'a{git@github.com', 'é.git@github.com'
   ])('finds the email address %s', (address) => {
     expect(EMAIL.test(`write to ${address}.`)).toBe(true);
   });
@@ -111,7 +112,8 @@ describe('what the guard catches', () => {
   it.each([
     'someone@example.com', 'someone@mail.example.org', 'someone@example.net', 'someone@host.example',
     'someone@site.test', 'someone@site.invalid', 'git@github.com', 'noreply@anthropic.com',
-    '123+someone@users.noreply.github.com', 'https://token:secret@example.com/owner/repo.git'
+    '123+someone@users.noreply.github.com', 'https://token:secret@example.com/owner/repo.git',
+    "'git@github.com:owner/repo.git'", 'ssh://git@github.com/owner/repo', '<noreply@anthropic.com>', '`git@github.com`'
   ])('accepts the synthetic address %s', (address) => {
     expect(EMAIL.test(`write to ${address}.`)).toBe(false);
   });
