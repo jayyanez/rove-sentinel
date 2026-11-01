@@ -85,7 +85,7 @@ describe('review-gate native installer plans', () => {
   it('builds a repository-specific Windows logon task without a shell', () => {
     const plan = buildInstallPlan({
       platform: 'win32',
-      repoRoot: 'D:\\Workspaces\\rove',
+      repoRoot: 'D:\\projects\\example',
       stateRoot: 'C:\\state',
       nodePath: 'C:\\Program Files\\nodejs\\node.exe',
       home: 'C:\\Users\\me',
@@ -116,7 +116,7 @@ describe('review-gate native installer plans', () => {
   it('runs the Windows watcher task in a headless console, never a visible window', () => {
     const plan = buildInstallPlan({
       platform: 'win32',
-      repoRoot: 'D:\\Workspaces\\rove',
+      repoRoot: 'D:\\projects\\example',
       stateRoot: 'C:\\Users\\me\\AppData\\Local\\Rove\\shared-review-gate\\e931f2b632fde04a',
       nodePath: 'C:\\Program Files\\nodejs\\node.exe',
       home: 'C:\\Users\\me',
@@ -235,7 +235,7 @@ describe('review-gate native installer plans', () => {
   it('preserves Windows registration and the hook when daemon shutdown fails', async () => {
     const plan = buildInstallPlan({
       platform: 'win32',
-      repoRoot: 'D:\\Workspaces\\rove',
+      repoRoot: 'D:\\projects\\example',
       stateRoot: 'C:\\state',
       nodePath: 'C:\\node.exe',
       home: 'C:\\Users\\me',
@@ -245,7 +245,7 @@ describe('review-gate native installer plans', () => {
     const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
 
     await expect(executeUninstall({
-      context: { repoRoot: 'D:\\Workspaces\\rove' },
+      context: { repoRoot: 'D:\\projects\\example' },
       plan,
       removeHooks: true,
       run,
