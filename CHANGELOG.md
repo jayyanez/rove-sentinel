@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A stop no longer takes a live watcher for dead.** `EPERM` means a process exists and may
+  not be signalled, such as a watcher of another user or elevation. It read as gone, so a stop
+  could remove its lock and heartbeat, and `recover` could overrule a healthy one. A process
+  id reused by such a process now refuses a stop too. `recover` stays a person's decision: it
+  still clears an owner with a stale heartbeat, because a reused id looks the same.
 - **A stopped watcher shows.** A scheduler's task can report success while its watcher
   refused to start, for example after a restart left a dead process's lock. `status` and
   `doctor` now report `watcher.state` and why it is stopped, and warn on stderr. `doctor`
