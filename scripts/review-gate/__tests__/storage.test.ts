@@ -1,4 +1,4 @@
-import { access, copyFile, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -665,6 +665,89 @@ describe('shared review local state', () => {
     await atomicWriteJson(path.join(paths.results, `${request.id}.json`), { status: 'pass' });
     expect(await recoverClaims(paths)).toBe(0);
     expect(await claimNextRequest(paths)).toBeNull();
+  });
+
+  describe('a claimed request whose result is broken', () => {
+    const claimedWithResult = async (content: string) => {
+      const paths = await ensureState(await temporaryDirectory());
+      const request = await submitRequest(paths, { type: 'gate', options: { head: 'HEAD' } });
+      expect(await claimNextRequest(paths)).not.toBeNull();
+      const target = path.join(paths.results, `${request.id}.json`);
+      await writeFile(target, content);
+      return { paths, request, target };
+    };
+
+    it.each([
+      ['truncated', '{"requestId":"req'],
+      ['empty', ''],
+      ['zeroed', '\0'.repeat(64)],
+    ])('runs the review again when it is %s', async (_kind, content) => {
+      const { paths, request } = await claimedWithResult(content);
+
+      await expect(recoverClaims(paths)).resolves.toBe(1);
+
+      await expect(readdir(paths.claims)).resolves.toEqual([]);
+      expect((await claimNextRequest(paths))?.request.id).toBe(request.id);
+    });
+
+    it('recovers again if a second restart finds the same file', async () => {
+      const { paths, request } = await claimedWithResult('{');
+      await recoverClaims(paths);
+      expect(await claimNextRequest(paths)).not.toBeNull();
+
+      await expect(recoverClaims(paths)).resolves.toBe(1);
+
+      expect((await claimNextRequest(paths))?.request.id).toBe(request.id);
+    });
+
+    it('leaves the file alone, so recovery cannot take a newer result', async () => {
+      const { paths, target } = await claimedWithResult('{');
+      await recoverClaims(paths);
+      await expect(readFile(target, 'utf8')).resolves.toBe('{');
+    });
+
+    it('gives a waiting hook the verdict of the new review, never the broken file', async () => {
+      const { paths, request } = await claimedWithResult('{"status":"pa');
+      await recoverClaims(paths);
+
+      const claim = await claimNextRequest(paths);
+      if (!claim) throw new Error('the request was not returned to the queue');
+      await completeRequest(paths, claim, { status: 'fail', result: { status: 'fail' } });
+
+      await expect(waitForResult(paths, request.id, { timeoutMs: 50, pollMs: 5 }))
+        .resolves.toMatchObject({ status: 'fail' });
+    });
+
+    it('keeps a hook waiting through a broken file until the new verdict replaces it', async () => {
+      const { paths, request, target } = await claimedWithResult('{"status":"pass"');
+      let polls = 0;
+
+      await expect(waitForResult(paths, request.id, {
+        timeoutMs: 2_000,
+        pollMs: 5,
+        shouldCancel: async () => {
+          polls += 1;
+          if (polls === 3) await atomicWriteJson(target, { requestId: request.id, status: 'fail' });
+          return null;
+        },
+      })).resolves.toMatchObject({ status: 'fail' });
+
+      expect(polls).toBe(3);
+    });
+
+    it('never reads a broken file as a verdict: a hook that only meets one times out', async () => {
+      const { paths, request } = await claimedWithResult('{"status":"pass"');
+      await expect(waitForResult(paths, request.id, { timeoutMs: 40, pollMs: 5 }))
+        .rejects.toThrow('Timed out waiting');
+    });
+
+    it('keeps a claim whose result cannot be read at all', async () => {
+      const { paths, request, target } = await claimedWithResult('{');
+      await rm(target);
+      await mkdir(target);
+      await expect(recoverClaims(paths)).rejects.toThrow();
+      expect((await readdir(paths.claims)).some((name) => name.startsWith(`${request.id}.json.`))).toBe(true);
+    });
   });
 
   it('quarantines an unparsable interrupted claim instead of wedging every watcher start', async () => {
