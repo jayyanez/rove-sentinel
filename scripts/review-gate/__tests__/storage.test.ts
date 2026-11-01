@@ -78,8 +78,8 @@ describe('shared review local state', () => {
   });
   it('never persists credentials embedded in a remote URL', () => {
     expect(
-      normalizeRepositoryIdentity('https://x-access-token:secret@github.com/Example-Owner/Example-Repo.git', 'C:\\repo'),
-    ).toBe('https://github.com/example-owner/example-repo');
+      normalizeRepositoryIdentity('https://x-access-token:secret@example.com/Example-Owner/Example-Repo.git', 'C:\\repo'),
+    ).toBe('https://example.com/Example-Owner/Example-Repo');
     expect(
       normalizeRepositoryIdentity('ftp://deploy:secret@example.com/Rove.git', 'C:\\repo'),
     ).toBe('https://example.com/Rove');
