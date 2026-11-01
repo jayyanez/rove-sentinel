@@ -436,7 +436,7 @@ Status describes the full design. The last column says what happens under Option
 | C4 | `recover --kill` cannot know the pid is the current holder | **Open** | Reasoned, not reproduced. "A live holder wrote it" proves the past only | Not built |
 | C5 | Busy and a timeout do not prove a watcher exists | **Open** | Reasoned, consistent with the measured reader interference. Zero failures in a run prove no ordering | No busy state |
 | C6 | Network folders may not fail loudly | **Open** | Not reproduced, and SQLite's own warning stands. The plan's sentence is withdrawn | No kernel lock. Pid and boot tests are no proof between two machines sharing a state root |
-| C7 | Node 22.13 has no `timeout` option | **Accepted** | Confirmed from Node's source: absent at v22.13.0 and v22.15.0, present at v22.16.0 and v24.0.0. The warning is emitted at all four. The floor must rise or use `PRAGMA busy_timeout`. Node 23 not checked | No `node:sqlite` |
+| C7 | Node 22.13 has no `timeout` option | Accepted | Confirmed from Node's source: absent at v22.13.0 and v22.15.0, present at v22.16.0 and v24.0.0. The warning is emitted at all four. The floor must rise or use `PRAGMA busy_timeout`. Node 23 not checked | No `node:sqlite` |
 | C8 | The updater that must check a new floor is the old one | **Open** | Confirmed: `automatic-updates.mjs` stops the watcher first, and `engine-store.mjs` does not read `engines` | No new floor |
 | C9 | A truncated result stops recovery; requests are not durable | **Open** | **Run on Windows and macOS:** `recoverClaims` threw `SyntaxError` twice and the claim stayed. `atomicWriteJson` does not sync | **Still applies**, on `main` today. Own fix |
 | C10 | Replacing a junk lock file repeats check-then-remove | **Open** | Reasoned, and the plan contradicts itself: `recover` must take the lock it cannot open | No kernel lock file |
@@ -584,10 +584,10 @@ That work is on a local branch at `8a73e68` and stays unpublished.
 
 **For Option A:**
 
-6. A review of Option A before any code, by a reader who has not seen this plan's argument for it.
+1. A review of Option A before any code, by a reader who has not seen this plan's argument for it.
    If it fails, stop at Option C rather than repair it.
-7. Run a real restart on Windows and macOS, and Windows Fast Startup on a client edition.
-8. The rule, the marker and tests that pause between each step and hold two starters at the same
+2. Run a real restart on Windows and macOS, and Windows Fast Startup on a client edition.
+3. The rule, the marker and tests that pause between each step and hold two starters at the same
    point. It should reach one project on a pinned engine before a release turns it on everywhere.
 
 **If the full design is ever chosen,** C1 to C11 need answers first, beginning with the transition
