@@ -144,6 +144,24 @@ describe('what a person is told of the watcher', () => {
       expect(run.status).not.toBe(0);
     });
 
+    it.each([
+      ['the generated adapter', 'exec node "$root/.githooks/sentinel.mjs" pre-push "$@"', true],
+      ['the command', 'npx --no-install rove-sentinel pre-push "$@"', true],
+      ['the launcher in a repository of its own', 'exec node "$root/scripts/review-gate/launcher.mjs" pre-push "$@"', true],
+      ['a comment', '# Sentinel was removed\nmake lint', false],
+      ['a commented call', '# npx rove-sentinel pre-push\nmake lint', false],
+      ['a comment after a command', 'make lint # rove-sentinel comes back later', false],
+      ['a passing mention', 'echo "Sentinel is gone"', false],
+    ])('reads %s in a hook', async (_what, line, calls) => {
+      const { repoRoot } = await installedRepository();
+      await writeFile(path.join(repoRoot, '.githooks/pre-push'), `#!/bin/sh\nset -eu\n${line}\n`);
+      await expect(hookCallsSentinel(repoRoot)).resolves.toBe(calls);
+    });
+
+    it('recognizes the hook this repository uses', async () => {
+      await expect(hookCallsSentinel(process.cwd())).resolves.toBe(true);
+    });
+
     it('counts a project\'s own hook only while it calls Sentinel', async () => {
       const { repoRoot, status } = await installedRepository();
       try {
