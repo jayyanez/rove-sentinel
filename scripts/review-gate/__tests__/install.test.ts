@@ -1,3 +1,4 @@
+import { execFileSync, spawnSync } from 'node:child_process';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,8 @@ import {
   executeUninstall,
   executeInstallTransaction,
   gateStatus,
+  watcherReport,
+  watcherState,
   heartbeatIsHealthy,
   recoverStaleDaemonState,
   schedulerQueryInstalled,
@@ -20,6 +23,158 @@ import {
 } from '../install.mjs';
 import { atomicWriteJson, ensureState, readJson, writeDaemonError } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
+import { hookCallsSentinel, initializeRepository, uninstallGeneratedHook } from '../init.mjs';
+
+describe('what a person is told of the watcher', () => {
+  const heartbeat = { pid: 12 };
+  const lock = { pid: 12 };
+  const installed = true;
+
+  it('says it runs, or runs another version', () => {
+    expect(watcherState({ running: true, compatible: true, heartbeat, lock, installed })).toEqual({ state: 'running', pid: 12 });
+    expect(watcherState({ running: true, compatible: false, heartbeat, lock, installed })).toMatchObject({ state: 'outdated', action: expect.stringContaining('install') });
+  });
+
+  it('says it is stopped when the scheduler reports it installed but nothing runs', () => {
+    expect(watcherState({ running: false, installed })).toMatchObject({ state: 'stopped', reason: 'no watcher is running', action: expect.stringContaining('install') });
+  });
+
+  it('gives the watcher\'s own refusal as the reason', () => {
+    const daemonError = { at: '2026-11-01T00:00:00.000Z', message: 'Review daemon lock names live PID 12' };
+    expect(watcherState({ running: false, lock, daemonError, installed })).toMatchObject({ state: 'stopped', reason: daemonError.message, since: daemonError.at });
+  });
+
+  it('names a lock with no fresh heartbeat', () => {
+    expect(watcherState({ running: false, lock, installed }).reason).toContain('PID 12');
+  });
+
+  it('says so when no watcher was ever installed', () => {
+    expect(watcherState({ running: false, installed: false })).toEqual({ state: 'not-installed' });
+  });
+
+  it('does not call a watcher stopped for an old refusal once it is uninstalled', () => {
+    expect(watcherState({ running: false, installed: false, daemonError: { message: 'old refusal' } })).toEqual({ state: 'not-installed' });
+  });
+
+  it('calls unreadable state what it is, even with nothing else recorded', () => {
+    const watcher = watcherState({ running: false, installed: false, stateError: 'Unexpected end of JSON input' });
+    expect(watcher).toMatchObject({ state: 'stopped', reason: expect.stringContaining('unreadable: Unexpected end of JSON input') });
+    expect(watcherState({ running: false, installed, stateError: 'bad', daemonError: { message: 'its own refusal' } }).reason).toBe('its own refusal');
+  });
+
+  it('does not claim to know when the scheduler could not be read', () => {
+    expect(watcherState({ running: false, installed: false, schedulerError: 'launchctl failed' })).toEqual({ state: 'unknown', reason: 'launchctl failed' });
+    expect(watcherState({ running: false, installed, schedulerError: 'launchctl failed' }).state).toBe('stopped');
+  });
+
+  it('keeps doctor going when the watcher cannot be read', async () => {
+    const scheduler = { supported: true, installed: null, error: 'query failed' };
+    await expect(watcherReport('C:\\repo', { status: async () => ({ watcher: { state: 'stopped' }, scheduler }) as never }))
+      .resolves.toEqual({ watcher: { state: 'stopped' }, scheduler });
+    await expect(watcherReport('C:\\repo', { status: async () => { throw new Error('no state'); } }))
+      .resolves.toEqual({ watcher: { state: 'unknown', reason: 'no state' }, scheduler: null });
+    const orphan = Object.assign(new Error('tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
+    await expect(watcherReport('C:\\repo', { status: async () => { throw orphan; } })).rejects.toBe(orphan);
+  });
+
+  describe('reading the repository', () => {
+    const missingService = async () => ({ code: 1, stdout: '', stderr: process.platform === 'darwin'
+      ? 'Could not find service' : 'ERROR: The system cannot find the file specified.' });
+
+    async function installedRepository() {
+      const repoRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-watcher-state-'));
+      execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+      await initializeRepository(repoRoot);
+      const stateRoot = path.join(repoRoot, '.state');
+      const paths = await ensureState(stateRoot);
+      await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Rules', lessons: '# Lessons' }));
+      const status = async () => (await gateStatus({ repoRoot }, {
+        createContext: async () => ({ repoRoot, stateRoot, paths }),
+        getHooksPath: async () => '.githooks',
+        run: missingService,
+      })).watcher;
+      return { repoRoot, status, paths, stateRoot };
+    }
+
+    it('counts the generated hook as installed, and not after uninstall', async () => {
+      const { repoRoot, status } = await installedRepository();
+      try {
+        await expect(hookCallsSentinel(repoRoot)).resolves.toBe(true);
+        await expect(status()).resolves.toMatchObject({ state: 'stopped' });
+
+        await expect(uninstallGeneratedHook(repoRoot)).resolves.toBe('removed-generated-hook');
+
+        await expect(hookCallsSentinel(repoRoot)).resolves.toBe(false);
+        await expect(status()).resolves.toEqual({ state: 'not-installed' });
+      } finally {
+        await rm(repoRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('reports a corrupt lock as unreadable state', async () => {
+      const { paths, status } = await installedRepository();
+      await writeFile(paths.lock, '{ not json');
+      await expect(status()).resolves.toMatchObject({ state: 'stopped', reason: expect.stringContaining('unreadable') });
+    });
+
+    it.skipIf(process.platform === 'linux')('survives a scheduler that cannot even be started, and says so apart', async () => {
+      const { repoRoot, paths, stateRoot } = await installedRepository();
+      const status = await gateStatus({ repoRoot }, {
+        createContext: async () => ({ repoRoot, stateRoot, paths }),
+        getHooksPath: async () => '.githooks',
+        run: async () => { throw Object.assign(new Error('spawn launchctl ENOENT'), { code: 'ENOENT' }); },
+      });
+      expect(status.scheduler).toMatchObject({ installed: null, error: expect.stringContaining('ENOENT') });
+      expect(status.watcher.state).toBe('stopped');
+    });
+
+    it('warns of a stopped watcher before a doctor check fails, and still exits with the error', async () => {
+      const { repoRoot } = await installedRepository();
+      const home = await mkdtemp(path.join(os.tmpdir(), 'rove-review-doctor-home-'));
+      await writeFile(path.join(repoRoot, '.rove-sentinel.json'), '{ "typo": true }');
+      const cli = path.resolve('scripts/review-gate/cli.mjs');
+      const run = spawnSync(process.execPath, [cli, 'doctor', '--project-config', '--no-update-check'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, ROVE_SENTINEL_UPDATE_NOTIFICATIONS: '0', ROVE_SENTINEL_UPDATE_CHECK: '0' },
+      });
+      expect(run.stderr).toContain('The review watcher is stopped');
+      expect(run.stderr).toContain('Unknown Sentinel configuration key');
+      expect(run.status).not.toBe(0);
+    });
+
+    it.each([
+      ['the generated adapter', 'exec node "$root/.githooks/sentinel.mjs" pre-push "$@"', true],
+      ['the command', 'npx --no-install rove-sentinel pre-push "$@"', true],
+      ['the launcher in a repository of its own', 'exec node "$root/scripts/review-gate/launcher.mjs" pre-push "$@"', true],
+      ['a comment', '# Sentinel was removed\nmake lint', false],
+      ['a commented call', '# npx rove-sentinel pre-push\nmake lint', false],
+      ['a comment after a command', 'make lint # rove-sentinel comes back later', false],
+      ['a passing mention', 'echo "Sentinel is gone"', false],
+    ])('reads %s in a hook', async (_what, line, calls) => {
+      const { repoRoot } = await installedRepository();
+      await writeFile(path.join(repoRoot, '.githooks/pre-push'), `#!/bin/sh\nset -eu\n${line}\n`);
+      await expect(hookCallsSentinel(repoRoot)).resolves.toBe(calls);
+    });
+
+    it('recognizes the hook this repository uses', async () => {
+      await expect(hookCallsSentinel(process.cwd())).resolves.toBe(true);
+    });
+
+    it('counts a project\'s own hook only while it calls Sentinel', async () => {
+      const { repoRoot, status } = await installedRepository();
+      try {
+        await writeFile(path.join(repoRoot, '.githooks/pre-push'), '#!/bin/sh\nnpx --no-install rove-sentinel pre-push "$@"\n');
+        await expect(status()).resolves.toMatchObject({ state: 'stopped' });
+        await writeFile(path.join(repoRoot, '.githooks/pre-push'), '#!/bin/sh\nmake lint\n');
+        await expect(status()).resolves.toEqual({ state: 'not-installed' });
+      } finally {
+        await rm(repoRoot, { recursive: true, force: true });
+      }
+    });
+  });
+});
 
 describe('review-gate native installer plans', () => {
   it('names the provider when its authentication output is not valid JSON', async () => {

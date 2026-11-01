@@ -162,6 +162,29 @@ describe('shared immutable runtime distribution', () => {
     });
     return { root, fetchImpl, npm };
   }
+  it('tells the truth about proxies: npm reads HTTPS_PROXY, Node\'s fetch needs more', async () => {
+    const guide = await readFile('docs/troubleshooting.md', 'utf8');
+    const row = guide.split('\n').find((line) => line.startsWith('| `update` fails'));
+    expect(row).toContain('HTTPS_PROXY');
+    expect(row).toContain('NODE_USE_ENV_PROXY=1');
+    expect(row).toContain('Node 22.21');
+  });
+
+  it('installs an engine without the user\'s npm configuration', async () => {
+    const d = await distribution();
+    await ensureEngine('1.11.0', { ...d, env: {
+      PATH: 'kept', HTTPS_PROXY: 'kept', npm_config_allow_scripts: 'true', NPM_CONFIG_REGISTRY: 'https://registry.example.com/', npm_config_userconfig: 'mine',
+    } });
+    const [args, options] = d.npm.mock.calls[0];
+    const value = (flag: string) => args[args.indexOf(flag) + 1];
+    expect(args).toEqual(expect.arrayContaining(['--ignore-scripts']));
+    expect(value('--registry')).toBe('https://registry.npmjs.org/');
+    // npm refuses to load one path as both configurations.
+    expect(value('--userconfig')).not.toBe(value('--globalconfig'));
+    for (const file of [value('--userconfig'), value('--globalconfig')]) expect(file.startsWith(options.cwd)).toBe(true);
+    expect(Object.keys(options.env).sort()).toEqual(['HTTPS_PROXY', 'PATH']);
+  });
+
   it('checks SHA-256 before npm, disables scripts, and reuses a verified engine across projects', async () => {
     const d = await distribution();
     const target = await ensureEngine('1.11.0', d);

@@ -25,6 +25,24 @@ export async function uninstallGeneratedHook(repoRoot) {
   return 'removed-generated-hook';
 }
 
+const SENTINEL_CALL = /rove-sentinel|sentinel\.mjs|review-gate\/(?:launcher|cli)\.mjs/i;
+
+/**
+ * Whether a pre-push hook still calls Sentinel: the generated one, or a project's
+ * own that integrates it, which uninstall leaves for its author to edit. The
+ * hooks path and the installed policy both outlive uninstall, so neither says.
+ */
+export async function hookCallsSentinel(repoRoot) {
+  try {
+    const hook = await readFile(path.join(repoRoot, '.githooks/pre-push'), 'utf8');
+    // A comment or a passing mention is not a call.
+    return SENTINEL_CALL.test(hook.replace(/(^|\s)#.*$/gm, ''));
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /** Create onboarding files without replacing any existing hook or policy. */
 export async function initializeRepository(repoRoot = process.cwd()) {
   const root = await findRepoRoot(repoRoot);

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A stopped watcher shows.** A scheduler's task can report success while its watcher
+  refused to start, for example after a restart left a dead process's lock. `status` and
+  `doctor` now report `watcher.state` and why it is stopped, and warn on stderr. `doctor`
+  warns before any other check can fail, and reports a scheduler it cannot read apart.
+- **An engine installs without your npm configuration.** `npm_config_*` settings, which
+  npm 12 can refuse in project-scoped installs, and the user and global `.npmrc` no longer
+  reach the install, which uses the public registry. `--ignore-scripts` and the checksum
+  stay. A proxy set in `.npmrc` must move to `HTTPS_PROXY`,
+  and the release download needs `NODE_USE_ENV_PROXY=1` beside it, on Node 22.21 or later.
 - **Clippy finds your crates.** The lane runs for each crate that holds a changed
   Rust file, found by its `Cargo.toml` or listed in the new `clippyCrates`, no longer
   for one folder name only. Messages from a crate in a workspace now land on the
