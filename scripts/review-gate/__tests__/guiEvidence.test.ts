@@ -60,7 +60,7 @@ describe('where a project keeps its evidence', () => {
   it('with guiEvidence required and nothing else, a file is GUI by its type, in any repository', () => {
     const layout = evidenceLayout({ guiEvidence: 'required' });
     for (const file of ['app/View.tsx', 'web/Page.vue', 'a/b.svelte', 'site/index.html', 'styles/main.scss']) expect(isGuiDiff([file], layout)).toBe(true);
-    for (const file of ['src/lib/components/popover.ts', 'src/routes/page.ts', 'src/main.go', 'app/View.test.tsx', 'docs/page.md']) expect(isGuiDiff([file], layout)).toBe(false);
+    for (const file of ['src/lib/components/popover.ts', 'src/routes/page.ts', 'src/main.go', 'app/View.test.tsx', 'app/View.spec.tsx', 'app/View.stories.tsx', 'tests/View.tsx', 'e2e/page.html', 'docs/page.md']) expect(isGuiDiff([file], layout)).toBe(false);
   });
 
   it('checks no controls until a project says which sources name them', () => {
@@ -70,12 +70,15 @@ describe('where a project keeps its evidence', () => {
     const listed = problems(files, { guiEvidence: 'required', guiEvidenceLayout: { controlSources: '\\.svelte$' } }, patch);
     expect(listed.join(' ')).toContain('data-control must be a string literal');
     expect(listed.join(' ')).toContain('docs/design/control-registry.md');
+    expect(listed.join(' ')).not.toMatch(/\.md §/);
   });
 
   it('keeps the earlier spelling on its SvelteKit layout', () => {
     const layout = evidenceLayout({ guiEvidence: 'rove' });
     expect(isGuiDiff(['src/lib/components/popover.ts'], layout)).toBe(true);
     expect(isGuiDiff(['app/View.tsx'], layout)).toBe(false);
+    expect(isGuiDiff(['src/lib/components/a.spec.ts'], layout)).toBe(true);
+    expect(isGuiDiff(['tests/a.svelte'], layout)).toBe(true);
     expect(problems(['src/app.html'], { guiEvidence: 'rove' }).join(' ')).toContain('pnpm design:capture');
   });
 

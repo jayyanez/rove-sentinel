@@ -4,7 +4,6 @@ import path from 'node:path';
 import { isatty } from 'node:tty';
 import { fileURLToPath } from 'node:url';
 
-import { readConfig } from './config.mjs';
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 import { initializeRepository } from './init.mjs';
 import { HELP } from './help.mjs';
@@ -350,7 +349,7 @@ async function main() {
       throw new Error(`--ref-type must be "branch" or "tag"; received ${JSON.stringify(refType)}.`);
     }
     const refusal = await guiEvidenceRefusal({
-      repoRoot: root, identity: { baseSha, headSha }, branch, refType, layout: evidenceLayout(await readConfig(root)),
+      repoRoot: root, identity: { baseSha, headSha }, branch, refType, layout: evidenceLayout(await installedConfig(root)),
     });
     if (refusal) {
       process.stderr.write(`${refusal}\n`);

@@ -47,7 +47,7 @@ each attestation. Commit configuration and policy alongside the project.
 With `guiEvidence: "required"`, a change to the GUI cannot be pushed without its
 evidence: PNG files and a `REVIEW.md` in `docs/design/reviews/<branch-slug>/`, committed
 in the change. A GUI file is a `.svelte`, `.vue`, `.tsx`, `.jsx`, `.css`, `.scss`,
-`.sass`, `.less` or `.html` file; tests and documents do not count. The check validates
+`.sass`, `.less` or `.html` file; tests, stories and documents do not count. The check validates
 the evidence's structure; it does not take screenshots or replace a human visual review.
 Leave `guiEvidence` at `none` and none of this applies.
 
@@ -87,7 +87,7 @@ Risk decides how many reviewers and shards a change gets. A change is high risk 
 touches the charter or lessons, agent instructions (`AGENTS.md`, `CLAUDE.md`, and
 `.agents`, `.claude` or `.grok` skills), Sentinel's own hook, configuration and files,
 CI definitions, migrations, dependency manifests, a tool's configuration file
-(`*.config.*`, `*.conf.*`), or a path naming permissions or capabilities. No other
+(`*.config.*`, `*.conf.*`, but for prose), or a path naming permissions or capabilities. No other
 folder name raises it. List your project's sensitive paths:
 
 ```json
@@ -98,8 +98,9 @@ An entry is a file, or a folder and all under it, from the repository root. A do
 listed in `highRiskPaths` no longer takes the documentation skip.
 
 `scriptPaths` takes a file or folder to the scripts lens, which looks for platform and
-flag gating, instead of the code lens. `scripts/`, `.githooks/` and `.github/` always go
-there. It changes what a reviewer looks for, not how much is reviewed.
+flag gating, instead of the code lens, and so do `scripts/`, `.githooks/` and `.github/`.
+Tests, documents and text manifests there keep their own lens. It changes what a reviewer
+looks for, not how much is reviewed.
 
 ## Clippy
 

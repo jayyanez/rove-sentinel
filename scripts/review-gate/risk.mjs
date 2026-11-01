@@ -27,7 +27,7 @@ const HIGH_RISK_PATHS = [
   /(?:^|\/)migrations?\//i,
   // Dependency manifests, and any tool's own configuration file.
   /(?:package|pnpm-lock)\.(?:json|yaml|yml)$/i,
-  /\.(?:config|conf)\.(?:json|yaml|yml|js|mjs|cjs|ts)$/i,
+  /\.(?:config|conf)\.(?!(?:md|markdown|rst|adoc|txt)$)[a-z0-9]+$/i,
 ];
 
 const HIGH_RISK_TOKENS = [

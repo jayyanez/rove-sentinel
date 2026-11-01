@@ -75,6 +75,8 @@ import { branchEvidenceSlug } from './evidenceSlug.mjs';
 // only where it says which sources name them.
 const ANY_REPOSITORY = {
   guiFiles: [/\.(?:svelte|vue|tsx|jsx|css|scss|sass|less|html)$/i],
+  // Tests are text ABOUT the GUI, not the GUI.
+  testFiles: /(?:^|\/)(?:tests?|__tests__|e2e)\/|\.(?:test|spec|stories)\.[^./]+$/i,
   reviewsFolder: 'docs/design/reviews',
   controlRegistry: 'docs/design/control-registry.md',
   controlSources: null,
@@ -99,6 +101,7 @@ const SVELTEKIT = {
     // First-paint palette + the data-theme stamps the stylesheet keys on.
     /^src\/app\.html$/,
   ],
+  testFiles: /(?:^|\/)__tests__\/|\.test\.[cm]?[jt]s$/,
   // Only component sources name controls; a `data-control="…"` in a test
   // fixture, a script or a doc is text about controls, not a control.
   controlSources: /^src\/lib\/components\/.+\.svelte$/,
@@ -129,9 +132,6 @@ export function evidenceLayout(config) {
   const base = !config || config.guiEvidence === 'rove' ? SVELTEKIT : ANY_REPOSITORY;
   return compileLayout({ ...base, ...config?.guiEvidenceLayout });
 }
-
-// Tests under a governed folder are text ABOUT the GUI, not the GUI.
-const TEST_FILE = /(?:^|\/)__tests__\/|\.test\.[cm]?[jt]sx?$/;
 
 const DOC_ONLY = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 export const CONTROL_REGISTRY = DEFAULT_LAYOUT.controlRegistry;
@@ -327,7 +327,7 @@ export function evidenceScreenshotPaths(files, branch, refType = 'branch', layou
 
 export function isGuiDiff(files, layout = DEFAULT_LAYOUT) {
   return normalizeChangedFiles(files).some(
-    ({ path }) => !DOC_ONLY.test(path) && !TEST_FILE.test(path) && layout.guiFiles.some((pattern) => pattern.test(path)),
+    ({ path }) => !DOC_ONLY.test(path) && !layout.testFiles.test(path) && layout.guiFiles.some((pattern) => pattern.test(path)),
   );
 }
 
@@ -584,7 +584,7 @@ export function guiEvidenceProblems({ files, branch, refType = 'branch', patch =
     const missing = controls.filter((id) => !registered.has(id));
     if (missing.length) {
       problems.push(
-        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one row per control with surface · zone · order · visibility rule · precedent and commit it (visual-redesign-plan.md §4.7).`,
+        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one row per control with surface · zone · order · visibility rule · precedent and commit it.`,
       );
     }
     // A registered id that appears in a file where it did not exist at base
