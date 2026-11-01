@@ -9,6 +9,7 @@ import {
   attestationIdentity,
   attestationFileName,
   acquireDaemonLock,
+  isProcessAlive,
   atomicWriteJson,
   cancelQueuedRequest,
   claimNextRequest,
@@ -58,6 +59,24 @@ async function temporaryDirectory() {
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+describe('whether a process exists', () => {
+  const answering = (code: string) => vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error(code), { code });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('takes only ESRCH as gone', () => {
+    answering('EPERM');
+    expect(isProcessAlive(4242)).toBe(true);
+    answering('ESRCH');
+    expect(isProcessAlive(4242)).toBe(false);
+  });
+
+  it('knows that a process id must be a positive whole number', () => {
+    for (const pid of [0, -1, 1.5, Number.NaN, undefined]) expect(isProcessAlive(pid)).toBe(false);
+  });
 });
 
 describe('shared review local state', () => {
