@@ -296,6 +296,9 @@ export async function runWatcher({
     const lock = await acquireDaemonLock(context.paths);
     if (!lock) return { alreadyRunning: true, stateRoot: context.stateRoot };
     context.daemonOwnerToken = lock.ownerToken;
+    if (lock.replaced) {
+      await recordEvent(context.paths, { type: 'restart-lock-replaced', previousLockPid: lock.replaced.pid, lastHeartbeatAt: lock.replaced.lastHeartbeatAt }).catch(() => {});
+    }
 
     let stopped = false;
     let nextGithubAt = 0;

@@ -91,6 +91,7 @@ export function statePaths(root) {
     auditEvents: path.join(root, 'audit-events'),
     queueSubmitLock: path.join(root, 'queue-submit.lock'),
     lock: path.join(root, 'daemon.lock.json'),
+    takeover: path.join(root, 'takeover.lock'),
     heartbeat: path.join(root, 'heartbeat.json'),
     stopRequest: path.join(root, 'stop-request.json'),
     daemonError: path.join(root, 'daemon-error.json'),
@@ -1162,6 +1163,89 @@ export function daemonOwnerIsHealthy(
   );
 }
 
+/**
+ * When this machine booted, by the wall clock, or null when it cannot be read.
+ * It is an estimate, and only ever half of a proof: on Windows it reads about
+ * half a minute later than the system's own boot time.
+ */
+export function bootTimeMs({ now = Date.now, uptime = os.uptime } = {}) {
+  try {
+    const seconds = uptime();
+    const booted = now() - seconds * 1000;
+    return seconds > 0 && Number.isFinite(booted) ? booted : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a lock's owner died with an earlier boot: its last heartbeat, which
+ * must be this owner's own, is older than the boot, and its process is gone.
+ * The clock alone proves nothing: a forward step can age a live owner's
+ * heartbeat past the boot, and its process then answers. A backward step, a
+ * reused process id or anything unreadable keeps the lock for a person.
+ */
+export function daemonLockOutlivedOwner(
+  lock,
+  heartbeat,
+  { isAlive = isProcessAlive, bootTime = bootTimeMs } = {},
+) {
+  const lastHeartbeat = Date.parse(heartbeat?.at);
+  const booted = bootTime();
+  return Boolean(
+    lock?.ownerToken &&
+    lock.ownerToken === heartbeat?.ownerToken &&
+    lock.pid === heartbeat?.pid &&
+    Number.isFinite(booted) &&
+    lastHeartbeat < booted &&
+    !isAlive(lock.pid),
+  );
+}
+
+// A takeover lasts milliseconds. Age only tells a marker in use from one its
+// holder left behind, and a starter removes neither.
+const TAKEOVER_MARKER_IN_USE_MS = 60_000;
+
+async function takeoverMarkerInUse(paths, { now, inspect }) {
+  try {
+    const { mtimeMs } = await inspect(paths.takeover);
+    return Math.abs(now() - mtimeMs) < TAKEOVER_MARKER_IN_USE_MS;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true; // Its holder has just finished.
+    throw error;
+  }
+}
+
+/**
+ * Runs `work`, which removes a daemon lock its caller did not write, as the only
+ * process doing so. Without the marker, one remover can take the lock that
+ * another's removal let a starter create. Only `recover`, a person's decision,
+ * may adopt a marker its holder left behind.
+ */
+export async function withTakeoverMarker(
+  paths,
+  work,
+  { adoptAbandoned = false, openFile = open, remove = rm, inspect = stat, now = Date.now } = {},
+) {
+  try {
+    const marker = await openFile(paths.takeover, 'wx', 0o600);
+    await marker.close().catch(() => {});
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    if (await takeoverMarkerInUse(paths, { now, inspect })) {
+      throw Object.assign(new Error(`Another Sentinel process is replacing the review daemon lock. Retry shortly. Marker: ${paths.takeover}`), { code: 'TAKEOVER_IN_USE' });
+    }
+    if (!adoptAbandoned) {
+      throw new Error(`A replacement of the review daemon lock never finished. Confirm no Sentinel process is working in ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>". Marker: ${paths.takeover}`);
+    }
+  }
+  try {
+    return await work();
+  } finally {
+    await remove(paths.takeover, { force: true }).catch(() => {});
+  }
+}
+
 export async function acquireDaemonLock(
   paths,
   {
@@ -1171,6 +1255,7 @@ export async function acquireDaemonLock(
     ownerPid = process.pid,
     ownerTokenFactory = randomUUID,
     isAlive = isProcessAlive,
+    bootTime = bootTimeMs,
   } = {},
 ) {
   const tryAcquire = async () => {
@@ -1222,6 +1307,23 @@ export async function acquireDaemonLock(
   }
   const heartbeat = await read(paths.heartbeat).catch(() => null);
   if (daemonOwnerIsHealthy(existing, heartbeat)) return null;
+  if (daemonLockOutlivedOwner(existing, heartbeat, { isAlive, bootTime })) {
+    try {
+      return await withTakeoverMarker(paths, async () => {
+        const current = await read(paths.lock, missingLock).catch(() => null);
+        if (current !== missingLock) {
+          if (current?.ownerToken !== existing.ownerToken) return null;
+          await remove(paths.lock, { force: true });
+        }
+        const lock = await tryAcquire();
+        return { ...lock, replaced: { pid: existing.pid, lastHeartbeatAt: heartbeat.at } };
+      }, { openFile, remove });
+    } catch (error) {
+      // Another starter holds the marker, or won the name once it was free.
+      if (error?.code === 'EEXIST' || error?.code === 'TAKEOVER_IN_USE') return null;
+      throw error;
+    }
+  }
   if (isAlive(existing?.pid)) {
     throw new Error(`Review daemon lock names live PID ${existing.pid} without a fresh matching owner heartbeat; refusing to trust a possibly reused PID. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" to clear it without signaling that PID.`);
   }
