@@ -13,9 +13,10 @@ const tracked = pathnames
   .filter((file) => !/\.(tgz|png)$|^pnpm-lock\.yaml$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
 const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 
-// fc00::/7 and fe80::/10, written in full, compressed or ending in IPv4
+// fc00::/7 and fe80::/10, whole, written in full, compressed or ending in IPv4;
+// a path in Rust or C++ such as fd00::new only starts like one
 const HEXTET = '[0-9a-f]{1,4}';
-const LOCAL_V6 = new RegExp(`(?<![0-9a-z:])(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:(?::${HEXTET}){7}|(?::${HEXTET}){5}:\\d{1,3}(?:\\.\\d{1,3}){3}|(?::${HEXTET}){0,6}::)`, 'i');
+const LOCAL_V6 = new RegExp(`(?<![0-9a-z:])(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:(?::${HEXTET}){7}|(?::${HEXTET}){5}:\\d{1,3}(?:\\.\\d{1,3}){3}|(?::${HEXTET}){0,6}::(?:${HEXTET}(?::${HEXTET}){0,6})?)(?![\\w:])`, 'i');
 
 // An address counts as synthetic only whole, so neither a real mailbox at these
 // companies nor a real domain that starts like one of these gets through.
@@ -89,14 +90,15 @@ describe('a public repository any project can adopt', () => {
 describe('what the guard catches', () => {
   it.each([
     'fd00::1', 'fc00::', 'fd7a:115c:a1e0::53', 'fe80::1%eth0', 'FE80::ABCD', 'febf::1', '[fd12:3456::1]:8080',
-    'fd12:3456:789a:1:2:3:4:5', 'fe80:0:0:0:1:2:3:4', 'fd00:1:2:3:4:5:192.0.2.1'
+    'fd12:3456:789a:1:2:3:4:5', 'fe80:0:0:0:1:2:3:4', 'fd00:1:2:3:4:5:192.0.2.1', 'fd00::192.0.2.1', 'fd00::/8'
   ])('finds the IPv6 address %s', (address) => {
     expect(LOCAL_V6.test(`host ${address} up`)).toBe(true);
   });
 
   it.each([
     '2001:db8::1', '::1', '::ffff:192.0.2.1', 'fec0::1', 'fd::new', 'fd0::1', 'fe80', 'fd12:3456', 'abfd00::1',
-    '0xfe80::1', 'Foo::fd00::Bar'
+    '0xfe80::1', 'Foo::fd00::Bar', 'fd00::new', 'fd00::new()', 'fe80::Thing', 'fc00::from_raw', 'fd00::1new', 'fd00:1::abcde',
+    'fd00:1:2:3:4:5:6:7new'
   ])('leaves %s alone', (text) => {
     expect(LOCAL_V6.test(`host ${text} up`)).toBe(false);
   });
