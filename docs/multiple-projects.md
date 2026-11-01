@@ -7,9 +7,9 @@ Sentinel separates a **runtime**, a **repository watcher**, and an individual
 
 | Situation | What Sentinel shares | What stays separate |
 | --- | --- | --- |
-| Several agents or PRs in Rove | One repository watcher, request queue, installed policy and retained state | Exact branch/base/head review identities and findings |
+| Several agents or PRs in one project | One repository watcher, request queue, installed policy and retained state | Exact branch/base/head review identities and findings |
 | Several worktrees of one repository | The same repository state and watcher, identified by normalized remote URL | Working files and committed review targets |
-| Rove and a different project | Verified runtime files under the same OS account | Watcher, queue, policy, trusted authors, pauses, reports and selected engine |
+| Two different projects | Verified runtime files under the same OS account | Watcher, queue, policy, trusted authors, pauses, reports and selected engine |
 | Another computer or OS account | The published release artifacts | Local state, processes, provider authentication and engine selection |
 
 ## Several computers working on one repository

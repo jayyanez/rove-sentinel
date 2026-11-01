@@ -38,7 +38,7 @@ export function normalizeRepositoryIdentity(remoteUrl, repoRoot, { platform = pr
       // every host-based URL onto one credential-free identity so one daemon
       // and attestation store serve every local clone of the same remote.
       // GitHub paths are case-insensitive; preserving this identity also
-      // preserves existing Rove state. Other hosts may distinguish path case.
+      // preserves existing state. Other hosts may distinguish path case.
       const pathname = parsed.hostname.toLowerCase() === 'github.com'
         ? parsed.pathname.toLowerCase() : parsed.pathname;
       return `https://${parsed.host.toLowerCase()}${pathname}`.replace(/\/$/, '');

@@ -12,7 +12,7 @@ private remote URLs, and private source excerpts.
 | Another checkout owns the watcher | Operate from that checkout; avoid competing watchers for the same remote |
 | Push waits for review | Inspect watcher health, its current activity and the detached review log |
 | Process cleanup failure pauses work | Investigate the recorded process and children; use `resume` if the watcher is healthy, or recover stale state before restarting |
-| GUI evidence requested unexpectedly | Inspect the installed `guiEvidence` configuration; generic projects use `none` |
+| GUI evidence requested unexpectedly | Inspect the installed `guiEvidence` configuration; `none` turns the check off |
 | Clippy timeout | Check the lane note and cold build cost; do not treat it as a passing Rust check |
 | No GitHub PR comment | Check draft state, author allowlist, same-repository head, `gh` permissions, and watcher health |
 | Hook no longer runs | Inspect `git config --get core.hooksPath` and the committed hook adapter |
@@ -55,8 +55,7 @@ changed line over about 2 KB, or a large prior-blocker file; a rule to split
 files below those sizes was a workaround for them.
 
 On Windows, per-repository records live under
-`%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>` for migration
-compatibility. `status` reports the actual paths. Reports and context may contain
+`%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>`. `status` reports the actual paths. Reports and context may contain
 source code; do not upload that directory wholesale to a public issue.
 
 Detached foreground logs are written under the repository's `output/` directory.

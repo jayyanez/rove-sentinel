@@ -73,7 +73,7 @@ It uses synthetic future-version archives, not public releases. Keep its ignored
 evidence until the review is complete; an unsuccessful cleanup is unfinished work.
 
 Use English for code, comments, documentation, commits, and public discussion.
-Do not include private Rove source, private review logs or credentials in fixtures.
+Do not include a consumer project's private source, private review logs or credentials in fixtures.
 By contributing, you agree that your contribution is available under this
 repository's Apache-2.0 license. Third-party material must retain its license and
 attribution and be compatible with redistribution.

@@ -72,7 +72,7 @@ and GitHub authentication. `init` creates `.rove-sentinel.json`,
 an incompatible pre-push hook requires deliberate integration.
 
 Inspect and commit these files. Start with the default configuration: the
-built-in review charter, no Rove visual rules, and no automatic Cargo builds.
+built-in review charter, no visual evidence rules, and no automatic Cargo builds.
 See [configuration](configuration.md) before enabling project integrations, and
 [models](models.md) to choose providers, model identifiers and reasoning effort.
 The 1.11 model defaults require Codex 0.159.0+ and/or Claude Code 2.1.280+.

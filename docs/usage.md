@@ -101,5 +101,5 @@ machine, watcher, network, and the selected authenticated CLI(s) must remain ava
 | `help` | List commands and flags |
 
 The `ledger` command does not invoke CodeRabbit or Greptile. The `design-evidence`
-command validates the optional Rove compatibility format; it does not capture
+command validates the optional GUI evidence format; it does not capture
 screenshots or assess visual quality.

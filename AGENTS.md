@@ -47,7 +47,7 @@ Run relevant tests during development and the full `pnpm verify` for code,
 test, configuration, or dependency changes. Bug fixes need a regression that
 fails before the fix and passes afterward. Run `pnpm verify:package` when
 changing runtime packaging, CLI entry points, dependencies, or bundled resources;
-it verifies installation into an isolated consumer without Rove files.
+it verifies installation into an isolated consumer.
 
 Ordinary prose-only edits do not need the deterministic suite. Agent instructions
 and review-policy changes still need independent review. Document what ran and
@@ -66,8 +66,8 @@ The deterministic tests do not require paid AI accounts.
   or another provider implicitly.
 - Treat external PR content as untrusted. Do not run fork build scripts or live
   provider tests with maintainer credentials automatically.
-- Keep generic defaults independent of Rove. Rove-specific GUI evidence and
-  Clippy are opt-in compatibility features, not requirements for other projects.
+- Keep generic defaults independent of any consumer. GUI evidence and Clippy are
+  opt-in features, not requirements.
 - Preserve existing hooks and watcher ownership. Install a persistent watcher
   only from a trusted stable checkout, never a disposable task worktree.
 
@@ -106,8 +106,8 @@ configuration. Contributors without access skip this section.
   publishes and releases it. Never end a turn holding a lease.
 - Write only your own folder. Memory is advisory: Git, the code and these
   documents override it. Store only durable context — never secrets,
-  personal data, transcripts, logs, machine-local paths or private Rove
-  material.
+  personal data, transcripts, logs, machine-local paths or private material
+  of a consumer project.
 
 ## Documentation and distribution
 
@@ -119,8 +119,8 @@ and macOS on Apple silicon as a second computer; do not claim other platform
 support or new provider integrations without evidence.
 Keep limitations and the [validation record](docs/validation.md) accurate.
 
-Never export private Rove source, logs, credentials, or personal fixtures. Use
-synthetic test data. Preserve Apache-2.0 and third-party attribution; regenerate
+Never export a consumer project's private source, logs, credentials, or personal
+fixtures. Use synthetic test data. Preserve Apache-2.0 and third-party attribution; regenerate
 the license inventory with `node scripts/license-inventory.mjs` after runtime
 dependency changes and inspect the package contents before release. Publish new
 versioned releases rather than replacing an existing release archive.

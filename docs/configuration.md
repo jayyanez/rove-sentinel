@@ -1,6 +1,6 @@
 # Configuration
 
-Configuration is optional. Defaults work without any Rove source or documents.
+Configuration is optional. The defaults work for any repository.
 Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 
 ```json
@@ -19,8 +19,9 @@ Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 | `schemaVersion` | Must be `1` |
 | `charter` | Repository-relative Markdown policy; `null` uses the bundled charter |
 | `lessons` | Repository-relative project lessons; `null` supplies no project lessons |
-| `guiEvidence` | `none` by default; `rove` enables the Rove visual-evidence contract |
-| `clippy` | Opt into executing Cargo Clippy for changed Rust files under `src-tauri` |
+| `guiEvidence` | `none` by default; `required` makes a GUI change commit its visual evidence. `rove` is the earlier spelling of `required` and keeps working |
+| `clippy` | Opt into executing Cargo Clippy for changed Rust files |
+| `clippyCrates` | Optional folders of the crates Clippy runs in, `.` for the repository root; without it they are found by their `Cargo.toml` |
 | `trustedAuthors` | GitHub logins allowed for automatic same-repository PR review; empty means the repository owner |
 | `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
 | `models` | Optional per-provider `model`, `effort`, `maxEffort` and per-role `roles`; see [models](models.md) |
@@ -38,22 +39,43 @@ or policy changes. Review uses the installed snapshot, including configuration,
 not the version proposed by the branch being reviewed. Its digest is part of
 each attestation. Commit configuration and policy alongside the project.
 
-## Optional Rove compatibility
+## GUI evidence
 
-Rove selects its own charter and lessons, enables `guiEvidence: "rove"`, and
-can enable the existing Clippy lane. The GUI validator expects the Rove
-`docs/design/reviews/<branch-slug>/` format, actual PNG evidence, review documents,
-and `docs/design/control-registry.md` rows for new `data-control` identifiers.
-It validates evidence structure; it does not take screenshots or replace a human
-visual review. Generic users do not need these directories.
+With `guiEvidence: "required"`, a change to the GUI cannot be pushed without its
+evidence. A GUI file is a `.svelte` or `.css` file, a file under `src/lib/theme/`, a
+`.ts` file under `src/lib/components/` or `src/routes/`, or `src/app.html`; tests and
+documents do not count. The check expects one layout: `docs/design/reviews/<branch-slug>/` holding actual PNG
+evidence and a `REVIEW.md`, and rows in `docs/design/control-registry.md` for new
+`data-control` identifiers. It validates the evidence's structure; it does not take
+screenshots or replace a human visual review. Leave it at `none` and none of this
+applies.
 
-Clippy currently targets `src-tauri/Cargo.toml`, uses a shared target cache,
-and has an eight-minute bound. It can execute build scripts and access the
-host environment. Enable it only for code you trust to build locally. Large
-cold native dependency builds can time out repeatedly; a timeout is a visible
-lane note, not proof that Rust passed. Arbitrary crate paths are not
-configurable in this release; other project checkers can run as
-`lintCommands`.
+A configuration that says `rove`, the earlier spelling, behaves the same. Reinstalling
+is not needed. Moving to `required` is a policy change, reviewed and installed as any
+other, and needs an engine that knows the word.
+
+## Clippy
+
+With `clippy: true`, each crate that holds a changed Rust file gets a `cargo clippy`
+in its own folder. A file belongs to the highest folder below the repository root
+that has a `Cargo.toml` on the way to it, so a crate nested in another is built by
+the outer one; if there is none, it belongs to a `Cargo.toml` at the root. A Rust
+file with neither is not linted. To decide instead, list the crates:
+
+```json
+{ "clippy": true, "clippyCrates": ["desktop", "crates/core"] }
+```
+
+A changed Rust file then belongs to the deepest listed folder that holds it, and a
+file outside them all is not linted. `.` is the repository root. `clippyCrates` does
+nothing without `clippy: true`.
+
+A change reaches at most eight crates, in alphabetical order, and the lane's note names
+any it left out. They run one after another, share a target cache and one eight-minute
+bound. Clippy can execute build scripts and access the host environment. Enable it only
+for code you trust to build locally. Large cold native dependency builds can time out
+repeatedly; a timeout is a visible lane note, not proof that Rust passed. Other project
+checkers can run as `lintCommands`.
 
 ## Linter lanes
 
