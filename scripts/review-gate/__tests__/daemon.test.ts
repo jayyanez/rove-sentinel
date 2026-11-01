@@ -45,6 +45,27 @@ describe('a computer whose watcher leaves GitHub alone', () => {
     expect(await pollsGitHub({ github: false })).toBe(false);
   });
 
+  it('stops a synchronization under way once the choice is made', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    const yields: boolean[] = [];
+    const syncPulls = vi.fn(async ({ shouldYield }: { shouldYield: () => Promise<boolean> }) => {
+      yields.push(await shouldYield());
+      await atomicWriteJson(paths.watcherOptions, { github: false });
+      yields.push(await shouldYield());
+    });
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, syncPulls,
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(yields).toEqual([false, true]);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
   it('polls GitHub by default, and after installing again without the flag', async () => {
     expect(await pollsGitHub()).toBe(true);
     expect(await pollsGitHub({ github: true })).toBe(true);

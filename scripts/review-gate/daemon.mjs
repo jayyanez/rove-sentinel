@@ -352,6 +352,7 @@ export async function runWatcher({
                   progress,
                   shouldStop: () => stopped,
                   shouldYield: async () => (
+                    !await readWatcherGithub(context.paths) ||
                     Boolean(await readPause(context.paths)) ||
                     await hasQueuedRequests(context.paths)
                   ),
