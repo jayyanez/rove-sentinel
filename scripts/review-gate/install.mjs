@@ -368,7 +368,7 @@ function hooksPathIsOurs(repoRoot, value) {
   return path.resolve(repoRoot, value) === path.join(repoRoot, '.githooks');
 }
 
-export async function installGate({ repoRoot = process.cwd(), dryRun = false, start = true, preservePolicy = false } = {}) {
+export async function installGate({ repoRoot = process.cwd(), dryRun = false, start = true, github, preservePolicy = false } = {}) {
   const context = await createGateContext(repoRoot);
   const previousDaemonActive = await assertNoOtherCheckoutDaemon(context);
   const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
@@ -398,6 +398,7 @@ export async function installGate({ repoRoot = process.cwd(), dryRun = false, st
     prerequisites,
     previousDaemonActive,
     start,
+    github,
   });
 }
 
@@ -437,6 +438,8 @@ export async function executeInstallTransaction(
     prerequisites = {},
     previousDaemonActive = false,
     start = true,
+    // undefined keeps this machine's choice
+    github,
   },
   {
     run = runProcess,
@@ -466,8 +469,9 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, artifactBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, artifactBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
+    snapshotFile(context.paths.watcherOptions),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
   ]);
   const configuredHooks = !currentHooks;
@@ -498,6 +502,7 @@ export async function executeInstallTransaction(
     }
 
     await atomicWriteJson(context.paths.policy, policy);
+    if (github !== undefined) await atomicWriteJson(context.paths.watcherOptions, { github });
     if (configuredHooks) {
       await git(context.repoRoot, ['config', 'core.hooksPath', '.githooks']);
       hooksConfiguredByAttempt = true;
@@ -584,6 +589,7 @@ export async function executeInstallTransaction(
       await attempt(() => run(plan.remove.command, plan.remove.args, { allowFailure: true, timeoutMs: 30_000 }));
     }
     await attempt(() => restoreFile(context.paths.policy, policyBefore, { storedJson: true }));
+    await attempt(() => restoreFile(context.paths.watcherOptions, watcherOptionsBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
     if (

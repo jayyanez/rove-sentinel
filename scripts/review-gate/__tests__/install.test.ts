@@ -497,6 +497,39 @@ describe('review-gate native installer plans', () => {
     }
   });
 
+  it('keeps the watcher\'s GitHub choice through a failed install and an engine update', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
+    try {
+      const paths = await ensureState(stateRoot);
+      await atomicWriteJson(paths.watcherOptions, { github: false });
+      const install = (github: boolean | undefined, fails: boolean) => executeInstallTransaction({
+        context: { repoRoot: 'C:\\repo', stateRoot, paths },
+        plan: { platform: 'linux', unsupportedScheduler: true },
+        policy: { gateVersion: 'new' },
+        currentHooks: '.githooks',
+        start: true,
+        github,
+      }, {
+        git: vi.fn(async () => ''),
+        startDetached: vi.fn(async () => { if (fails) throw new Error('spawn denied'); }),
+        stop: vi.fn(async () => {}),
+        waitHeartbeat: vi.fn(async () => ({ gateVersion: 'new' })),
+      });
+
+      // a failed install leaves it as it was
+      await expect(install(true, true)).rejects.toThrow('spawn denied');
+      expect(await readJson(paths.watcherOptions)).toEqual({ github: false });
+      // an engine update passes no choice, and keeps it
+      await install(undefined, false);
+      expect(await readJson(paths.watcherOptions)).toEqual({ github: false });
+      // an install says what it wants
+      await install(true, false);
+      expect(await readJson(paths.watcherOptions)).toEqual({ github: true });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rolls back policy and hook setup when detached watcher spawn fails', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
     try {
