@@ -12,8 +12,8 @@
   failing as they did. The limited shell is told how.
 - **A scheduled watcher finds what the installing shell found.** A task starts with the
   stored environment, so a watcher whose Git or provider CLI is on `PATH` only through a
-  profile or an activation script stopped at once. `watch.cmd` now carries the shell's
-  `PATH`, without the checkout or any `node_modules`, and where the tools keep their
+  profile or an activation script stopped at once. `watch.cmd` now uses the shell's `PATH`,
+  without the checkout or any `node_modules`, in place of the stored one, and where the tools keep their
   settings (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`,
   `CLAUDE_CODE_GIT_BASH_PATH`). Run `install` again after moving a tool.
 - **A watcher that stops at once says why.** One that could not start Git had nowhere to

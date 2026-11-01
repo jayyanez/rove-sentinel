@@ -336,7 +336,7 @@ describe('review-gate native installer plans', () => {
         ANTHROPIC_API_KEY: 'not-for-the-wrapper',
       },
     });
-    expect(plan.wrapper).toContain('set "PATH=C:\\tools\\git\\cmd;C:\\Windows;%PATH%"');
+    expect(plan.wrapper).toContain('set "PATH=C:\\tools\\git\\cmd;C:\\Windows"\r\n');
     expect(plan.wrapper).toContain('set "CLAUDE_CONFIG_DIR=C:\\tools\\home\\claude"');
     expect(plan.wrapper).toContain('set "CODEX_HOME=C:\\tools\\home\\codex"');
     expect(plan.wrapper).toContain('set "GH_CONFIG_DIR=C:\\tools\\home\\gh"');
@@ -364,12 +364,30 @@ describe('review-gate native installer plans', () => {
     ].join(';'), 'D:\\project')).toBe('C:\\Program Files\\Git\\cmd;C:\\tools;D:\\project-two\\bin');
   });
 
+  it('knows the checkout and node_modules however Windows lets them be spelled', () => {
+    expect(watcherPath([
+      'D:/project/node_modules/.bin',
+      'D:/project/bin',
+      'D:\\outside\\..\\project\\bin',
+      'C:/other/node_modules/.bin',
+      'C:/tools/bin',
+    ].join(';'), 'D:\\project')).toBe('C:\\tools\\bin');
+  });
+
   it('bounds the carried PATH, keeping what the shell finds first, so the wrapper stays one cmd.exe line', () => {
     const entries = Array.from({ length: 200 }, (_, index) => `C:\\tools\\${String(index).padStart(3, '0')}\\${'x'.repeat(60)}`);
     const carried = watcherPath(entries.join(';'), 'D:\\project');
-    expect(carried.length).toBeLessThanOrEqual(4096);
+    expect(carried.length).toBeLessThanOrEqual(8000);
     expect(carried.startsWith(entries[0])).toBe(true);
     expect(carried).not.toContain(entries[199]);
+  });
+
+  it('never makes a cmd.exe line past its limit: the task\'s own PATH of unknown length is not appended', () => {
+    const entries = Array.from({ length: 400 }, (_, index) => `C:\\tools\\${String(index).padStart(3, '0')}\\${'x'.repeat(60)}`);
+    const plan = buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe', environment: { PATH: entries.join(';') } });
+    const line = plan.wrapper.split('\r\n').find((text) => text.startsWith('set "PATH='));
+    expect(line).not.toContain('%PATH%');
+    expect(line.length).toBeLessThan(8191);
   });
 
   it('keeps what a scheduled watcher prints, the one trace of a stop before its state folder is known', () => {

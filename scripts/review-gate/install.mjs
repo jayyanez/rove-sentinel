@@ -125,9 +125,8 @@ function windowsAccount(environment) {
 
 // Paths, never credentials: where the tools a review runs keep their settings.
 const WATCHER_TOOL_SETTINGS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLAUDE_CODE_GIT_BASH_PATH'];
-// `set "PATH=...;%PATH%"` must stay under cmd.exe's 8191-character line once
-// the logon PATH is expanded into it.
-const WATCHER_PATH_MAX_CHARACTERS = 4096;
+// The wrapper's `set "PATH=..."` is one cmd.exe line, of at most 8191 characters.
+const WATCHER_PATH_MAX_CHARACTERS = 8000;
 
 /**
  * The installing shell's PATH, for a scheduled watcher. A task starts with the
@@ -135,7 +134,11 @@ const WATCHER_PATH_MAX_CHARACTERS = 4096;
  * profile or an activation script are missing there: without Git the watcher
  * stops before it can write down why. A package runner puts the checkout's
  * `node_modules\.bin` first, and a watcher reviews that checkout, so nothing of
- * the repository or of any `node_modules` is carried.
+ * the repository or of any `node_modules` is carried, however it is spelled:
+ * Windows also finds programs through `D:/repo/bin` and `D:\other\..\repo\bin`.
+ * A shell's PATH already holds the stored one, so this replaces it, and the
+ * task's own is not appended: its length is not known here, and a line past
+ * cmd.exe's limit would stop the wrapper before the watcher starts.
  */
 export function watcherPath(pathValue, repoRoot) {
   const root = path.win32.resolve(repoRoot).toLowerCase();
@@ -143,9 +146,11 @@ export function watcherPath(pathValue, repoRoot) {
   const kept = [];
   let length = 0;
   for (const raw of String(pathValue || '').split(';')) {
-    const entry = raw.replaceAll('"', '').trim();
+    const unquoted = raw.replaceAll('"', '').trim();
+    if (!unquoted || !path.win32.isAbsolute(unquoted) || /[%\r\n]/.test(unquoted)) continue;
+    const entry = path.win32.normalize(unquoted);
     const folded = entry.toLowerCase().replace(/\\+$/, '');
-    if (!entry || !path.win32.isAbsolute(entry) || /[%\r\n]/.test(entry) || seen.has(folded)) continue;
+    if (seen.has(folded)) continue;
     if (folded === root || folded.startsWith(`${root}\\`) || /(^|\\)node_modules(\\|$)/.test(folded)) continue;
     if (length + entry.length + 1 > WATCHER_PATH_MAX_CHARACTERS) break;
     seen.add(folded);
@@ -196,8 +201,7 @@ export function buildInstallPlan({
       .filter((key) => environment[key] && !/["\r\n]/.test(environment[key]))
       .map((key) => `set ${quoteBatch(`${key}=${environment[key]}`)}\r\n`).join('');
     const carriedPath = watcherPath(environment.PATH ?? environment.Path, repoRoot);
-    // The task's own PATH stays, after what the installing shell found first.
-    const toolPath = carriedPath ? `set "PATH=${carriedPath};%PATH%"\r\n` : '';
+    const toolPath = carriedPath ? `set "PATH=${carriedPath}"\r\n` : '';
     const startLogPath = path.win32.join(stateRoot, 'watcher-start.log');
     const wrapper = `@echo off\r\n${stateEnvironment}${toolSettings}${toolPath}set "ROVE_REVIEW_ALLOW_API_BILLING="\r\nset "ANTHROPIC_API_KEY="\r\nset "OPENAI_API_KEY="\r\n${[
       nodePath,

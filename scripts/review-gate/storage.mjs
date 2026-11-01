@@ -1239,6 +1239,9 @@ export async function writeHeartbeat(paths, details = {}) {
 
 export async function clearDaemonError(paths) {
   await removeStoredJson(paths.daemonError);
+  // Of an earlier run: a start must not be blamed for it. A wrapper's watcher
+  // holds its own log open here, and that one stays.
+  await rm(paths.watcherStartLog, { force: true }).catch(() => {});
 }
 
 export async function writeDaemonError(paths, error) {
@@ -1257,9 +1260,17 @@ export async function writeDaemonError(paths, error) {
  * daemon-error.json, and the scheduler reports success: its wrapper keeps stderr
  * here, begun anew at every start.
  */
-export async function readWatcherStartLog(paths, maxCharacters = 1000) {
-  const text = await readFile(paths.watcherStartLog, 'utf8').catch(() => '');
-  return text.trim().slice(-maxCharacters);
+export async function readWatcherStartLog(paths, maxBytes = 4096) {
+  const handle = await open(paths.watcherStartLog, 'r').catch(() => null);
+  if (!handle) return '';
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, maxBytes);
+    const { buffer } = await handle.read(Buffer.alloc(length), 0, length, size - length);
+    return buffer.toString('utf8').trim();
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function waitForDaemonHeartbeat(
