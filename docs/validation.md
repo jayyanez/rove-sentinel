@@ -1,6 +1,6 @@
 # Standalone validation record
 
-## 1.16.0 generic paths, and a watcher you can see
+## 1.16.0 generic paths, and a watcher you can see — 2026-11-01
 
 Deterministic tests cover risk ratings and shard lenses for a repository that sets
 nothing and for one that lists its paths; the GUI evidence check with and without
@@ -8,7 +8,8 @@ nothing and for one that lists its paths; the GUI evidence check with and withou
 classify the same files as `rove`; Clippy's crate discovery, its shared bound and its
 placement of a workspace member's messages; `watcher.state` in each state, a corrupt
 lock, a scheduler that cannot be read or started, and `uninstall`; `doctor` warning
-before a check fails; and the engine install's environment and flags.
+before a check fails; a stop and `recover` beside an owner that cannot be signalled; and the
+engine install's environment and flags.
 
 Live: `cargo clippy` 0.1.94 through the lane on a synthetic workspace placed both
 warnings on their real files. A local listener recorded each `CONNECT` on Windows
@@ -17,10 +18,11 @@ and Node's `fetch` did only with `NODE_USE_ENV_PROXY=1`. Node releases before 22
 not run. npm 12.0.1 reproduced `EALLOWSCRIPTS` with `npm_config_allow_scripts` set, and
 an install with the new flags and no such variable succeeded.
 
-The suite passed on macOS: 756 tests passed and 1 was skipped, a WinGet test that runs
+The suite passed on macOS: 763 tests passed and 1 was skipped, a WinGet test that runs
 only on Windows. Each change went through the review gate.
 
-`scripts/runtime-smoke.mjs` passed on Windows on this release's code, with synthetic
+`scripts/runtime-smoke.mjs` passed on Windows on this release before the last change to how
+a stop reads a process check, which it was not run again after, with synthetic
 1.16.1 and 1.16.2 engines: a busy project waited while a second activated the shared
 runtime, two projects reused one download, pinned launchers selected the new runtime
 without editing their dependencies, a working-tree policy was kept out of activation, and
