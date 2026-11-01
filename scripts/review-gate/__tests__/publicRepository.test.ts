@@ -20,11 +20,13 @@ const LOCAL_V6 = new RegExp(`(?<![0-9a-z:])(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:
 // An address counts as synthetic only whole, so neither a real mailbox at these
 // companies nor a real domain that starts like one of these gets through.
 const END = String.raw`(?![\w-]|\.\w)`;
-// a local part runs back to whatever delimits an address in prose and code
-const LOCAL_CHARACTER = '[^\\s<>()[\\]"\'`,;:/\\\\@]';
+// A local part runs back to what RFC 5322 refuses in one. A quote or `//` may
+// open a whole synthetic mailbox, as in 'git@github.com' or ssh://git@github.com.
+const LOCAL_CHARACTER = '[^\\s()<>[\\]:;@\\\\,"]';
+const OPENING = "(?:['`]|//)?";
 const SYNTHETIC_MAILBOX = String.raw`(?:git@github\.com|noreply@anthropic\.com)${END}`;
 const SYNTHETIC_DOMAIN = String.raw`(?:(?:[a-z0-9-]+\.)*(?:example(?:\.(?:com|net|org))?|test|invalid)|users\.noreply\.github\.com)${END}`;
-const EMAIL = new RegExp(String.raw`(?<!${LOCAL_CHARACTER})(?!${SYNTHETIC_MAILBOX})${LOCAL_CHARACTER}+@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
+const EMAIL = new RegExp(String.raw`(?<!${LOCAL_CHARACTER})(?!${OPENING}${SYNTHETIC_MAILBOX})${LOCAL_CHARACTER}+@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
 
 const PRIVATE: [string, RegExp][] = [
   ['a tailnet address', /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
@@ -104,7 +106,8 @@ describe('what the guard catches', () => {
     'anoreply@anthropic.com', 'git@github.com.some-company.io', 'noreply@anthropic.com.some-company.io',
     'someone@example.some-company.io', 'someone@example.com.some-company.io', 'token:secret@github.com',
     'a=git@github.com', 'a!git@github.com', 'a=noreply@anthropic.com', 'a$git@github.com', 'a*git@github.com',
-    'a|noreply@anthropic.com', 'a{git@github.com', 'é.git@github.com'
+    'a|noreply@anthropic.com', 'a{git@github.com', 'é.git@github.com', "o'git@github.com", 'a`git@github.com',
+    'a/git@github.com', "a'noreply@anthropic.com", "'git@github.com.some-company.io"
   ])('finds the email address %s', (address) => {
     expect(EMAIL.test(`write to ${address}.`)).toBe(true);
   });
