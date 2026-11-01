@@ -10,3 +10,4 @@ dist/
 Thumbs.db
 .agent-memory/
 .claude/settings.local.json
+.private-names

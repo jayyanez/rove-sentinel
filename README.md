@@ -29,6 +29,9 @@ See the [validation record](docs/validation.md) for what was tested.
 | Fix a setup problem | [Troubleshooting](docs/troubleshooting.md) |
 | Help build Sentinel | [Contributing](CONTRIBUTING.md) |
 
+Sentinel is public, and made for any repository: see
+[Public and generic](docs/public-and-generic.md).
+
 ## What a review looks like
 
 After installation, run your tests and commit your change:

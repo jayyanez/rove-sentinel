@@ -11,12 +11,12 @@ All repository and GitHub artifacts must be in English.
 
 ## This repository is public
 
-Nothing private enters it: not in code, comments, tests, documents, commit
-messages, pull requests, release notes or review comments. That means the names
-of the maintainer's other projects and repositories, machines, addresses, paths,
-accounts and email addresses. Say "a consumer project". Tests use example
-names such as `example-owner/example-repo`. Before a push, read the diff and the
-text around it for such names.
+Any GitHub repository can adopt Sentinel, and anyone can read everything here.
+[docs/public-and-generic.md](docs/public-and-generic.md) binds every change:
+nothing private enters it, in files, tests, commit messages, pull requests or
+release notes, and nothing is tied to one project. Say "a consumer project". Read
+it before your first change, and read your diff and the text around it for such
+names before a push.
 
 ## Before changing anything
 
