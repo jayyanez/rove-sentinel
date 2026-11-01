@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +9,7 @@ import {
   expressionControlAttributes,
   formatGuiEvidenceRefusal,
   isForwardedControlProp,
+  evidenceLayout,
   guiEvidenceProblems,
   isGuiDiff,
   isPngBlob,
@@ -48,6 +50,87 @@ function patchFor(file: string, lines: string[]): string {
 function registryRowPatch(id: string, surface = 'pane-header'): string {
   return patchFor(REGISTRY, [`+| \`${id}\` | ${surface} | trailing | 3 | always | none | — |`]);
 }
+
+describe('where a project keeps its evidence', () => {
+  const png = (folder: string) => [`${folder}/feature/shot.png`, `${folder}/feature/REVIEW.md`];
+  const problems = (files: string[], config: Record<string, unknown>, patch = '') => guiEvidenceProblems({
+    files, branch: 'feature', patch, pngValid: () => true, layout: evidenceLayout(config),
+  });
+
+  it('with guiEvidence required and nothing else, a file is GUI by its type, in any repository', () => {
+    const layout = evidenceLayout({ guiEvidence: 'required' });
+    for (const file of ['app/View.tsx', 'web/Page.vue', 'a/b.svelte', 'site/index.html', 'styles/main.scss']) expect(isGuiDiff([file], layout)).toBe(true);
+    for (const file of ['src/lib/components/popover.ts', 'src/routes/page.ts', 'src/main.go', 'app/View.test.tsx', 'app/View.spec.tsx', 'app/View.stories.tsx', 'app/View.cy.tsx', 'tests/View.tsx', 'e2e/page.html', 'docs/page.md']) expect(isGuiDiff([file], layout)).toBe(false);
+  });
+
+  it('checks no controls until a project says which sources name them', () => {
+    const patch = 'diff --git a/src/lib/components/A.svelte b/src/lib/components/A.svelte\n--- a/src/lib/components/A.svelte\n+++ b/src/lib/components/A.svelte\n@@ -1,0 +1,1 @@\n+<a data-control="one" data-control={two}>\n';
+    const files = ['src/lib/components/A.svelte', ...png('docs/design/reviews')];
+    expect(problems(files, { guiEvidence: 'required' }, patch)).toEqual([]);
+    const listed = problems(files, { guiEvidence: 'required', guiEvidenceLayout: { controlSources: '\\.svelte$' } }, patch);
+    expect(listed.join(' ')).toContain('data-control must be a string literal');
+    expect(listed.join(' ')).toContain('docs/design/control-registry.md');
+    expect(listed.join(' ')).not.toMatch(/\.md §/);
+  });
+
+  it('keeps the earlier spelling on its SvelteKit layout', () => {
+    const layout = evidenceLayout({ guiEvidence: 'rove' });
+    expect(isGuiDiff(['src/lib/components/popover.ts'], layout)).toBe(true);
+    expect(isGuiDiff(['app/View.tsx'], layout)).toBe(false);
+    expect(isGuiDiff(['src/lib/components/a.spec.ts'], layout)).toBe(true);
+    expect(isGuiDiff(['tests/a.svelte'], layout)).toBe(true);
+    expect(problems(['src/app.html'], { guiEvidence: 'rove' }).join(' ')).toContain('pnpm design:capture');
+  });
+
+  it('gives the same result with the settings the documentation offers for the earlier spelling', () => {
+    const block = /```json\r?\n(\{\s*"guiEvidence": "required"[\s\S]*?)```/.exec(readFileSync('docs/configuration.md', 'utf8'));
+    const documented = evidenceLayout(JSON.parse(block![1]));
+    const earlier = evidenceLayout({ guiEvidence: 'rove' });
+    const { guiFiles: _files, testFiles: _tests, controlSources: _sources, sharedPrimitives: _primitives, reviewPng: _png, ...paths } = earlier;
+    expect(documented).toMatchObject(paths);
+    for (const file of [
+      'a/b.svelte', 'a/B.SVELTE', 'a/b.css', 'src/lib/theme/tokens.ts', 'src/lib/components/shared/Icon.svelte', 'src/lib/components/popover.ts',
+      'src/routes/page.ts', 'src/routes/x/+page.svelte', 'src/app.html', 'src/lib/stores/a.ts', 'src/routes/a.js', 'src/lib/components/a.test.ts', 'other/app.html',
+      'src/lib/theme/README.md', 'src/lib/components/a.spec.ts', 'tests/a.svelte', 'e2e/a.css', 'src/routes/__tests__/a.ts', 'a.stories.svelte',
+    ]) {
+      expect(isGuiDiff([file], documented), file).toBe(isGuiDiff([file], earlier));
+      expect(isForwardedControlProp(file, '{dataControl}', documented), file).toBe(isForwardedControlProp(file, '{dataControl}', earlier));
+    }
+  });
+
+  it('takes every path from guiEvidenceLayout', () => {
+    const config = { guiEvidence: 'required', guiEvidenceLayout: { guiFiles: ['^ui/'], reviewsFolder: 'qa/shots', captureCommand: 'make shots' } };
+    expect(isGuiDiff(['ui/view.py'], evidenceLayout(config))).toBe(true);
+    expect(isGuiDiff(['app/View.tsx'], evidenceLayout(config))).toBe(false);
+    expect(problems(['ui/view.py', ...png('qa/shots')], config)).toEqual([]);
+    const missing = problems(['ui/view.py', ...png('docs/design/reviews')], config).join(' ');
+    expect(missing).toContain('qa/shots/feature/');
+    expect(missing).toContain('make shots');
+    expect(evidenceScreenshotPaths(png('qa/shots'), 'feature', 'branch', evidenceLayout(config))).toEqual(['qa/shots/feature/shot.png']);
+  });
+
+  it('counts a document only when a project says so', () => {
+    expect(isGuiDiff(['site/page.mdx'], evidenceLayout({ guiEvidence: 'required', guiEvidenceLayout: { guiFiles: ['\\.mdx$'] } }))).toBe(false);
+    expect(isGuiDiff(['site/page.mdx'], evidenceLayout({ guiEvidence: 'required', guiEvidenceLayout: { guiFiles: ['\\.mdx$'], testFiles: '\\.test\\.' } }))).toBe(true);
+  });
+
+  it('reads no controls in a file testFiles leaves out', () => {
+    const patch = 'diff --git a/ui/A.test.vue b/ui/A.test.vue\n--- a/ui/A.test.vue\n+++ b/ui/A.test.vue\n@@ -1,0 +1,1 @@\n+<a data-control="one">\n';
+    const config = { guiEvidence: 'required', guiEvidenceLayout: { controlSources: '\\.vue$' } };
+    expect(addedControlIds(patch, evidenceLayout(config))).toEqual([]);
+  });
+
+  it('reads a folder name literally', () => {
+    const layout = evidenceLayout({ guiEvidence: 'required', guiEvidenceLayout: { reviewsFolder: 'qa.shots' } });
+    expect(evidenceScreenshotPaths(['qaxshots/a/one.png', 'qa.shots/a/one.png'], 'a', 'branch', layout)).toEqual(['qa.shots/a/one.png']);
+  });
+
+  it('asks for no capture command it was not given', () => {
+    const missing = problems(['app/View.tsx'], { guiEvidence: 'required' }).join(' ');
+    expect(missing).toContain('Commit screenshots of the change to docs/design/reviews/feature/');
+    expect(missing).not.toContain('pnpm');
+  });
+});
 
 describe('GUI evidence gate', () => {
   it('derives the evidence folder slug from the branch name', () => {
@@ -679,6 +762,6 @@ describe('GUI evidence gate', () => {
     expect(text).toContain(`refused ${BRANCH} before any reviewer ran`);
     expect(text).toContain('  - first');
     expect(text).toContain('  - second');
-    expect(text).toContain('node scripts/review-gate/cli.mjs design-evidence --base origin/main --head HEAD');
+    expect(text).toContain('npx --no-install rove-sentinel design-evidence --base origin/main --head HEAD');
   });
 });

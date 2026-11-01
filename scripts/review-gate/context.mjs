@@ -348,6 +348,17 @@ export function reviewPolicySnapshot(policy) {
   };
 }
 
+/**
+ * The policy a local check applies: the installed one, as the hook reads it, so
+ * a broken one fails here too. Only a repository with none falls back to its own.
+ */
+export async function policyForLocalCheck(paths, repoRoot) {
+  const none = Symbol('no installed policy');
+  // readJson also finds the copy a replacement left, as the hook's read does.
+  const stored = await readJson(paths.policy, none).catch(() => null);
+  return stored === none ? await readReviewPolicy(repoRoot) : await loadInstalledReviewPolicy(paths);
+}
+
 export async function loadInstalledReviewPolicy(paths) {
   let snapshot;
   try {

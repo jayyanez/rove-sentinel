@@ -22,7 +22,7 @@ function relativeFile(value, label) {
 /** Only installation reads repository configuration; reviews use its frozen snapshot. */
 export function normalizeConfig(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Sentinel configuration must be an object.');
-  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'clippy', 'clippyCrates', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards'];
+  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'guiEvidenceLayout', 'clippy', 'clippyCrates', 'highRiskPaths', 'scriptPaths', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards'];
   for (const key of Object.keys(input)) {
     if (!allowed.includes(key)) throw new Error(`Unknown Sentinel configuration key: ${key}`);
   }
@@ -49,6 +49,9 @@ export function normalizeConfig(input = {}) {
     // Omitted new fields stay omitted so an existing installed policy remains
     // reproducible. Engine defaults are bound separately by GATE_VERSION.
     ...(input.clippyCrates !== undefined ? { clippyCrates: normalizeClippyCrates(input.clippyCrates) } : {}),
+    ...(input.guiEvidenceLayout !== undefined ? { guiEvidenceLayout: normalizeGuiEvidenceLayout(input.guiEvidenceLayout) } : {}),
+    ...(input.highRiskPaths !== undefined ? { highRiskPaths: normalizeRepositoryPaths(input.highRiskPaths, 'highRiskPaths') } : {}),
+    ...(input.scriptPaths !== undefined ? { scriptPaths: normalizeRepositoryPaths(input.scriptPaths, 'scriptPaths') } : {}),
     ...(input.providers !== undefined ? { providers: input.providers } : {}),
     ...(input.models !== undefined ? { models: normalizeModels(input.models) } : {}),
     ...(input.lintLanes !== undefined ? { lintLanes: normalizeLintLanes(input.lintLanes) } : {}),
@@ -61,6 +64,52 @@ export function normalizeConfig(input = {}) {
 function normalizeClippyCrates(input) {
   if (!Array.isArray(input) || !input.length || input.length > 64) throw new Error('clippyCrates must be a list of 1 to 64 folders.');
   return [...new Set(input.map((folder) => (folder === '.' ? folder : relativeFile(folder, 'clippyCrates entry'))))].sort();
+}
+
+/** Files or folders of the repository; a folder takes in all that is under it. */
+function normalizeRepositoryPaths(input, label) {
+  if (!Array.isArray(input) || !input.length || input.length > 64) throw new Error(`${label} must be a list of 1 to 64 paths.`);
+  return [...new Set(input.map((entry) => relativeFile(typeof entry === 'string' ? entry.replace(/\/$/, '') : entry, `${label} entry`)))].sort();
+}
+
+/** True when `file` is one of `paths`, or under one of them. */
+export function isUnderPaths(file, paths) {
+  return (paths ?? []).some((entry) => file === entry || file.startsWith(`${entry}/`));
+}
+
+function normalizePattern(value, label) {
+  if (typeof value !== 'string' || !value || value.length > 200) throw new Error(`${label} must be a regular expression of at most 200 characters.`);
+  try {
+    new RegExp(value);
+  } catch (error) {
+    throw new Error(`${label} is not a valid regular expression: ${error.message}`);
+  }
+  return value;
+}
+
+/** Where a project keeps its GUI evidence; every field has a default (guiEvidence.mjs). */
+function normalizeGuiEvidenceLayout(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('guiEvidenceLayout must be an object.');
+  const allowed = ['guiFiles', 'testFiles', 'reviewsFolder', 'controlRegistry', 'controlSources', 'sharedPrimitives', 'captureCommand'];
+  for (const key of Object.keys(input)) {
+    if (!allowed.includes(key)) throw new Error(`Unknown guiEvidenceLayout setting: ${key}`);
+  }
+  const { guiFiles, testFiles, reviewsFolder, controlRegistry, controlSources, sharedPrimitives, captureCommand } = input;
+  if (guiFiles !== undefined && (!Array.isArray(guiFiles) || !guiFiles.length || guiFiles.length > 32)) {
+    throw new Error('guiEvidenceLayout.guiFiles must be a list of 1 to 32 regular expressions.');
+  }
+  if (captureCommand !== undefined && (typeof captureCommand !== 'string' || !captureCommand || captureCommand.length > 200)) {
+    throw new Error('guiEvidenceLayout.captureCommand must be a command of at most 200 characters.');
+  }
+  return {
+    ...(guiFiles !== undefined ? { guiFiles: guiFiles.map((pattern) => normalizePattern(pattern, 'guiEvidenceLayout.guiFiles entry')) } : {}),
+    ...(testFiles !== undefined ? { testFiles: normalizePattern(testFiles, 'guiEvidenceLayout.testFiles') } : {}),
+    ...(reviewsFolder !== undefined ? { reviewsFolder: relativeFile(reviewsFolder, 'guiEvidenceLayout.reviewsFolder') } : {}),
+    ...(controlRegistry !== undefined ? { controlRegistry: relativeFile(controlRegistry, 'guiEvidenceLayout.controlRegistry') } : {}),
+    ...(controlSources !== undefined ? { controlSources: normalizePattern(controlSources, 'guiEvidenceLayout.controlSources') } : {}),
+    ...(sharedPrimitives !== undefined ? { sharedPrimitives: normalizePattern(sharedPrimitives, 'guiEvidenceLayout.sharedPrimitives') } : {}),
+    ...(captureCommand !== undefined ? { captureCommand } : {}),
+  };
 }
 
 /**

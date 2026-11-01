@@ -9,6 +9,14 @@
   and a change to Rust elsewhere is now linted too.
 - **`guiEvidence: "required"`** names what the mode does. `rove`, its earlier
   spelling, keeps working, and an installed policy keeps its digest.
+- **The review knows no project's folders.** `src-tauri/`, `sidecar/` and three
+  documents are no longer high risk by name, and their scripts folders no longer get the
+  scripts lens: a project lists its own in the new `highRiskPaths` and `scriptPaths`.
+  Any agent skill and any `*.config.*` or `*.conf.*` file but prose is now high risk.
+  **A project that relied on those names must list them to keep its review depth.**
+- **`guiEvidenceLayout`** sets the GUI evidence check's folders and patterns.
+  `required` alone now recognizes GUI files by type and checks no controls; `rove`
+  keeps its layout.
 
 ## 1.15.0 — several computers on one repository, and macOS
 

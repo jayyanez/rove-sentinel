@@ -20,6 +20,9 @@ Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
 | `charter` | Repository-relative Markdown policy; `null` uses the bundled charter |
 | `lessons` | Repository-relative project lessons; `null` supplies no project lessons |
 | `guiEvidence` | `none` by default; `required` makes a GUI change commit its visual evidence. `rove` is the earlier spelling of `required` and keeps working |
+| `guiEvidenceLayout` | Optional paths of the GUI evidence check; see below |
+| `highRiskPaths` | Optional files or folders whose changes get a high-risk review; see below |
+| `scriptPaths` | Optional files or folders reviewed through the scripts lens; see below |
 | `clippy` | Opt into executing Cargo Clippy for changed Rust files |
 | `clippyCrates` | Optional folders of the crates Clippy runs in, `.` for the repository root; without it they are found by their `Cargo.toml` |
 | `trustedAuthors` | GitHub logins allowed for automatic same-repository PR review; empty means the repository owner |
@@ -42,17 +45,64 @@ each attestation. Commit configuration and policy alongside the project.
 ## GUI evidence
 
 With `guiEvidence: "required"`, a change to the GUI cannot be pushed without its
-evidence. A GUI file is a `.svelte` or `.css` file, a file under `src/lib/theme/`, a
-`.ts` file under `src/lib/components/` or `src/routes/`, or `src/app.html`; tests and
-documents do not count. The check expects one layout: `docs/design/reviews/<branch-slug>/` holding actual PNG
-evidence and a `REVIEW.md`, and rows in `docs/design/control-registry.md` for new
-`data-control` identifiers. It validates the evidence's structure; it does not take
-screenshots or replace a human visual review. Leave it at `none` and none of this
-applies.
+evidence: PNG files and a `REVIEW.md` in `docs/design/reviews/<branch-slug>/`, committed
+in the change. A GUI file is a `.svelte`, `.vue`, `.tsx`, `.jsx`, `.css`, `.scss`,
+`.sass`, `.less` or `.html` file; tests, stories and documents do not count. The check validates
+the evidence's structure; it does not take screenshots or replace a human visual review.
+Leave `guiEvidence` at `none` and none of this applies.
 
-A configuration that says `rove`, the earlier spelling, behaves the same. Reinstalling
-is not needed. Moving to `required` is a policy change, reviewed and installed as any
-other, and needs an engine that knows the word.
+`guiEvidenceLayout` changes any of that, field by field:
+
+| Field | Meaning |
+| --- | --- |
+| `guiFiles` | Regular expressions on repository paths, replacing the file types above |
+| `testFiles` | A regular expression for the files that are neither GUI nor control sources even if another pattern matches them; by default documents, test and story files, and `tests/`, `__tests__/`, `e2e/` and `cypress/` folders. Set it to count a document, such as a rendered `.mdx` page |
+| `reviewsFolder` | The folder holding one evidence folder per branch |
+| `captureCommand` | The command the refusal tells the author to run |
+| `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, a table row of seven cells with the backticked id first, and a new or moved one must change its row |
+| `controlRegistry` | The registry's file; `docs/design/control-registry.md` by default |
+| `sharedPrimitives` | A regular expression for shared components that may forward `{dataControl}` instead of a literal id |
+
+A configuration that says `rove`, the earlier spelling of `required`, keeps working
+and starts from the layout of a SvelteKit application instead, unchanged since that
+spelling was the only one. To say the same with `required`, set:
+
+```json
+{
+  "guiEvidence": "required",
+  "guiEvidenceLayout": {
+    "guiFiles": ["\\.[sS][vV][eE][lL][tT][eE]$", "\\.[cC][sS][sS]$", "^src/lib/theme/", "^src/lib/components/.+\\.ts$", "^src/routes/.+\\.(?:svelte|ts)$", "^src/app\\.html$"],
+    "testFiles": "(?:^|/)__tests__/|\\.test\\.[cm]?[jt]s$|\\.(?:md|mdx|markdown|rst|txt|adoc)$",
+    "controlSources": "^src/lib/components/.+\\.svelte$",
+    "sharedPrimitives": "^src/lib/components/shared/",
+    "captureCommand": "pnpm design:capture"
+  }
+}
+```
+
+Reinstalling is not needed to keep `rove`. Moving to `required` is a policy change,
+reviewed and installed as any other, and needs an engine that knows the word.
+
+## How a change is reviewed
+
+Risk decides how many reviewers and shards a change gets. A change is high risk when it
+touches the charter or lessons, agent instructions (`AGENTS.md`, `CLAUDE.md`, and
+`.agents`, `.claude` or `.grok` skills), Sentinel's own hook, configuration and files,
+CI definitions, migrations, `package.json` or `pnpm-lock.yaml`, a tool's configuration file
+(`*.config.*`, `*.conf.*`, but for prose), or a path naming permissions or capabilities. No other
+folder name raises it. List your project's sensitive paths:
+
+```json
+{ "highRiskPaths": ["native", "docs/engineering-process.md"], "scriptPaths": ["native/launcher"] }
+```
+
+An entry is a file, or a folder and all under it, from the repository root. A document
+listed in `highRiskPaths` no longer takes the documentation skip.
+
+`scriptPaths` takes a file or folder to the scripts lens, which looks for platform and
+flag gating, instead of the code lens, and so do `scripts/`, `.githooks/` and `.github/`.
+Tests, documents and text manifests there keep their own lens. It changes what a reviewer
+looks for, not how much is reviewed.
 
 ## Clippy
 
