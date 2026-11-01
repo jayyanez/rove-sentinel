@@ -21,6 +21,7 @@ import {
   pauseGate,
   readJson,
   reviewTimingSummary,
+  removeDaemonLockExclusively,
   removeStoredJson,
   recordEvent,
   recoverClaims,
@@ -279,8 +280,9 @@ export async function stopDaemon(
       throw new Error(`Review watcher process ${signalPid} did not stop.`);
     }
   }
-  const currentLock = await readRequiredState(context.paths.lock, 'watcher lock');
-  if (currentLock) {
+  await removeDaemonLockExclusively(context.paths, async () => {
+    const currentLock = await readRequiredState(context.paths.lock, 'watcher lock');
+    if (!currentLock) return false;
     if (
       currentLock.pid !== lock?.pid ||
       currentLock.ownerToken !== lock?.ownerToken
@@ -297,8 +299,8 @@ export async function stopDaemon(
       removeStoredJson(context.paths.heartbeat),
       removeStoredJson(context.paths.stopRequest),
     ]);
-    await rm(context.paths.lock, { force: true });
-  }
+    return true;
+  });
   await recoverStaleReviewResources(context.repoRoot);
   return true;
 }
@@ -701,13 +703,13 @@ export async function executeUninstall({
  * can report success while its watcher refused to start, so this reads the
  * watcher's own records.
  */
-export function watcherState({ running, compatible, heartbeat, lock, daemonError, scheduler }) {
+export function watcherState({ running, compatible, heartbeat, lock, daemonError, installed }) {
   if (running) {
     return compatible
       ? { state: 'running', pid: heartbeat.pid }
       : { state: 'outdated', pid: heartbeat.pid, action: 'Run npx --no-install rove-sentinel install from your trusted checkout.' };
   }
-  if (!scheduler?.installed && !lock && !heartbeat && !daemonError) return { state: 'not-installed' };
+  if (!installed && !lock && !heartbeat && !daemonError) return { state: 'not-installed' };
   return {
     state: 'stopped',
     reason: daemonError?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
@@ -816,7 +818,8 @@ export async function gateStatus(
       heartbeat,
       lock,
       daemonError,
-      scheduler,
+      // Linux has no supported scheduler, so policy and hook count as well.
+      installed: Boolean(scheduler.installed || installedPolicy || hooksPathIsOurs(context.repoRoot, hooksPath)),
     }),
     watcherVersionCompatible,
     watcherPolicyCompatible,
@@ -862,15 +865,18 @@ export async function recoverStaleDaemonState(
   if (normalizedReason.length < 12) {
     throw new Error('A stale-state recovery reason of at least 12 characters is required.');
   }
-  const [lock, heartbeat] = await Promise.all([
-    readJson(context.paths.lock).catch(() => null),
-    readJson(context.paths.heartbeat).catch(() => null),
-  ]);
-  if (daemonOwnerIsHealthy(lock, heartbeat)) {
-    throw new Error(`The shared review watcher is healthy at PID ${lock.pid}; use review:uninstall for a controlled stop instead of stale-state recovery.`);
-  }
-  await rm(context.paths.lock, { force: true });
-  await rm(`${context.paths.lock}.takeover`, { force: true });
+  let lock;
+  let heartbeat;
+  await removeDaemonLockExclusively(context.paths, async () => {
+    [lock, heartbeat] = await Promise.all([
+      readJson(context.paths.lock).catch(() => null),
+      readJson(context.paths.heartbeat).catch(() => null),
+    ]);
+    if (daemonOwnerIsHealthy(lock, heartbeat)) {
+      throw new Error(`The shared review watcher is healthy at PID ${lock.pid}; use review:uninstall for a controlled stop instead of stale-state recovery.`);
+    }
+    return true;
+  });
   await rm(context.paths.queueSubmitLock, { force: true });
   await removeStoredJson(context.paths.heartbeat);
   const [technicalOutcomesCleared, claimsRecovered, resourcesRecovered] = await Promise.all([

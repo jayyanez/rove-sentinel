@@ -13,9 +13,6 @@
   npm 12 can refuse in project-scoped installs, and the user and global `.npmrc` no longer
   reach the install, which uses the public registry. `--ignore-scripts` and the checksum
   stay. A proxy set in `.npmrc` must move to `HTTPS_PROXY`.
-
-## Unreleased
-
 - **Clippy finds your crates.** The lane runs for each crate that holds a changed
   Rust file, found by its `Cargo.toml` or listed in the new `clippyCrates`, no longer
   for one folder name only. Messages from a crate in a workspace now land on the

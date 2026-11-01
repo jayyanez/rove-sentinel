@@ -84,13 +84,26 @@ export async function liveWork(paths, { gone = processIsGone } = {}) {
       if (pid !== null) await check(`claim lock ${entry}`, pid, file);
     }
   }
-  const submitter = await readFile(paths.queueSubmitLock, 'utf8').then((text) => text, (error) => { if (error.code === 'ENOENT') return null; throw error; });
-  if (submitter !== null) {
-    let pid;
-    try { pid = JSON.parse(submitter)?.pid; } catch { pid = null; }
-    await check('a queue submission', pid, paths.queueSubmitLock);
-  }
+  const submitter = await submitterPid(paths);
+  if (submitter !== undefined) await check('a queue submission', submitter, paths.queueSubmitLock);
   return live;
+}
+
+async function submitterPid(paths) {
+  const text = await readFile(paths.queueSubmitLock, 'utf8').catch((error) => { if (error.code === 'ENOENT') return undefined; throw error; });
+  if (text === undefined) return undefined;
+  try { return JSON.parse(text)?.pid ?? null; } catch { return null; }
+}
+
+/**
+ * True when a queue submission lock is left by a process that is gone. Such a
+ * lock cannot be replaced while it exists, so it can be removed after this.
+ */
+export async function submissionIsAbandoned(paths, { gone = processIsGone } = {}) {
+  const pid = await submitterPid(paths);
+  if (pid === undefined) return false;
+  const at = await writtenAt(paths.queueSubmitLock);
+  return at !== null && await gone(pid, at);
 }
 
 export const updateMarker = (paths) => path.join(paths.root, 'update-in-progress.json');

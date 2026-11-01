@@ -12,6 +12,7 @@ import {
   attestationFileName,
   acquireDaemonLock,
   isProcessAlive,
+  removeDaemonLockExclusively,
   atomicWriteJson,
   cancelQueuedRequest,
   claimNextRequest,
@@ -205,6 +206,36 @@ describe('shared review local state', () => {
       await expect(acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.now() })).rejects.toThrow('names live PID');
     });
 
+    it('is taken over behind a fresh heartbeat when its id was reused', async () => {
+      const paths = await ensureState(await temporaryDirectory());
+      await staleLock(paths, 4242);
+      await atomicWriteJson(paths.heartbeat, { pid: 4242, ownerToken: 'stale-owner', at: new Date().toISOString() });
+
+      const lock = await acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.now() });
+
+      expect(lock).toMatchObject({ recoveredFromPid: 4242 });
+    });
+
+    it('is left to a healthy owner whose identity holds', async () => {
+      const paths = await ensureState(await temporaryDirectory());
+      await staleLock(paths, 4242);
+      await atomicWriteJson(paths.heartbeat, { pid: 4242, ownerToken: 'stale-owner', at: new Date().toISOString() });
+
+      await expect(acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.parse('2025-12-31T00:00:00.000Z') })).resolves.toBeNull();
+      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
+    });
+
+    it('takes a dead submission lock with it, or the next push would refuse', async () => {
+      const paths = await ensureState(await temporaryDirectory());
+      await staleLock(paths);
+      await atomicWriteJson(paths.queueSubmitLock, { pid: DEAD, ownerToken: 'stale-submitter' });
+
+      await expect(acquireDaemonLock(paths)).resolves.toMatchObject({ recoveredFromPid: DEAD });
+
+      await expect(access(paths.queueSubmitLock)).rejects.toThrow();
+      await expect(submitRequest(paths, { type: 'gate', options: { head: 'HEAD' } })).resolves.toMatchObject({ type: 'gate' });
+    });
+
     it('stays while work may be live, and names it', async () => {
       const paths = await ensureState(await temporaryDirectory());
       await staleLock(paths);
@@ -258,6 +289,45 @@ describe('shared review local state', () => {
       } finally {
         denied.mockRestore();
       }
+    });
+  });
+
+  describe('removing a dead lock from outside a starter', () => {
+    const lockOf = (ownerToken: string) => ({ pid: 2_147_483_647, ownerToken, startedAt: '2026-01-01T00:00:00.000Z' });
+
+    it('removes it under the marker, and only if asked', async () => {
+      const paths = await ensureState(await temporaryDirectory());
+      await atomicWriteJson(paths.lock, lockOf('stale-owner'));
+
+      await removeDaemonLockExclusively(paths, async () => {
+        await expect(access(`${paths.lock}.takeover`)).resolves.toBeUndefined();
+        return false;
+      });
+      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
+
+      await removeDaemonLockExclusively(paths, async () => true);
+      await expect(access(paths.lock)).rejects.toThrow();
+      await expect(access(`${paths.lock}.takeover`)).rejects.toThrow();
+    });
+
+    it('waits for a starter taking it over, so neither removes the other\'s lock', async () => {
+      const paths = await ensureState(await temporaryDirectory());
+      await atomicWriteJson(paths.lock, lockOf('stale-owner'));
+      await writeFile(`${paths.lock}.takeover`, JSON.stringify({ pid: process.pid }));
+
+      await expect(removeDaemonLockExclusively(paths, async () => true, { gone: async () => false })).rejects.toThrow('taking over');
+      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
+    });
+
+    it('clears the marker of an interrupted starter, however it was left', async () => {
+      const paths = await ensureState(await temporaryDirectory());
+      await writeFile(`${paths.lock}.takeover`, JSON.stringify({ pid: 2_147_483_647 }));
+      await removeDaemonLockExclusively(paths, async () => true);
+
+      await writeFile(`${paths.lock}.takeover`, '');
+      await expect(removeDaemonLockExclusively(paths, async () => true)).rejects.toThrow('taking over');
+      await removeDaemonLockExclusively(paths, async () => true, { now: () => Date.now() + 120_000 });
+      await expect(access(`${paths.lock}.takeover`)).rejects.toThrow();
     });
   });
 
