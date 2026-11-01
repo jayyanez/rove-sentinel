@@ -9,6 +9,7 @@ import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
 import {
   buildInstallPlan,
   watcherPath,
+  windowsTaskRefusal,
   windowsTaskRun,
   daemonSignalPid,
   executeUninstall,
@@ -267,6 +268,34 @@ describe('review-gate native installer plans', () => {
     expect(plan.create.args).not.toContain('ONLOGON');
     expect(plan.taskXml).toMatch(/<LogonTrigger>\s*<Enabled>true<\/Enabled>\s*<UserId>EXAMPLE\\me &amp; you<\/UserId>\s*<\/LogonTrigger>/);
     expect(plan.taskXml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
+  });
+
+  it('says how to take over a task an earlier engine registered as an administrator, and only then', () => {
+    const denied = new Error('schtasks.exe exited with code 1: ERROR: Access is denied.');
+    expect(windowsTaskRefusal(denied, true).message).toMatch(/once from an elevated shell/);
+    expect(windowsTaskRefusal(denied, true).cause).toBe(denied);
+    expect(windowsTaskRefusal(denied, false)).toBe(denied);
+    const other = new Error('schtasks.exe exited with code 1: ERROR: The task XML is malformed.');
+    expect(windowsTaskRefusal(other, true)).toBe(other);
+  });
+
+  it('does not try again a replacement the scheduler refused, which changed nothing', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-task-refused-'));
+    try {
+      const paths = await ensureState(stateRoot);
+      const plan = { ...buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot, nodePath: 'C:\\node.exe' }),
+        wrapperPath: path.join(stateRoot, 'watch.cmd'), taskXmlPath: path.join(stateRoot, 'watch-task.xml') };
+      const run = vi.fn(async (_command: string, args: string[]) => {
+        if (args.includes('/Create')) throw new Error('schtasks.exe exited with code 1: ERROR: Access is denied.');
+        return { code: 0, stdout: `TaskName: \\${plan.taskName}`, stderr: '' };
+      });
+      await expect(executeInstallTransaction({
+        context: { paths, repoRoot: stateRoot, stateRoot }, plan, policy: { policyDigest: 'p' }, currentHooks: '.githooks', start: false,
+      }, { run })).rejects.toThrow(/once from an elevated shell/);
+      expect(run.mock.calls.filter(([, args]) => args.includes('/Create'))).toHaveLength(1);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps a laptop\'s watcher running on battery and past the scheduler\'s default time limit', () => {

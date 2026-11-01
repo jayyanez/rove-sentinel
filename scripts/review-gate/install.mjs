@@ -105,6 +105,16 @@ export function windowsTaskXml({ user, command, args }) {
 `;
 }
 
+/**
+ * A task an earlier engine registered from an elevated shell belongs to
+ * administrators: a limited token may run and end it, but neither replace nor
+ * delete it (measured). Once replaced from an elevated shell, it is the user's.
+ */
+export function windowsTaskRefusal(error, taskExisted) {
+  if (!taskExisted || !/access is denied/i.test(error?.message || '')) return error;
+  return new Error('The review watcher\'s scheduled task was registered by an administrator, so this limited shell cannot replace it. Run npx --no-install rove-sentinel install once from an elevated shell; after that the task is your own, and no install or update needs elevation.', { cause: error });
+}
+
 /** The account a task of this user's own logon names. */
 function windowsAccount(environment) {
   const user = environment.USERNAME || os.userInfo().username;
@@ -556,7 +566,7 @@ export async function executeInstallTransaction(
   ]);
   const configuredHooks = !currentHooks;
   let schedulerCreated = false;
-  let schedulerCreateAttempted = false;
+  let schedulerReplaced = false;
   let schedulerLoadedByAttempt = false;
   let schedulerRemovedForReplacement = false;
   let schedulerStoppedForReplacement = false;
@@ -597,10 +607,14 @@ export async function executeInstallTransaction(
       await mkdir(path.dirname(plan.wrapperPath), { recursive: true });
       await writeFile(plan.wrapperPath, plan.wrapper, { encoding: 'utf8', mode: 0o600 });
       // `schtasks /XML` takes the encoding its first line declares from the byte order mark.
-      if (plan.taskXmlPath) await writeFile(plan.taskXmlPath, `﻿${plan.taskXml}`, { encoding: 'utf16le', mode: 0o600 });
+      if (plan.taskXmlPath) await writeFile(plan.taskXmlPath, `\ufeff${plan.taskXml}`, { encoding: 'utf16le', mode: 0o600 });
       schedulerCreated = !schedulerWasInstalled;
-      schedulerCreateAttempted = true;
-      await run(plan.create.command, plan.create.args, { timeoutMs: 120_000 });
+      try {
+        await run(plan.create.command, plan.create.args, { timeoutMs: 120_000 });
+      } catch (error) {
+        throw windowsTaskRefusal(error, schedulerWasInstalled);
+      }
+      schedulerReplaced = schedulerWasInstalled;
       if (start) {
         daemonStartAttempted = true;
         await run(plan.start.command, plan.start.args, { timeoutMs: 120_000 });
@@ -683,9 +697,10 @@ export async function executeInstallTransaction(
     if (
       plan.platform === 'win32' &&
       schedulerWasInstalled &&
-      (schedulerCreateAttempted || schedulerStoppedForReplacement)
+      (schedulerReplaced || schedulerStoppedForReplacement)
     ) {
-      if (schedulerCreateAttempted) {
+      // A refused replacement changed nothing, and would only be refused again.
+      if (schedulerReplaced) {
         await attempt(() => run(plan.create.command, plan.create.args, { timeoutMs: 120_000 }));
       }
       if (previousDaemonStopped) {
