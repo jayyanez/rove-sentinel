@@ -718,10 +718,27 @@ describe('shared review local state', () => {
         .resolves.toMatchObject({ status: 'fail' });
     });
 
-    it('never reads a broken file as a verdict in a hook that meets one', async () => {
+    it('keeps a hook waiting through a broken file until the new verdict replaces it', async () => {
+      const { paths, request, target } = await claimedWithResult('{"status":"pass"');
+      let polls = 0;
+
+      await expect(waitForResult(paths, request.id, {
+        timeoutMs: 2_000,
+        pollMs: 5,
+        shouldCancel: async () => {
+          polls += 1;
+          if (polls === 3) await atomicWriteJson(target, { requestId: request.id, status: 'fail' });
+          return null;
+        },
+      })).resolves.toMatchObject({ status: 'fail' });
+
+      expect(polls).toBe(3);
+    });
+
+    it('never reads a broken file as a verdict: a hook that only meets one times out', async () => {
       const { paths, request } = await claimedWithResult('{"status":"pass"');
-      await expect(waitForResult(paths, request.id, { timeoutMs: 50, pollMs: 5 }))
-        .rejects.toBeInstanceOf(SyntaxError);
+      await expect(waitForResult(paths, request.id, { timeoutMs: 40, pollMs: 5 }))
+        .rejects.toThrow('Timed out waiting');
     });
 
     it('keeps a claim whose result cannot be read at all', async () => {

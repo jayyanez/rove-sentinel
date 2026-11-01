@@ -946,17 +946,17 @@ async function failCorruptClaim(paths, claimName, target) {
 }
 
 /**
- * Whether a claimed request already has its result. A file that does not parse
- * is no result: a power cut can tear one, and it says nothing about the review.
- * It stays where it is: the new review's result replaces it, and removing it
- * here could take that result instead.
+ * A request's result, or null. A file that does not parse is no result: a power
+ * cut can tear one, and it says nothing about the review. It stays where it is:
+ * the new review's result replaces it, and removing it here could take that
+ * result instead.
  */
-async function hasCompletedResult(paths, requestId) {
+async function readResult(target) {
   try {
-    return Boolean(await readJson(path.join(paths.results, `${requestId}.json`)));
+    return await readJson(target);
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    return false;
+    return null;
   }
 }
 
@@ -984,7 +984,7 @@ export async function recoverClaims(paths) {
       await failCorruptClaim(paths, entry.name, target);
       continue;
     }
-    if (!(await hasCompletedResult(paths, request.id))) {
+    if (!(await readResult(path.join(paths.results, `${request.id}.json`)))) {
       await atomicWriteJson(path.join(paths.requests, `${request.id}.json`), request);
       recovered += 1;
     }
@@ -1078,7 +1078,7 @@ export async function waitForResult(
   };
   while (await waiting()) {
     if (signal?.aborted) throw signal.reason || new Error('Shared review wait aborted.');
-    const result = await readJson(target);
+    const result = await readResult(target);
     if (result) {
       await removeStoredJson(target);
       return result;
@@ -1096,7 +1096,7 @@ export async function waitForResult(
   // The review may have published its result between the last read and the
   // check that ended the wait (its heartbeat moves on as it completes): read
   // once more before giving up.
-  const late = await readJson(target);
+  const late = await readResult(target);
   if (late) {
     await removeStoredJson(target);
     return late;
