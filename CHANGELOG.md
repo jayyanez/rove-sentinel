@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **A running review keeps its checkout.** Cleaning up stale review checkouts read `EPERM`
+  as a dead process, so the checkout of a review run by another user or elevation could be
+  removed.
 - **A torn result no longer stops recovery.** A power cut can tear a result file, and a claim
   beside it made every start and every `recover` fail. The request now returns to the queue
   and is reviewed again, and a broken file is never read as a verdict.
