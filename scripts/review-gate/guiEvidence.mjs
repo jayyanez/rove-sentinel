@@ -75,8 +75,8 @@ import { branchEvidenceSlug } from './evidenceSlug.mjs';
 // only where it says which sources name them.
 const ANY_REPOSITORY = {
   guiFiles: [/\.(?:svelte|vue|tsx|jsx|css|scss|sass|less|html)$/i],
-  // Tests are text ABOUT the GUI, not the GUI.
-  testFiles: /(?:^|\/)(?:tests?|__tests__|e2e|cypress)\/|\.(?:test|spec|cy|stories)\.[^./]+$/i,
+  // Tests and documents are text ABOUT the GUI, not the GUI.
+  testFiles: /(?:^|\/)(?:tests?|__tests__|e2e|cypress)\/|\.(?:test|spec|cy|stories)\.[^./]+$|\.(?:md|mdx|markdown|rst|txt|adoc)$/i,
   reviewsFolder: 'docs/design/reviews',
   controlRegistry: 'docs/design/control-registry.md',
   controlSources: null,
@@ -101,7 +101,7 @@ const SVELTEKIT = {
     // First-paint palette + the data-theme stamps the stylesheet keys on.
     /^src\/app\.html$/,
   ],
-  testFiles: /(?:^|\/)__tests__\/|\.test\.[cm]?[jt]s$/,
+  testFiles: /(?:^|\/)__tests__\/|\.test\.[cm]?[jt]s$|\.(?:md|mdx|markdown|rst|txt|adoc)$/i,
   // Only component sources name controls; a `data-control="…"` in a test
   // fixture, a script or a doc is text about controls, not a control.
   controlSources: /^src\/lib\/components\/.+\.svelte$/,
@@ -134,7 +134,6 @@ export function evidenceLayout(config) {
   return compileLayout({ ...base, ...config?.guiEvidenceLayout });
 }
 
-const DOC_ONLY = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 export const CONTROL_REGISTRY = DEFAULT_LAYOUT.controlRegistry;
 export const REVIEW_DOC = 'REVIEW.md';
 
@@ -161,7 +160,7 @@ export function isForwardedControlProp(file, value, layout = DEFAULT_LAYOUT) {
 
 // Bare hunks without file headers (tests) are scanned as if they were sources.
 function isControlSource(file, layout) {
-  return Boolean(layout.controlSources) && (file === '' || layout.controlSources.test(file));
+  return Boolean(layout.controlSources) && (file === '' || (layout.controlSources.test(file) && !layout.testFiles.test(file)));
 }
 
 export const CAPTURE_COMMAND = DEFAULT_LAYOUT.captureCommand;
@@ -328,7 +327,7 @@ export function evidenceScreenshotPaths(files, branch, refType = 'branch', layou
 
 export function isGuiDiff(files, layout = DEFAULT_LAYOUT) {
   return normalizeChangedFiles(files).some(
-    ({ path }) => !DOC_ONLY.test(path) && !layout.testFiles.test(path) && layout.guiFiles.some((pattern) => pattern.test(path)),
+    ({ path }) => !layout.testFiles.test(path) && layout.guiFiles.some((pattern) => pattern.test(path)),
   );
 }
 

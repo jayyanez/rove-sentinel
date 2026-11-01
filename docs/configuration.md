@@ -56,7 +56,7 @@ Leave `guiEvidence` at `none` and none of this applies.
 | Field | Meaning |
 | --- | --- |
 | `guiFiles` | Regular expressions on repository paths, replacing the file types above |
-| `testFiles` | A regular expression for the files that do not count as GUI even if `guiFiles` matches them; by default test and story files and `tests/`, `__tests__/` and `e2e/` folders |
+| `testFiles` | A regular expression for the files that are neither GUI nor control sources even if another pattern matches them; by default documents, test and story files, and `tests/`, `__tests__/`, `e2e/` and `cypress/` folders. Set it to count a document, such as a rendered `.mdx` page |
 | `reviewsFolder` | The folder holding one evidence folder per branch |
 | `captureCommand` | The command the refusal tells the author to run |
 | `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, a table row of seven cells with the backticked id first, and a new or moved one must change its row |
@@ -72,7 +72,7 @@ spelling was the only one. To say the same with `required`, set:
   "guiEvidence": "required",
   "guiEvidenceLayout": {
     "guiFiles": ["\\.[sS][vV][eE][lL][tT][eE]$", "\\.[cC][sS][sS]$", "^src/lib/theme/", "^src/lib/components/.+\\.ts$", "^src/routes/.+\\.(?:svelte|ts)$", "^src/app\\.html$"],
-    "testFiles": "(?:^|/)__tests__/|\\.test\\.[cm]?[jt]s$",
+    "testFiles": "(?:^|/)__tests__/|\\.test\\.[cm]?[jt]s$|\\.(?:md|mdx|markdown|rst|txt|adoc)$",
     "controlSources": "^src/lib/components/.+\\.svelte$",
     "sharedPrimitives": "^src/lib/components/shared/",
     "captureCommand": "pnpm design:capture"
@@ -88,7 +88,7 @@ reviewed and installed as any other, and needs an engine that knows the word.
 Risk decides how many reviewers and shards a change gets. A change is high risk when it
 touches the charter or lessons, agent instructions (`AGENTS.md`, `CLAUDE.md`, and
 `.agents`, `.claude` or `.grok` skills), Sentinel's own hook, configuration and files,
-CI definitions, migrations, dependency manifests, a tool's configuration file
+CI definitions, migrations, `package.json` or `pnpm-lock.yaml`, a tool's configuration file
 (`*.config.*`, `*.conf.*`, but for prose), or a path naming permissions or capabilities. No other
 folder name raises it. List your project's sensitive paths:
 

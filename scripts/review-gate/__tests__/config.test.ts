@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizeConfig } from '../config.mjs';
-import { readReviewPolicy, reviewPolicySnapshot } from '../context.mjs';
+import { policyForLocalCheck, readReviewPolicy, reviewPolicySnapshot } from '../context.mjs';
+import { ensureState } from '../storage.mjs';
 import { classifyRisk, isOrdinaryDocumentationSkip } from '../risk.mjs';
 import { initializeRepository, uninstallGeneratedHook } from '../init.mjs';
 import { guiEvidenceRefusal } from '../prepush.mjs';
@@ -66,6 +67,16 @@ describe('standalone policy and onboarding', () => {
     expect(normalizeConfig({})).not.toHaveProperty('clippyCrates');
     for (const clippyCrates of [[], 'crates/a', [1], ['../outside'], ['/absolute'], ['crates/a/'], Array(65).fill('a')]) {
       expect(() => normalizeConfig({ clippyCrates })).toThrow(/clippyCrates/);
+    }
+  });
+
+  it('fails a local check on a broken installed policy, and falls back only when there is none', async () => {
+    const root = await temp();
+    const paths = await ensureState(path.join(root, 'state'));
+    await expect(policyForLocalCheck(paths, root)).resolves.toMatchObject({ config: { guiEvidence: 'none' } });
+    for (const broken of ['null', 'false', '0', '""', '{"charter":"x"}']) {
+      await writeFile(paths.policy, broken);
+      await expect(policyForLocalCheck(paths, root)).rejects.toThrow();
     }
   });
 

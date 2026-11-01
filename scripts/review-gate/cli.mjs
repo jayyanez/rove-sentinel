@@ -10,7 +10,7 @@ import { HELP } from './help.mjs';
 import { formatLimits, sentinelLimits } from './limits.mjs';
 import { detectLintTools } from './toolLanes.mjs';
 import { firstUseToolsNotice, formatToolsNotice, installPlan, installTools, missingTools } from './tools.mjs';
-import { readReviewPolicy, loadInstalledReviewPolicy } from './context.mjs';
+import { readReviewPolicy, loadInstalledReviewPolicy, policyForLocalCheck } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
@@ -347,11 +347,7 @@ async function main() {
     if (refType !== 'branch' && refType !== 'tag') {
       throw new Error(`--ref-type must be "branch" or "tag"; received ${JSON.stringify(refType)}.`);
     }
-    // The installed policy, as the hook reads it: a broken one fails here too.
-    const policy = await loadInstalledReviewPolicy((await createGateContext(root)).paths).catch(async (error) => {
-      if (!String(error.message).includes('no installed policy snapshot')) throw error;
-      return readReviewPolicy(root);
-    });
+    const policy = await policyForLocalCheck((await createGateContext(root, { stateRoot: options['state-root'] })).paths, root);
     const refusal = await guiEvidenceRefusal({
       repoRoot: root, identity: { baseSha, headSha }, branch, refType, config: policy.config,
     });

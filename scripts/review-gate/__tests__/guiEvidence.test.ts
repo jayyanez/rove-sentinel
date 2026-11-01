@@ -91,7 +91,7 @@ describe('where a project keeps its evidence', () => {
     for (const file of [
       'a/b.svelte', 'a/B.SVELTE', 'a/b.css', 'src/lib/theme/tokens.ts', 'src/lib/components/shared/Icon.svelte', 'src/lib/components/popover.ts',
       'src/routes/page.ts', 'src/routes/x/+page.svelte', 'src/app.html', 'src/lib/stores/a.ts', 'src/routes/a.js', 'src/lib/components/a.test.ts', 'other/app.html',
-      'src/lib/components/a.spec.ts', 'tests/a.svelte', 'e2e/a.css', 'src/routes/__tests__/a.ts', 'a.stories.svelte',
+      'src/lib/theme/README.md', 'src/lib/components/a.spec.ts', 'tests/a.svelte', 'e2e/a.css', 'src/routes/__tests__/a.ts', 'a.stories.svelte',
     ]) {
       expect(isGuiDiff([file], documented), file).toBe(isGuiDiff([file], earlier));
       expect(isForwardedControlProp(file, '{dataControl}', documented), file).toBe(isForwardedControlProp(file, '{dataControl}', earlier));
@@ -107,6 +107,17 @@ describe('where a project keeps its evidence', () => {
     expect(missing).toContain('qa/shots/feature/');
     expect(missing).toContain('make shots');
     expect(evidenceScreenshotPaths(png('qa/shots'), 'feature', 'branch', evidenceLayout(config))).toEqual(['qa/shots/feature/shot.png']);
+  });
+
+  it('counts a document only when a project says so', () => {
+    expect(isGuiDiff(['site/page.mdx'], evidenceLayout({ guiEvidence: 'required', guiEvidenceLayout: { guiFiles: ['\\.mdx$'] } }))).toBe(false);
+    expect(isGuiDiff(['site/page.mdx'], evidenceLayout({ guiEvidence: 'required', guiEvidenceLayout: { guiFiles: ['\\.mdx$'], testFiles: '\\.test\\.' } }))).toBe(true);
+  });
+
+  it('reads no controls in a file testFiles leaves out', () => {
+    const patch = 'diff --git a/ui/A.test.vue b/ui/A.test.vue\n--- a/ui/A.test.vue\n+++ b/ui/A.test.vue\n@@ -1,0 +1,1 @@\n+<a data-control="one">\n';
+    const config = { guiEvidence: 'required', guiEvidenceLayout: { controlSources: '\\.vue$' } };
+    expect(addedControlIds(patch, evidenceLayout(config))).toEqual([]);
   });
 
   it('reads a folder name literally', () => {
