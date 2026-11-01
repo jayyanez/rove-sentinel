@@ -56,6 +56,7 @@ Leave `guiEvidence` at `none` and none of this applies.
 | Field | Meaning |
 | --- | --- |
 | `guiFiles` | Regular expressions on repository paths, replacing the file types above |
+| `testFiles` | A regular expression for the files that do not count as GUI even if `guiFiles` matches them; by default test and story files and `tests/`, `__tests__/` and `e2e/` folders |
 | `reviewsFolder` | The folder holding one evidence folder per branch |
 | `captureCommand` | The command the refusal tells the author to run |
 | `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, and a new or moved one must change its row |
@@ -71,6 +72,7 @@ spelling was the only one. To say the same with `required`, set:
   "guiEvidence": "required",
   "guiEvidenceLayout": {
     "guiFiles": ["\\.[sS][vV][eE][lL][tT][eE]$", "\\.[cC][sS][sS]$", "^src/lib/theme/", "^src/lib/components/.+\\.ts$", "^src/routes/.+\\.(?:svelte|ts)$", "^src/app\\.html$"],
+    "testFiles": "(?:^|/)__tests__/|\\.test\\.[cm]?[jt]s$",
     "controlSources": "^src/lib/components/.+\\.svelte$",
     "sharedPrimitives": "^src/lib/components/shared/",
     "captureCommand": "pnpm design:capture"

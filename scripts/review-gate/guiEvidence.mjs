@@ -119,6 +119,7 @@ function compileLayout(layout) {
   return {
     ...layout,
     guiFiles: layout.guiFiles.map(pattern),
+    testFiles: pattern(layout.testFiles),
     controlSources: pattern(layout.controlSources),
     sharedPrimitives: pattern(layout.sharedPrimitives),
     reviewPng: new RegExp(`^${folder}/([^/]+)/.+\\.png$`, 'i'),

@@ -86,11 +86,12 @@ describe('where a project keeps its evidence', () => {
     const block = /```json\r?\n(\{\s*"guiEvidence": "required"[\s\S]*?)```/.exec(readFileSync('docs/configuration.md', 'utf8'));
     const documented = evidenceLayout(JSON.parse(block![1]));
     const earlier = evidenceLayout({ guiEvidence: 'rove' });
-    const { guiFiles: _files, controlSources: _sources, sharedPrimitives: _primitives, reviewPng: _png, ...paths } = earlier;
+    const { guiFiles: _files, testFiles: _tests, controlSources: _sources, sharedPrimitives: _primitives, reviewPng: _png, ...paths } = earlier;
     expect(documented).toMatchObject(paths);
     for (const file of [
       'a/b.svelte', 'a/B.SVELTE', 'a/b.css', 'src/lib/theme/tokens.ts', 'src/lib/components/shared/Icon.svelte', 'src/lib/components/popover.ts',
       'src/routes/page.ts', 'src/routes/x/+page.svelte', 'src/app.html', 'src/lib/stores/a.ts', 'src/routes/a.js', 'src/lib/components/a.test.ts', 'other/app.html',
+      'src/lib/components/a.spec.ts', 'tests/a.svelte', 'e2e/a.css', 'src/routes/__tests__/a.ts', 'a.stories.svelte',
     ]) {
       expect(isGuiDiff([file], documented), file).toBe(isGuiDiff([file], earlier));
       expect(isForwardedControlProp(file, '{dataControl}', documented), file).toBe(isForwardedControlProp(file, '{dataControl}', earlier));

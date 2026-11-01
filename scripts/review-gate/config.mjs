@@ -90,11 +90,11 @@ function normalizePattern(value, label) {
 /** Where a project keeps its GUI evidence; every field has a default (guiEvidence.mjs). */
 function normalizeGuiEvidenceLayout(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('guiEvidenceLayout must be an object.');
-  const allowed = ['guiFiles', 'reviewsFolder', 'controlRegistry', 'controlSources', 'sharedPrimitives', 'captureCommand'];
+  const allowed = ['guiFiles', 'testFiles', 'reviewsFolder', 'controlRegistry', 'controlSources', 'sharedPrimitives', 'captureCommand'];
   for (const key of Object.keys(input)) {
     if (!allowed.includes(key)) throw new Error(`Unknown guiEvidenceLayout setting: ${key}`);
   }
-  const { guiFiles, reviewsFolder, controlRegistry, controlSources, sharedPrimitives, captureCommand } = input;
+  const { guiFiles, testFiles, reviewsFolder, controlRegistry, controlSources, sharedPrimitives, captureCommand } = input;
   if (guiFiles !== undefined && (!Array.isArray(guiFiles) || !guiFiles.length || guiFiles.length > 32)) {
     throw new Error('guiEvidenceLayout.guiFiles must be a list of 1 to 32 regular expressions.');
   }
@@ -103,6 +103,7 @@ function normalizeGuiEvidenceLayout(input) {
   }
   return {
     ...(guiFiles !== undefined ? { guiFiles: guiFiles.map((pattern) => normalizePattern(pattern, 'guiEvidenceLayout.guiFiles entry')) } : {}),
+    ...(testFiles !== undefined ? { testFiles: normalizePattern(testFiles, 'guiEvidenceLayout.testFiles') } : {}),
     ...(reviewsFolder !== undefined ? { reviewsFolder: relativeFile(reviewsFolder, 'guiEvidenceLayout.reviewsFolder') } : {}),
     ...(controlRegistry !== undefined ? { controlRegistry: relativeFile(controlRegistry, 'guiEvidenceLayout.controlRegistry') } : {}),
     ...(controlSources !== undefined ? { controlSources: normalizePattern(controlSources, 'guiEvidenceLayout.controlSources') } : {}),

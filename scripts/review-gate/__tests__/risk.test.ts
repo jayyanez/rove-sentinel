@@ -81,13 +81,13 @@ describe('shared review risk routing', () => {
       for (const file of [
         '.claude/skills/deploy/SKILL.md', '.agents/skills/any/notes.md', '.grok/skills/any/SKILL.md',
         'eslint.config.js', 'tailwind.config.ts', 'next.config.mjs', 'vite.config.ts', 'svelte.config.js', 'src/tauri.conf.json', 'app/package.json',
-        'vite.config.mts', 'rollup.config.cts', 'tool.config.jsonc', 'tool.config.toml', 'nginx.conf.json',
+        'vite.config.mts', 'rollup.config.cts', 'tool.config.jsonc', 'tool.config.toml', 'nginx.conf.json', 'webpack.config.dev.js', 'tool.config.local.json',
       ]) expect(rate(file)).toBe('high');
     });
 
     it('leaves near names alone', () => {
       for (const file of ['src/config.ts', 'src/app.configure.ts', 'src/skills/one.ts', '.claude/settings.ts']) expect(rate(file)).toBe('low');
-      for (const file of ['docs/tool.config.md', 'docs/app.conf.rst']) expect(rate(file)).toBe('skip');
+      for (const file of ['docs/tool.config.md', 'docs/app.conf.rst', 'docs/tool.config.v2.md']) expect(rate(file)).toBe('skip');
     });
   });
 

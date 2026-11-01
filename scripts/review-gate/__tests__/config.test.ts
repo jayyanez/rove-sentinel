@@ -82,9 +82,9 @@ describe('standalone policy and onboarding', () => {
   });
 
   it('takes a GUI evidence layout, and refuses what is not one', () => {
-    const layout = { guiFiles: ['^ui/'], reviewsFolder: 'qa/shots', controlRegistry: 'qa/controls.md', controlSources: '\\.vue$', sharedPrimitives: '^ui/shared/', captureCommand: 'make shots' };
+    const layout = { guiFiles: ['^ui/'], testFiles: '^ui/fixtures/', reviewsFolder: 'qa/shots', controlRegistry: 'qa/controls.md', controlSources: '\\.vue$', sharedPrimitives: '^ui/shared/', captureCommand: 'make shots' };
     expect(normalizeConfig({ guiEvidenceLayout: layout }).guiEvidenceLayout).toEqual(layout);
-    for (const guiEvidenceLayout of [[], 'x', { typo: 1 }, { guiFiles: [] }, { guiFiles: ['('] }, { guiFiles: [1] }, { reviewsFolder: '../x' }, { controlRegistry: '/x' }, { controlSources: '(' }, { sharedPrimitives: 'a'.repeat(201) }, { captureCommand: '' }]) {
+    for (const guiEvidenceLayout of [[], 'x', { typo: 1 }, { guiFiles: [] }, { guiFiles: ['('] }, { guiFiles: [1] }, { testFiles: '(' }, { reviewsFolder: '../x' }, { controlRegistry: '/x' }, { controlSources: '(' }, { sharedPrimitives: 'a'.repeat(201) }, { captureCommand: '' }]) {
       expect(() => normalizeConfig({ guiEvidenceLayout })).toThrow(/guiEvidenceLayout/);
     }
   });
