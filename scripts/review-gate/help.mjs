@@ -26,7 +26,7 @@ Operations:
   resume
   recover --reason TEXT
   uninstall [--dry-run]
-  install [--dry-run] [--no-start]
+  install [--dry-run] [--no-start] [--no-github]
   update-check [--force] [--json] [--no-update-check]
   updates [--enable|--disable]         Configure background engine updates
   update                              Retry an update now (normally automatic)

@@ -22,6 +22,7 @@ import {
   recordEvent,
   readJson,
   readPause,
+  readWatcherGithub,
   removeStoredJson,
   recoverClaims,
   sleep,
@@ -280,6 +281,7 @@ export async function runWatcher({
   once = false,
   github = true,
   progress = () => {},
+  syncPulls = syncPullRequests,
   recoverResources = recoverStaleReviewResources,
   recoverQueuedClaims = recoverClaims,
   pause = pauseGate,
@@ -339,17 +341,18 @@ export async function runWatcher({
               policyDigest: context.policy.policyDigest,
               activity: 'paused',
             });
-          } else if (github && Date.now() >= nextGithubAt) {
+          } else if (github && Date.now() >= nextGithubAt && await readWatcherGithub(context.paths)) {
             try {
               await runWithHeartbeat(
                 context,
                 { activity: 'github-review' },
-                () => syncPullRequests({
+                () => syncPulls({
                   context,
                   runGate: (options) => runGate({ ...options, policy: context.policy }),
                   progress,
                   shouldStop: () => stopped,
                   shouldYield: async () => (
+                    !await readWatcherGithub(context.paths) ||
                     Boolean(await readPause(context.paths)) ||
                     await hasQueuedRequests(context.paths)
                   ),

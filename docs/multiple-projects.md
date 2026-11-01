@@ -12,6 +12,15 @@ Sentinel separates a **runtime**, a **repository watcher**, and an individual
 | Rove and a different project | Verified runtime files under the same OS account | Watcher, queue, policy, trusted authors, pauses, reports and selected engine |
 | Another computer or OS account | The published release artifacts | Local state, processes, provider authentication and engine selection |
 
+## Several computers working on one repository
+
+A watcher reviews every eligible pull request it finds, so two computers with
+watchers review each one twice and pay twice. Keep the watcher of one computer
+on GitHub, and install the others with `install --no-github`: each keeps its
+hook, its local queue and its own attestations, and leaves pull requests alone.
+An attestation is local, so the computer that pushes runs the gate. Installing
+again without the flag gives that computer's watcher GitHub back.
+
 ## What happens when agents work at the same time
 
 A pre-push request without an existing valid attestation enters the repository's

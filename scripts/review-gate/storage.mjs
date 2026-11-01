@@ -96,6 +96,7 @@ export function statePaths(root) {
     daemonError: path.join(root, 'daemon-error.json'),
     paused: path.join(root, 'paused.json'),
     policy: path.join(root, 'policy.json'),
+    watcherOptions: path.join(root, 'watcher-options.json'),
   };
 }
 
@@ -107,6 +108,17 @@ export async function ensureState(root) {
     ),
   );
   return paths;
+}
+
+/** Whether this machine's watcher polls GitHub. An install under way says what
+ *  it is choosing, while its process lives and for no longer than an install
+ *  can last, whatever process comes to reuse its id: one killed midway leaves
+ *  the choice as it was, with nothing to undo. */
+export async function readWatcherGithub(paths) {
+  const options = await readJson(paths.watcherOptions, null);
+  const pending = options?.pending;
+  if (Number.isInteger(pending?.pid) && Date.now() < pending.until && processIsAlive(pending.pid)) return pending.github !== false;
+  return options?.github !== false;
 }
 
 export async function atomicWriteJson(target, value) {

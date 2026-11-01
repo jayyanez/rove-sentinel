@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -21,6 +22,65 @@ import {
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
+
+describe('a computer whose watcher leaves GitHub alone', () => {
+  async function pollsGitHub(options?: { github: boolean; pending?: { github: boolean; pid: number; until: number } }) {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    if (options) await atomicWriteJson(paths.watcherOptions, options);
+    const syncPulls = vi.fn(async () => {});
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, syncPulls,
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      return syncPulls.mock.calls.length > 0;
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  }
+
+  it('reviews no pull request once installed with --no-github, whoever starts it', async () => {
+    expect(await pollsGitHub({ github: false })).toBe(false);
+  });
+
+  it('stops a synchronization under way once the choice is made', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    const yields: boolean[] = [];
+    const syncPulls = vi.fn(async ({ shouldYield }: { shouldYield: () => Promise<boolean> }) => {
+      yields.push(await shouldYield());
+      await atomicWriteJson(paths.watcherOptions, { github: false });
+      yields.push(await shouldYield());
+    });
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, syncPulls,
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(yields).toEqual([false, true]);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('polls GitHub by default, and after installing again without the flag', async () => {
+    expect(await pollsGitHub()).toBe(true);
+    expect(await pollsGitHub({ github: true })).toBe(true);
+  });
+
+  it('honours an install under way from the first poll, and forgets one that was killed', async () => {
+    const until = Date.now() + 60_000;
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid, until } })).toBe(false);
+    // a live process past the time an install can last has reused the id
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid, until: Date.now() - 1 } })).toBe(true);
+    const dead = Number(spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim());
+    expect(await pollsGitHub({ github: true, pending: { github: false, pid: dead, until } })).toBe(true);
+    expect(await pollsGitHub({ github: false, pending: { github: true, pid: dead, until } })).toBe(false);
+  });
+});
 
 describe('review watcher heartbeat coverage', () => {
   it('keeps the pause acknowledgement visible during the idle wait for updater handoff', async () => {
