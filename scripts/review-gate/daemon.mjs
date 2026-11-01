@@ -336,7 +336,7 @@ export async function runWatcher({
       // An owner that announced itself keeps its heartbeat fresh while it
       // recovers: a stale one would let `recover` remove this live lock.
       if (lock.replaced) {
-        await runWithHeartbeat(context, { activity: 'recovering' }, recoverState, { requireInitialWrite: false });
+        await runWithHeartbeat(context, { activity: 'recovering' }, recoverState);
       } else {
         await recoverState();
       }

@@ -1321,8 +1321,14 @@ export async function acquireDaemonLock(
         }
         const lock = await tryAcquire();
         // Under the marker: once it is free, nobody may find this live owner
-        // beside the dead one's heartbeat, which reads as a stale owner.
-        await announceOwner(lock.ownerToken).catch(() => {});
+        // beside the dead one's heartbeat, which reads as a stale owner. An
+        // owner that cannot say so gives the lock back and fails its start.
+        try {
+          await announceOwner(lock.ownerToken);
+        } catch (error) {
+          await lock.release();
+          throw error;
+        }
         return { ...lock, replaced: { pid: existing.pid, lastHeartbeatAt: heartbeat.at } };
       }, { openFile, remove });
     } catch (error) {

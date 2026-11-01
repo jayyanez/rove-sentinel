@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -410,11 +410,13 @@ describe('starters meeting over a lock left by a restart', () => {
     expect(await exists(paths.takeover)).toBe(false);
   });
 
-  it('keeps the lock it took when announcing its owner fails', async () => {
+  it('gives the lock back when it cannot announce its owner', async () => {
     const paths = await leftByRestart();
-    const lock = await acquireDaemonLock(paths, { ...proofOptions, announceOwner: async () => { throw new Error('disk full'); } });
+    const full = new Error('disk full');
 
-    await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: lock.ownerToken });
+    await expect(acquireDaemonLock(paths, { ...proofOptions, announceOwner: async () => { throw full; } })).rejects.toBe(full);
+
+    expect(await exists(paths.lock)).toBe(false);
     expect(await exists(paths.takeover)).toBe(false);
   });
 
@@ -601,6 +603,30 @@ describe('a person beside a takeover', () => {
 });
 
 describe('a watcher started after a restart', () => {
+  it('fails its start rather than recover with no heartbeat', async () => {
+    const pid = await endedProcessId();
+    const paths = await leftByRestart({ pid, at: '2001-01-01T00:00:00.000Z' }, { pid });
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    const recoverResources = vi.fn(async () => {});
+
+    await expect(runWatcher({
+      repoRoot: process.cwd(), stateRoot: paths.root, once: true, github: false,
+      recoverResources, recoverQueuedClaims: async () => {},
+      acquireLock: (target: typeof paths, options: { announceOwner: (ownerToken: string) => Promise<void> }) => acquireDaemonLock(target, {
+        ...options,
+        announceOwner: async (ownerToken: string) => {
+          await options.announceOwner(ownerToken);
+          // The disk fails after the first write: a folder cannot be replaced by a file.
+          await rm(paths.heartbeat);
+          await mkdir(paths.heartbeat);
+        },
+      }),
+    })).rejects.toThrow();
+
+    expect(recoverResources).not.toHaveBeenCalled();
+    expect(await exists(paths.lock)).toBe(false);
+  });
+
   it('announces itself with a heartbeat that makes it healthy', async () => {
     const pid = await endedProcessId();
     const paths = await leftByRestart({ pid, at: '2001-01-01T00:00:00.000Z' }, { pid });
