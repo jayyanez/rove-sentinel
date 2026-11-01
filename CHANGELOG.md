@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A running review keeps its checkout.** Cleaning up stale review checkouts read `EPERM`
+  as a dead process, so the checkout of a review run by another user or elevation could be
+  removed.
+
 ## 1.16.0 — any project's paths, and a watcher you can see
 
 The review knew the folders of the project it came from, and a watcher could stop
