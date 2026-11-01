@@ -1370,9 +1370,17 @@ export async function acquireDaemonLock(
   const age = await takeoverMarkerAge(paths);
   if (age !== null && age < TAKEOVER_MARKER_IN_USE_MS) return null;
   const [current, currentHeartbeat] = await Promise.all([
-    read(paths.lock, existing).catch(() => existing),
+    read(paths.lock, missingLock).catch(() => existing),
     read(paths.heartbeat).catch(() => null),
   ]);
+  if (current === missingLock) {
+    try {
+      return await tryAcquire();
+    } catch (error) {
+      if (error?.code === 'EEXIST') return null;
+      throw error;
+    }
+  }
   if (current?.ownerToken !== existing.ownerToken || daemonOwnerIsHealthy(current, currentHeartbeat)) return null;
   if (isAlive(existing?.pid)) {
     throw new Error(`Review daemon lock names live PID ${existing.pid} without a fresh matching owner heartbeat; refusing to trust a possibly reused PID. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" to clear it without signaling that PID.`);

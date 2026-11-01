@@ -478,6 +478,32 @@ describe('starters meeting over a lock left by a restart', () => {
     await expect(acquireDaemonLock(paths, { ...proofOptions, read })).resolves.toBeNull();
   });
 
+  it('takes the name when the lock vanished between its reads, rather than naming recover', async () => {
+    const paths = await leftByRestart();
+    let looks = 0;
+    const read = async (target: string, fallback?: unknown) => {
+      if (target === paths.lock && ++looks === 2) await rm(paths.lock);
+      return await readJson(target, fallback);
+    };
+
+    const lock = await acquireDaemonLock(paths, { ...proofOptions, bootTime: () => null, read });
+
+    await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: lock.ownerToken });
+  });
+
+  it('gives way when another start took that name first', async () => {
+    const paths = await leftByRestart();
+    let looks = 0;
+    const read = async (target: string, fallback?: unknown) => {
+      if (target === paths.lock && ++looks === 2) return fallback;
+      return await readJson(target, fallback);
+    };
+
+    await expect(acquireDaemonLock(paths, { ...proofOptions, bootTime: () => null, read })).resolves.toBeNull();
+
+    await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
+  });
+
   it('counts a marker that vanished under it as in use: its holder has finished', async () => {
     const paths = await leftByRestart();
     const gone = Object.assign(new Error('gone'), { code: 'ENOENT' });
