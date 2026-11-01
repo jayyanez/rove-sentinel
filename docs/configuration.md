@@ -57,10 +57,11 @@ other, and needs an engine that knows the word.
 ## Clippy
 
 With `clippy: true`, each crate that holds a changed Rust file gets a `cargo clippy`
-in its own folder. A file belongs to the highest folder below the repository root
-that has a `Cargo.toml` on the way to it, so a crate nested in another is built by
-the outer one; if there is none, it belongs to a `Cargo.toml` at the root. A Rust
-file with neither is not linted. To decide instead, list the crates:
+in its own folder. A file belongs to every folder with a `Cargo.toml` on the way to it,
+so a crate nested in another runs with the outer one, which usually builds it. A
+`Cargo.toml` at the repository root counts only when no folder below it has one. A
+Rust file with no `Cargo.toml` above it is not linted. To decide instead, list the
+crates:
 
 ```json
 { "clippy": true, "clippyCrates": ["desktop", "crates/core"] }

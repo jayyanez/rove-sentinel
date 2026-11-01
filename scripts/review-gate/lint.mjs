@@ -289,15 +289,14 @@ async function markdownlintLaneBody({
 /**
  * Where a compiler message's file is in the repository. rustc names it from the
  * folder Cargo ran it in: the crate's, or its workspace's, which is one of the
- * folders above. The crate's own folder wins when both hold such a file.
+ * folders above. When several hold such a file, one this diff changed wins, then
+ * the deepest.
  */
-function spanFile(file, crateRoot, exists) {
+function spanFile(file, crateRoot, exists, addedLines) {
   const folders = crateRoot ? crateRoot.split('/') : [];
-  for (let depth = folders.length; depth >= 0; depth -= 1) {
-    const candidate = path.posix.join(...folders.slice(0, depth), file);
-    if (exists(candidate)) return candidate;
-  }
-  return path.posix.join(crateRoot, file);
+  const candidates = folders.map((_, depth) => path.posix.join(...folders.slice(0, folders.length - depth), file));
+  const present = [...candidates, file].filter(exists);
+  return present.find((candidate) => addedLines?.has(candidate)) ?? present[0] ?? path.posix.join(crateRoot, file);
 }
 
 /**
@@ -345,7 +344,7 @@ export function parseClippyMessages(output, { addedLines, crateRoot = '', exists
       }));
       continue;
     }
-    const file = spanFile(normalizePath(span.file_name), crateRoot, exists);
+    const file = spanFile(normalizePath(span.file_name), crateRoot, exists, addedLines);
     const line = span.line_start;
     const onAddedLine = addedLines?.get(file)?.has(line);
     if (message.level === 'warning' && !onAddedLine) continue;
@@ -377,10 +376,11 @@ export function parseClippyMessages(output, { addedLines, crateRoot = '', exists
 /**
  * The crates of the changed Rust files, as folders of the checkout ('' is its
  * root). Installed policy can list them (`clippyCrates`): a file then belongs to
- * the deepest listed folder that holds it. Otherwise a crate is found by its
- * manifest: the highest one below the root on the way to the file, because a
- * crate nested in another is built by it, and only then the one at the root,
- * which in a repository of several crates is usually just their workspace.
+ * the deepest listed folder that holds it. Otherwise crates are found by their
+ * manifests: every one on the way to the file, because a crate nested in another
+ * is usually built by it and can break it. The one at the root counts only when
+ * there is no other, for in a repository of several crates it is usually just
+ * their workspace, and may be unrelated to them.
  */
 export async function clippyCratesFor({ checkout, files, configured = null }) {
   const manifests = new Map();
@@ -401,12 +401,12 @@ export async function clippyCratesFor({ checkout, files, configured = null }) {
     }
     const parts = file.split('/').slice(0, -1);
     const above = parts.map((_, index) => parts.slice(0, index + 1).join('/'));
-    for (const folder of [...above, '']) {
-      if (await hasManifest(folder)) {
-        crates.add(folder);
-        break;
-      }
+    const holding = [];
+    for (const folder of above) {
+      if (await hasManifest(folder)) holding.push(folder);
     }
+    if (!holding.length && await hasManifest('')) holding.push('');
+    for (const folder of holding) crates.add(folder);
   }
   return [...crates].sort();
 }
@@ -491,7 +491,9 @@ export async function runClippyLane({
     outcomes.push({ crate, ...outcome });
     if (outcome.status === 'unavailable') break;
   }
-  const merged = outcomes.flatMap((outcome) => outcome.findings);
+  // A crate and one it depends on report the same diagnostic: keep it once.
+  const merged = [...new Map(outcomes.flatMap((outcome) => outcome.findings)
+    .map((finding) => [`${finding.file}:${finding.line}:${finding.title}`, finding])).values()];
   const bounded = [...merged.filter((finding) => finding.priority === 'P2'), ...merged.filter((finding) => finding.priority !== 'P2')]
     .slice(0, maxFindings).map((finding, index) => ({ ...finding, candidate_id: `clippy-${index}` }));
   const leftOut = crates.slice(outcomes.length);

@@ -155,12 +155,14 @@ describe('deterministic lanes', () => {
     expect(files(warning('app/src/lib.rs'), 'rust/app', inChecked('rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
     expect(files(warning('rust/app/src/lib.rs'), 'rust/app', inChecked('rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
     expect(files(warning('src/lib.rs'), 'src', inChecked('src/lib.rs', 'src/src/lib.rs'))).toEqual(['src/src/lib.rs']);
+    // A workspace path that also exists inside the crate lands on the changed file.
+    expect(files(warning('app/src/lib.rs'), 'rust/app', inChecked('rust/app/app/src/lib.rs', 'rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
     expect(parseClippyMessages(JSON.stringify({
       reason: 'compiler-message', message: { level: 'error', message: 'no manifest', spans: [] },
     }), {}).findings[0].file).toBe('Cargo.toml');
   });
 
-  it('finds crates by their Cargo.toml: the highest below the root, then the root', async () => {
+  it('finds crates by their Cargo.toml: all on the way to the file, the root only when alone', async () => {
     const checkout = await makeCheckout({
       'Cargo.toml': '[workspace]\n',
       'crates/app/Cargo.toml': '[package]\n',
@@ -170,7 +172,8 @@ describe('deterministic lanes', () => {
     await expect(clippyCratesFor({
       checkout,
       files: ['crates/app/src/lib.rs', 'crates/app/shim/src/main.rs', 'desktop/src/main.rs', 'build.rs', 'tools/one.rs'],
-    })).resolves.toEqual(['', 'crates/app', 'desktop']);
+    })).resolves.toEqual(['', 'crates/app', 'crates/app/shim', 'desktop']);
+    await expect(clippyCratesFor({ checkout, files: ['crates/app/src/lib.rs'] })).resolves.toEqual(['crates/app']);
     const noRoot = await makeCheckout({ 'app/Cargo.toml': '[package]\n' });
     await expect(clippyCratesFor({ checkout: noRoot, files: ['app/src/lib.rs', 'loose/one.rs'] })).resolves.toEqual(['app']);
   });
@@ -205,6 +208,19 @@ describe('deterministic lanes', () => {
     const flooded = await runClippyLane({ checkout, files: ['a/src/lib.rs', 'b/src/lib.rs'], patch, stateRoot, run, maxFindings: 1 });
     expect(flooded.findings).toHaveLength(1);
     expect(flooded.note).toContain('bounded to 1');
+  });
+
+  it('reports a diagnostic of a shared dependency once', async () => {
+    const checkout = await makeCheckout({ 'a/Cargo.toml': '', 'a/inner/Cargo.toml': '', 'a/inner/src/lib.rs': '' });
+    const stateRoot = await makeCheckout({});
+    const run = vi.fn(async (_program: string, _args: string[], options: { cwd: string }) => ({
+      stdout: clippyMessage({ level: 'error', message: 'mismatched types', code: 'E0308', file: options.cwd.endsWith('inner') ? 'src/lib.rs' : 'inner/src/lib.rs', line: 3 }),
+      stderr: '',
+      code: 101,
+    }));
+    const lane = await runClippyLane({ checkout, files: ['a/inner/src/lib.rs'], patch: '', stateRoot, run });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(lane.findings.map((finding) => finding.file)).toEqual(['a/inner/src/lib.rs']);
   });
 
   it('keeps the findings of a crate when a later one fails, and stops once cargo is missing', async () => {
