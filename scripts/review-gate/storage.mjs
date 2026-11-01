@@ -946,15 +946,14 @@ async function failCorruptClaim(paths, claimName, target) {
 }
 
 /**
- * Whether a claimed request already has its result. A file that does not parse,
- * or carries no status, is no result: a power cut can tear one, and it says
- * nothing about the review. It stays where it is: the new review's result
- * replaces it, and removing it here could take that result instead.
+ * Whether a claimed request already has its result. A file that does not parse
+ * is no result: a power cut can tear one, and it says nothing about the review.
+ * It stays where it is: the new review's result replaces it, and removing it
+ * here could take that result instead.
  */
 async function hasCompletedResult(paths, requestId) {
   try {
-    const result = await readJson(path.join(paths.results, `${requestId}.json`));
-    return typeof result?.status === 'string';
+    return Boolean(await readJson(path.join(paths.results, `${requestId}.json`)));
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     return false;

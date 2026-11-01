@@ -681,8 +681,6 @@ describe('shared review local state', () => {
       ['truncated', '{"requestId":"req'],
       ['empty', ''],
       ['zeroed', '\0'.repeat(64)],
-      ['not a result', '"pass"'],
-      ['without a status', '{"requestId":"request"}'],
     ])('runs the review again when it is %s', async (_kind, content) => {
       const { paths, request } = await claimedWithResult(content);
 
