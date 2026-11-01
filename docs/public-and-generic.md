@@ -28,7 +28,8 @@ Two remain, and are being generalized: the Clippy lane's `src-tauri` folder and 
 ## How this is kept
 
 `publicRepository.test.ts` runs with the suite and reads every tracked text file
-but two generated ones, the lockfile and the third-party notices.
+but the lockfile, the third-party notices, both generated, and itself, which holds
+the patterns.
 It fails on a tailnet or private network address, a tailnet name, a personal folder
 on Windows, macOS or Linux, a real email address, or another repository of the
 maintainer's that is not public. Names it cannot know go, one per line, in the ignored file
