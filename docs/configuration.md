@@ -42,6 +42,24 @@ or policy changes. Review uses the installed snapshot, including configuration,
 not the version proposed by the branch being reviewed. Its digest is part of
 each attestation. Commit configuration and policy alongside the project.
 
+## Adopting a new setting
+
+A key newer than a repository's pinned launcher breaks that repository's `install`, and a
+fresh checkout has no engine that accepts it. So the key and the pin that knows it land in
+one change:
+
+1. If the project relies on behaviour the new release changes, run `updates --disable` in it
+   before its watcher activates that release. This holds the repository's selected engine,
+   which keeps its behaviour while you prepare step 2. It is per repository: the shared
+   engine store is only a cache.
+2. In one pull request, add the keys and move the pin to the release.
+3. After it merges, run `updates --enable`, then `update`, then `install` from your trusted
+   checkout, one straight after the other, with no push between them.
+
+An update keeps the installed configuration, and only `install` reads the new keys. So from
+`update` until `install` finishes, a review runs with the release's defaults. Step 3 keeps that
+to moments. Without step 1 it lasts from the release's activation until step 3.
+
 ## GUI evidence
 
 With `guiEvidence: "required"`, a change to the GUI cannot be pushed without its
@@ -56,7 +74,7 @@ Leave `guiEvidence` at `none` and none of this applies.
 | Field | Meaning |
 | --- | --- |
 | `guiFiles` | Regular expressions on repository paths, replacing the file types above |
-| `testFiles` | A regular expression for the files that are neither GUI nor control sources even if another pattern matches them; by default documents, test and story files, and `tests/`, `__tests__/`, `e2e/` and `cypress/` folders. Set it to count a document, such as a rendered `.mdx` page |
+| `testFiles` | A regular expression for the files that are neither GUI nor control sources even if another pattern matches them; by default documents, test and story files, and `tests/`, `__tests__/`, `e2e/` and `cypress/` folders. To count a document, such as a rendered `.mdx` page, set both: a `guiFiles` pattern that matches it, and a narrower `testFiles` that does not, because the default leaves out every document |
 | `reviewsFolder` | The folder holding one evidence folder per branch |
 | `captureCommand` | The command the refusal tells the author to run |
 | `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, a table row of seven cells with the backticked id first, and a new or moved one must change its row |
@@ -81,7 +99,7 @@ spelling was the only one. To say the same with `required`, set:
 ```
 
 Reinstalling is not needed to keep `rove`. Moving to `required` is a policy change,
-reviewed and installed as any other, and needs an engine that knows the word.
+reviewed and installed as any other, and follows [adopting a new setting](#adopting-a-new-setting).
 
 ## How a change is reviewed
 

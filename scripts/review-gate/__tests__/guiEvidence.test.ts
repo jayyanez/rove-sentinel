@@ -114,6 +114,11 @@ describe('where a project keeps its evidence', () => {
     expect(isGuiDiff(['site/page.mdx'], evidenceLayout({ guiEvidence: 'required', guiEvidenceLayout: { guiFiles: ['\\.mdx$'], testFiles: '\\.test\\.' } }))).toBe(true);
   });
 
+  it('says in the guide that counting a document takes both patterns', () => {
+    const row = readFileSync('docs/configuration.md', 'utf8').split('\n').find((line) => line.startsWith('| `testFiles` |'));
+    expect(row).toMatch(/set both: a `guiFiles` pattern .* and a narrower `testFiles`/);
+  });
+
   it('reads no controls in a file testFiles leaves out', () => {
     const patch = 'diff --git a/ui/A.test.vue b/ui/A.test.vue\n--- a/ui/A.test.vue\n+++ b/ui/A.test.vue\n@@ -1,0 +1,1 @@\n+<a data-control="one">\n';
     const config = { guiEvidence: 'required', guiEvidenceLayout: { controlSources: '\\.vue$' } };

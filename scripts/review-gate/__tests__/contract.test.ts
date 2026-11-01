@@ -33,6 +33,7 @@ describe('standalone package contract', () => {
     expect(text).toContain(`Rove Sentinel ${GATE_VERSION}`);
     expect(text).toContain('4 MiB');
     expect(text).toContain('No limit on a changed file');
+    expect(text).toContain('A timeout is a note, not a pass');
   });
 
   it('keeps incomplete claimed fixes in every reviewer scope', async () => {
