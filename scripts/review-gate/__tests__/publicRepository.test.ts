@@ -20,9 +20,11 @@ const LOCAL_V6 = new RegExp(`(?<![0-9a-z:])(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:
 // An address counts as synthetic only whole, so neither a real mailbox at these
 // companies nor a real domain that starts like one of these gets through.
 const END = String.raw`(?![\w-]|\.\w)`;
+// what a local part may hold, but for what delimits an address in prose and code
+const LOCAL_CHARACTER = String.raw`[\w.+=!#%&?^~-]`;
 const SYNTHETIC_MAILBOX = String.raw`(?:git@github\.com|noreply@anthropic\.com)${END}`;
 const SYNTHETIC_DOMAIN = String.raw`(?:(?:[a-z0-9-]+\.)*(?:example(?:\.(?:com|net|org))?|test|invalid)|users\.noreply\.github\.com)${END}`;
-const EMAIL = new RegExp(String.raw`(?<![\w.+-])(?!${SYNTHETIC_MAILBOX})[\w.+-]+@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
+const EMAIL = new RegExp(String.raw`(?<!${LOCAL_CHARACTER})(?!${SYNTHETIC_MAILBOX})${LOCAL_CHARACTER}+@(?!${SYNTHETIC_DOMAIN})[a-z0-9-]+\.[a-z]{2,}\b`, 'i');
 
 const PRIVATE: [string, RegExp][] = [
   ['a tailnet address', /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
@@ -77,7 +79,7 @@ describe('a public repository any project can adopt', () => {
   });
 
   it('never tracks the file of private names', () => {
-    expect(pathnames).not.toContain('.private-names');
+    expect(pathnames.includes('.private-names')).toBe(false);
     expect(readFileSync('.gitignore', 'utf8')).toMatch(/^\.private-names$/m);
   });
 });
@@ -100,7 +102,8 @@ describe('what the guard catches', () => {
   it.each([
     'someone@github.com', 'someone@anthropic.com', 'someone@noreply.some-company.io', 'agit@github.com',
     'anoreply@anthropic.com', 'git@github.com.some-company.io', 'noreply@anthropic.com.some-company.io',
-    'someone@example.some-company.io', 'someone@example.com.some-company.io', 'token:secret@github.com'
+    'someone@example.some-company.io', 'someone@example.com.some-company.io', 'token:secret@github.com',
+    'a=git@github.com', 'a!git@github.com', 'a=noreply@anthropic.com'
   ])('finds the email address %s', (address) => {
     expect(EMAIL.test(`write to ${address}.`)).toBe(true);
   });
@@ -115,10 +118,10 @@ describe('what the guard catches', () => {
 
   it('reads the pathnames of the files it skips for content', () => {
     for (const skipped of ['pnpm-lock.yaml', 'THIRD_PARTY_NOTICES.txt']) {
-      expect(tracked).not.toContain(skipped);
-      expect(pathnames).toContain(skipped);
+      expect(tracked.includes(skipped)).toBe(false);
+      expect(pathnames.includes(skipped)).toBe(true);
     }
-    expect(pathnames).toContain(THIS_FILE);
+    expect(pathnames.includes(THIS_FILE)).toBe(true);
   });
 
   it('reports a pathname by its place, keeping the match out of the failure', () => {
