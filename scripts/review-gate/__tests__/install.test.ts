@@ -370,6 +370,9 @@ describe('review-gate native installer plans', () => {
       'D:/project/bin',
       'D:\\outside\\..\\project\\bin',
       'C:/other/node_modules/.bin',
+      '\\project\\bin',
+      '/project/bin',
+      '\\\\localhost\\D$\\project\\bin',
       'C:/tools/bin',
     ].join(';'), 'D:\\project')).toBe('C:\\tools\\bin');
   });

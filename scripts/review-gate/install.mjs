@@ -136,6 +136,8 @@ const WATCHER_PATH_MAX_CHARACTERS = 8000;
  * `node_modules\.bin` first, and a watcher reviews that checkout, so nothing of
  * the repository or of any `node_modules` is carried, however it is spelled:
  * Windows also finds programs through `D:/repo/bin` and `D:\other\..\repo\bin`.
+ * Only an entry with a drive letter can be compared with the checkout: `\repo\bin`
+ * means the current drive, and a network path may be a local folder.
  * A shell's PATH already holds the stored one, so this replaces it, and the
  * task's own is not appended: its length is not known here, and a line past
  * cmd.exe's limit would stop the wrapper before the watcher starts.
@@ -147,7 +149,7 @@ export function watcherPath(pathValue, repoRoot) {
   let length = 0;
   for (const raw of String(pathValue || '').split(';')) {
     const unquoted = raw.replaceAll('"', '').trim();
-    if (!unquoted || !path.win32.isAbsolute(unquoted) || /[%\r\n]/.test(unquoted)) continue;
+    if (!/^[a-z]:[\\/]/i.test(unquoted) || /[%\r\n]/.test(unquoted)) continue;
     const entry = path.win32.normalize(unquoted);
     const folded = entry.toLowerCase().replace(/\\+$/, '');
     if (seen.has(folded)) continue;
