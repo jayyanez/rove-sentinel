@@ -9,6 +9,7 @@ import {
   attestationIdentity,
   attestationFileName,
   acquireDaemonLock,
+  waitForResult,
   isProcessAlive,
   atomicWriteJson,
   cancelQueuedRequest,
@@ -76,6 +77,29 @@ describe('whether a process exists', () => {
 
   it('knows that a process id must be a positive whole number', () => {
     for (const pid of [0, -1, 1.5, Number.NaN, undefined]) expect(isProcessAlive(pid)).toBe(false);
+  });
+});
+
+describe('a hook waiting across a clock step', () => {
+  it('neither expires nor stops', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    const real = Date.now;
+    let jumped = false;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + (jumped ? 3_600_000 : 0));
+    try {
+      const waiting = waitForResult(paths, 'request-1', {
+        timeoutMs: 400,
+        pollMs: 10,
+        shouldCancel: async () => {
+          jumped = true;
+          await writeFile(path.join(paths.results, 'request-1.json'), '{"requestId":"request-1"}');
+          return null;
+        },
+      });
+      await expect(waiting).resolves.toMatchObject({ requestId: 'request-1' });
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 

@@ -179,6 +179,11 @@ export const LIMITS = Object.freeze({
   // that wait in any case.
   hookWaitActiveMaxMs: 12 * 60 * 60 * 1000,
   hookProgressEveryMs: 30 * 1000,
+  // Polls of a waiting hook with no healthy watcher: before it starts one,
+  // between further starts, and before it gives up.
+  hookStartAfterPolls: 3,
+  hookStartEveryPolls: 15,
+  hookGiveUpPolls: 45,
   queuePollMs: 1000,
   githubPollMs: 60 * 1000,
   installPendingMs: 15 * 60_000,

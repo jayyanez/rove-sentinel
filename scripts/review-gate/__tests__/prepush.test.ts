@@ -19,6 +19,8 @@ import {
   submitAndStartReview,
   unattestedRefusal,
   waitForHookResult,
+  watcherIsGone,
+  watcherKeeper,
   waitingWatcherProblem,
 } from '../prepush.mjs';
 import {
@@ -132,18 +134,87 @@ describe('shared review pre-push enforcement', () => {
     });
   });
 
-  it('cancels a queued review when detached watcher startup fails', async () => {
-    const cancel = vi.fn(async () => {});
+  it('queues nothing when detached watcher startup fails', async () => {
+    const submit = vi.fn(async () => ({ id: 'request-id' }));
     const context = { repoRoot: 'C:\\repo', stateRoot: 'C:\\state', paths: {} };
 
     await expect(submitAndStartReview(context, { head: 'a'.repeat(40) }, {
-      submit: async () => ({ id: 'request-id' }),
+      submit,
       clearError: async () => {},
       start: async () => { throw new Error('spawn denied'); },
-      cancel,
     })).rejects.toThrow('spawn denied');
 
-    expect(cancel).toHaveBeenCalledWith(context.paths, 'request-id');
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('starts a watcher before a full queue can refuse, or a left request would block it', async () => {
+    const start = vi.fn(async () => {});
+    const context = { repoRoot: 'C:\\repo', stateRoot: 'C:\\state', paths: {} };
+
+    await expect(submitAndStartReview(context, { head: 'a'.repeat(40) }, {
+      submit: async () => { throw new Error('queue is full'); },
+      clearError: async () => {},
+      start,
+    })).rejects.toThrow('queue is full');
+
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  describe('a hook whose watcher goes away', () => {
+    const gone = { message: 'the watcher stopped', gone: true };
+    const context = { repoRoot: 'C:\\repo', stateRoot: 'C:\\state', paths: {} };
+    const keeper = (options = {}) => {
+      const start = vi.fn(async () => {});
+      const clearError = vi.fn(async () => {});
+      return { start, clearError, keep: watcherKeeper(context, { start, clearError, readError: async () => null, startAfter: 3, startEvery: 5, giveUpAfter: 12, ...options }) };
+    };
+    const polls = async (keep: (problem: object | null) => Promise<string | null>, count: number, problem: object | null = gone) => {
+      const answers = [];
+      for (let i = 0; i < count; i += 1) answers.push(await keep(problem));
+      return answers;
+    };
+
+    it('does not refuse on one bad reading', async () => {
+      const { keep, start } = keeper();
+      await expect(keep(gone)).resolves.toBeNull();
+      await expect(keep(null)).resolves.toBeNull();
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('starts a watcher after a few polls, and again while none appears', async () => {
+      const { keep, start, clearError } = keeper();
+      expect(await polls(keep, 11)).toEqual(Array(11).fill(null));
+      expect(start).toHaveBeenCalledTimes(2);
+      expect(clearError).toHaveBeenCalledTimes(2);
+      expect(start).toHaveBeenCalledWith('C:\\repo', 'C:\\state');
+    });
+
+    it('refuses in the end, naming why a new watcher could not start', async () => {
+      const { keep } = keeper({ readError: async () => ({ message: 'lock belongs to dead PID 12' }) });
+      const answers = await polls(keep, 12);
+      expect(answers.slice(0, 11)).toEqual(Array(11).fill(null));
+      expect(answers[11]).toContain('the watcher stopped');
+      expect(answers[11]).toContain('lock belongs to dead PID 12');
+    });
+
+    it('counts again once a watcher answers', async () => {
+      const { keep, start } = keeper();
+      await polls(keep, 2);
+      await keep(null);
+      await polls(keep, 2);
+      expect(start).not.toHaveBeenCalled();
+    });
+
+    it('survives a start that fails', async () => {
+      const { keep } = keeper({ start: async () => { throw new Error('spawn denied'); } });
+      expect(await polls(keep, 4)).toEqual(Array(4).fill(null));
+    });
+
+    it('refuses at once for a watcher that answers and is wrong', async () => {
+      const { keep, start } = keeper();
+      await expect(keep({ message: 'incompatible policy', gone: false })).resolves.toBe('incompatible policy');
+      expect(start).not.toHaveBeenCalled();
+    });
   });
 
   it('cancels an unclaimed request when the hook is interrupted', async () => {

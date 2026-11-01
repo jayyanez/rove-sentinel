@@ -98,26 +98,47 @@ export async function submitAndStartReview(
     submit = submitRequest,
     clearError = clearDaemonError,
     start = startDaemonDetached,
-    cancel = cancelQueuedRequest,
   } = {},
 ) {
-  const request = await submit(context.paths, { type: 'gate', options });
-  try {
-    await clearError(context.paths);
-    await start(context.repoRoot, context.stateRoot);
-    return request;
-  } catch (error) {
-    try {
-      await cancel(context.paths, request.id);
-    } catch (cancelError) {
-      throw new Error(`${error?.message || String(error)} The queued request also could not be cancelled: ${cancelError?.message || String(cancelError)}. Run npx --no-install rove-sentinel status before retrying.`, {
-        cause: error,
-      });
-    }
-    throw error;
-  }
+  // The watcher first: a full queue refuses, and a request a restart left
+  // behind can only be cleared by a watcher.
+  await clearError(context.paths);
+  await start(context.repoRoot, context.stateRoot);
+  return await submit(context.paths, { type: 'gate', options });
 }
 
+/**
+ * A waiting hook's answer to its watcher being gone: not a refusal yet. The
+ * watcher may be restarting, or may have exited just as this push's start gave
+ * way to it, so the hook starts one itself and refuses only if none appears. A
+ * second start is harmless: it finds a healthy owner and leaves.
+ */
+export function watcherKeeper(context, {
+  clearError = clearDaemonError,
+  start = startDaemonDetached,
+  readError = (paths) => readJson(paths.daemonError).catch(() => null),
+  startAfter = LIMITS.hookStartAfterPolls,
+  startEvery = LIMITS.hookStartEveryPolls,
+  giveUpAfter = LIMITS.hookGiveUpPolls,
+} = {}) {
+  let missed = 0;
+  return async (problem) => {
+    if (!problem?.gone) {
+      missed = 0;
+      return problem?.message ?? null;
+    }
+    missed += 1;
+    if (missed >= giveUpAfter) {
+      const failure = await readError(context.paths);
+      return failure?.message ? `${problem.message} A new watcher could not start: ${failure.message}` : problem.message;
+    }
+    if (missed >= startAfter && (missed - startAfter) % startEvery === 0) {
+      await clearError(context.paths);
+      await start(context.repoRoot, context.stateRoot).catch(() => {});
+    }
+    return null;
+  };
+}
 export async function waitForHookResult(
   paths,
   requestId,
@@ -152,6 +173,15 @@ export async function waitForHookResult(
   } finally {
     for (const [signal, handler] of handlers) signalHost.removeListener(signal, handler);
   }
+}
+
+/** Whether the watcher went away, as opposed to one that answers and is wrong. */
+export async function watcherIsGone(paths) {
+  const [lock, heartbeat] = await Promise.all([
+    readJson(paths.lock).catch(() => null),
+    readJson(paths.heartbeat).catch(() => null),
+  ]);
+  return !daemonOwnerIsHealthy(lock, heartbeat);
 }
 
 export async function waitingWatcherProblem(paths, expectedPolicyDigest) {
@@ -512,6 +542,7 @@ export async function runPrePush({
         buildGateRequestOptions({ repoRoot: context.repoRoot, identity, branch }),
       );
       let response;
+      const keepWatcher = watcherKeeper(context);
       try {
         await waitForDaemonHeartbeat(context.paths, context.repoRoot, {
           policyDigest: reviewPolicy.policyDigest,
@@ -533,7 +564,8 @@ export async function runPrePush({
             if (currentPause) {
               return `Shared review gate was paused while this push was waiting: ${currentPause.reason}`;
             }
-            return await waitingWatcherProblem(context.paths, reviewPolicy.policyDigest);
+            const problem = await waitingWatcherProblem(context.paths, reviewPolicy.policyDigest);
+            return await keepWatcher(problem && { message: problem, gone: await watcherIsGone(context.paths) });
           },
         });
       } catch (error) {

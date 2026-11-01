@@ -1055,10 +1055,11 @@ export async function waitForResult(
   } = {},
 ) {
   const target = path.join(paths.results, `${requestId}.json`);
-  const started = Date.now();
+  // Monotonic: a clock step must not expire or extend a wait.
+  const started = performance.now();
   let lastProgress = started;
   const waiting = async () => {
-    const elapsed = Date.now() - started;
+    const elapsed = performance.now() - started;
     if (elapsed < timeoutMs) return true;
     return elapsed < Math.max(timeoutMs, activeMaxMs) && await extendWhile();
   };
@@ -1073,9 +1074,9 @@ export async function waitForResult(
     if (cancellationReason) {
       throw new Error(String(cancellationReason));
     }
-    if (Date.now() - lastProgress >= LIMITS.hookProgressEveryMs) {
-      lastProgress = Date.now();
-      onProgress(Date.now() - started);
+    if (performance.now() - lastProgress >= LIMITS.hookProgressEveryMs) {
+      lastProgress = performance.now();
+      onProgress(performance.now() - started);
     }
     await sleep(pollMs, { signal });
   }
