@@ -558,7 +558,7 @@ export function promptSafe(text) {
  * Why a reviewer never reads two files in one command (1.12.0). Each part of
  * a required read fits one tool output; two of them in one command do not,
  * and the tool then drops the middle of what it shows. Codex read the four
- * parts of a shard in one command on three runs in a row (boxkite,
+ * parts of a shard in one command on three runs in a row (a consumer project,
  * 2026-10-10) and rightly reported each review incomplete.
  */
 export const ONE_FILE_PER_CALL = `One file per tool call: never read two of these files in one command, loop or

@@ -20,7 +20,7 @@ import {
 import { attestationIdentity, ensureState, readAttestation, readReport } from '../storage.mjs';
 
 // A diff that touches a file of very long lines failed the gate closed on
-// every run (boxkite, engine 1.11.2, 2026-10-10): six one-line edits to a
+// every run (a consumer project, engine 1.11.2, 2026-10-10): six one-line edits to a
 // file of 300-character lines became a section of well over 100 KB, Codex
 // read the shard's parts in one command, the tool elided the middle of that
 // output, and the retry repeated the same instruction.
@@ -597,7 +597,7 @@ describe('a rerun after a fail-closed round', () => {
 });
 
 describe('review material in the prompt (1.13.0)', () => {
-  it('gives the reviewer the whole shard and its required reads in one prompt, so the boxkite shard needs no read', async () => {
+  it('gives the reviewer the whole shard and its required reads in one prompt, so the failing shard needs no read', async () => {
     const repository = await makeLongLineRepository();
     const stateRoot = await temporary('sentinel-inline-state-');
     const prompts: string[] = [];

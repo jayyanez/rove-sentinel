@@ -9,6 +9,15 @@ This is the shared repository instruction file for coding agents. Keep common
 guidance here; do not add a duplicate `CLAUDE.md` or separate copies per agent.
 All repository and GitHub artifacts must be in English.
 
+## This repository is public
+
+Nothing private enters it: not in code, comments, tests, documents, commit
+messages, pull requests, release notes or review comments. That means the names
+of the maintainer's other projects and repositories, machines, addresses, paths,
+accounts and email addresses. Say "a consumer project". Tests use example
+names such as `example-owner/example-repo`. Before a push, read the diff and the
+text around it for such names.
+
 ## Before changing anything
 
 - Inspect the current branch and full working-tree status. Preserve other work.

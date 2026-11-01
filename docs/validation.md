@@ -1,14 +1,29 @@
 # Standalone validation record
 
+## 1.15.0 several computers, and macOS — 2026-10-31
+
+Deterministic tests cover the watcher's GitHub choice: `--no-github` stops
+polling, from a scheduler's start or a hook's, and a synchronization under way;
+the default polls; an engine update keeps the choice; a failed install restores
+it; an install killed midway, or whose process id was reused after 15 minutes,
+leaves it as it was. One limit is recorded: within those 15 minutes, an unrelated
+process that takes a killed installer's id keeps its choice alive until install
+runs again.
+
+Live on macOS 27 on an M4 Max, Node 26: the suite passed, 589 tests; a real project's install registered its LaunchAgent and the watcher answered; a full gate with
+Claude Code and Codex reviewed real changes, with its linters from Homebrew; and
+two branches went through the hook to GitHub, one of them pushed by an agent that
+another computer had started. Engine updates on macOS were not exercised, and
+Intel Macs were not tested. The same tree's Windows checks are the pull request's.
+
 ## 1.14.0 shards for large changes — 2026-10-19
 
 Deterministic tests cover the shard count by size (unchanged up to about
 830 KB), the per-project cap and its validation, the larger candidate bound
 and the thin-review note, including a gate run over a 1.3 MB change.
 
-One side-by-side live run reviewed the same real change, Tramoya's Colores
-batch 2 (3.6 MB review patch, 233 files), as a full high-risk round with both
-providers and Tramoya's installed policy, in isolated state: 1.13.0 (8
+One side-by-side live run reviewed the same real change, a consumer project's large change (3.6 MB review patch, 233 files), as a full high-risk round with both
+providers and that project's installed policy, in isolated state: 1.13.0 (8
 shards) took 7.6 minutes and verified 7 P2 and 2 P3 findings; 1.14.0 (16
 shards, two waves) took 8.4 minutes and verified 16 P2 and 7 P3. One run
 each: it shows the time cost is small and the yield higher on this change,

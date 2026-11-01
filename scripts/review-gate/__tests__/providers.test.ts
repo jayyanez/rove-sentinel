@@ -547,7 +547,7 @@ describe('subscription-backed provider adapters', () => {
       expect(parts.map(withoutContinuation).join('')).toBe(patch);
       expect(prompt).toContain(`Read these ${count} files in order, each ONCE in full and each with a tool\ncall of its own`);
       // Codex read all the parts in one command and saw the middle elided
-      // (boxkite, 2026-10-10): the prompt says why that loses a part.
+      // (a consumer project, 2026-10-10): the prompt says why that loses a part.
       expect(prompt).toContain('One file per tool call: never read two of these files in one command, loop or\npipeline.');
       expect(prompt).toContain('drops\nthe middle, so files read together come back truncated');
       if (process.platform === 'win32') expect(prompt).toContain('one file per command — Get-Content with several\npaths');
