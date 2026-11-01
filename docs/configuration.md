@@ -50,14 +50,15 @@ one change:
 
 1. If the project relies on behaviour the new release changes, run `updates --disable` in it
    before its watcher activates that release. This holds the repository's selected engine,
-   which keeps its behaviour, so there is no gap. It is per repository: the shared engine
-   store is only a cache.
+   which keeps its behaviour while you prepare step 2. It is per repository: the shared
+   engine store is only a cache.
 2. In one pull request, add the keys and move the pin to the release.
 3. After it merges, run `updates --enable`, then `update`, then `install` from your trusted
-   checkout.
+   checkout, one straight after the other, with no push between them.
 
-Without step 1, an automatic update applies the release's defaults from its activation until
-step 3.
+An update keeps the installed configuration, and only `install` reads the new keys. So from
+`update` until `install` finishes, a review runs with the release's defaults. Step 3 keeps that
+to moments. Without step 1 it lasts from the release's activation until step 3.
 
 ## GUI evidence
 
