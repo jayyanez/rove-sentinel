@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **A torn result no longer stops recovery.** A power cut can tear a result file, and a claim
+  beside it made every start and every `recover` fail. The request now returns to the queue
+  and is reviewed again, and a broken file is never read as a verdict.
+
 ## 1.16.0 — any project's paths, and a watcher you can see
 
 The review knew the folders of the project it came from, and a watcher could stop
