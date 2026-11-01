@@ -20,8 +20,9 @@ import { loadInstalledReviewPolicy } from './context.mjs';
 import { undisposedRefusal } from './dispositions.mjs';
 import { createGateContext, formatGateResult, runGate } from './gate.mjs';
 import {
-  CONTROL_REGISTRY,
+  evidenceLayout,
   evidenceScreenshotPaths,
+  evidenceSlugOf,
   isPngBlob,
   formatGuiEvidenceRefusal,
   guiEvidenceProblems,
@@ -234,17 +235,18 @@ export async function guiEvidenceRefusal({
   readDiff = readPatch,
   readRegistry = showFileAtCommit,
   readBlobAtHead = showBlobAtCommit,
+  layout = evidenceLayout(config),
 }) {
   if (config && !requiresGuiEvidence(config)) return null;
   if (!identity?.baseSha || !identity?.headSha) return null;
   const files = await listChanged(repoRoot, identity.baseSha, identity.headSha);
-  if (!isGuiDiff(files)) return null;
+  if (!isGuiDiff(files, layout)) return null;
   const patch = await readDiff(repoRoot, identity.baseSha, identity.headSha);
-  const registry = await readRegistry(repoRoot, identity.headSha, CONTROL_REGISTRY);
+  const registry = layout.controlSources ? await readRegistry(repoRoot, identity.headSha, layout.controlRegistry) : '';
   // Screenshots are read ONE AT A TIME inside the validator's `readBlob`
   // callback and dropped right after their PNG check, so a large visual
   // branch never holds more than one screenshot in memory at once.
-  const screenshots = evidenceScreenshotPaths(files, branch, refType);
+  const screenshots = evidenceScreenshotPaths(files, branch, refType, layout);
   const pngVerdicts = new Map();
   for (const file of screenshots) {
     const blob = await readBlobAtHead(repoRoot, identity.headSha, file);
@@ -253,7 +255,7 @@ export async function guiEvidenceRefusal({
   // Only a tag reads its review documents at head; a branch decides from the
   // diff's own entries (added/modified), which need no blob read.
   const reviewDocs = isTagRefType(refType)
-    ? [...new Set(screenshots.map((file) => reviewDocPath(file.split('/')[3])))]
+    ? [...new Set(screenshots.map((file) => reviewDocPath(evidenceSlugOf(file, layout), layout)))]
     : [];
   const docs = new Map();
   for (const file of reviewDocs) {
@@ -267,6 +269,7 @@ export async function guiEvidenceRefusal({
     registry,
     pngValid: (file) => pngVerdicts.get(file) === true,
     hasFile: (file) => docs.get(file) != null,
+    layout,
   });
   return problems.length ? formatGuiEvidenceRefusal(branch, problems) : null;
 }

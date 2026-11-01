@@ -1,3 +1,4 @@
+import { isUnderPaths } from './config.mjs';
 import { LIMITS } from './constants.mjs';
 
 // Sharded coverage (v1.8.0). The 2026-09-01 CodeRabbit recall audit found
@@ -16,21 +17,24 @@ const TEST_FILE = /(?:^|\/)(?:tests?|__tests__|fixtures)(?:\/|$)|\.(?:test|spec)
 // (1.13.0): Go's a_test.go, Python's test_a.py and a_test.py, and a
 // capitalised ATest or ATests class file in Java, Kotlin, Scala, C# or Swift.
 const CONVENTIONAL_TEST_FILE = /(?:^|\/)(?:[^/]+_test\.(?:go|py)|test_[^/]+\.py|[^/]*[A-Za-z0-9]Tests?\.(?:java|kt|kts|scala|cs|swift))$/;
-const SCRIPT_FILE = /^(?:scripts|\.githooks|\.github|src-tauri\/launch-shim|src-tauri\/resources|sidecar)\//i;
+const SCRIPT_FILE = /^(?:scripts|\.githooks|\.github)\//i;
 const CONFIG_FILE = /\.(?:json|jsonc|ya?ml|toml|lock|conf|ini)$/i;
 // Plain-text build and dependency inputs (1.13.0): reviewed with the config
 // lens, not as prose.
 const TEXT_MANIFEST = /(?:^|\/)(?:CMakeLists|(?:requirements|constraints)(?:[-_.][^/]*)?)\.txt$/i;
 
-/** Lens family a shard reviewer applies; decided by the dominant file kind. */
-export function classifyShardFile(file) {
+/**
+ * Lens family a shard reviewer applies; decided by the dominant file kind.
+ * `scriptPaths` are a project's own folders of scripts.
+ */
+export function classifyShardFile(file, { scriptPaths = [] } = {}) {
   const normalized = String(file || '').replace(/\\/g, '/');
   // Location wins over extension: a Markdown fixture under tests/ is test
   // material and gets the tests lens, not the docs one.
   if (TEST_FILE.test(normalized) || CONVENTIONAL_TEST_FILE.test(normalized)) return 'tests';
   if (TEXT_MANIFEST.test(normalized)) return 'config';
   if (DOC_FILE.test(normalized)) return 'docs';
-  if (SCRIPT_FILE.test(normalized)) return 'scripts';
+  if (SCRIPT_FILE.test(normalized) || isUnderPaths(normalized, scriptPaths)) return 'scripts';
   if (CONFIG_FILE.test(normalized)) return 'config';
   return 'code';
 }
@@ -115,7 +119,7 @@ function patchTargetPath(headerLine) {
  * Split a unified patch into per-file sections with their added/removed line
  * counts. Pure text work; a malformed patch yields whatever sections it can.
  */
-export function splitPatchByFile(patch) {
+export function splitPatchByFile(patch, { scriptPaths = [] } = {}) {
   const sections = [];
   let current = null;
   for (const rawLine of String(patch || '').split(/\r?\n/)) {
@@ -155,7 +159,7 @@ export function splitPatchByFile(patch) {
   return sections.map((section) => ({
     file: section.file,
     ...(section.renamedFrom ? { renamedFrom: section.renamedFrom } : {}),
-    kind: classifyShardFile(section.file),
+    kind: classifyShardFile(section.file, { scriptPaths }),
     changedLines: section.changedLines,
     ...(section.sawHunk ? {} : { metadataReason: metadataReason(section) }),
     text: section.lines.join('\n'),
@@ -529,6 +533,7 @@ export function partitionShards(patch, {
   targetLines = LIMITS.shardTargetLines,
   maxShards = LIMITS.shardMaxCountHigh,
   excludedFiles = [],
+  scriptPaths = [],
 } = {}) {
   const excluded = new Set(excludedFiles.map((file) => String(file).replace(/\\/g, '/')));
   // A section without a textual hunk has nothing a reviewer can read: it is
@@ -537,7 +542,7 @@ export function partitionShards(patch, {
   // Kind order, then code-unit path order (never the host locale's
   // collation: identical patch bytes must always produce identical shards),
   // with each test placed right after the code file it tests (1.13.0).
-  const families = orderSectionFamilies(splitPatchByFile(patch)
+  const families = orderSectionFamilies(splitPatchByFile(patch, { scriptPaths })
     .filter((section) => !excluded.has(section.file) && !section.metadataReason));
   const sections = families.map(({ section }) => section);
   const familyOf = new Map(families.map(({ section, family }) => [section, family]));

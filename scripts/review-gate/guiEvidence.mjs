@@ -69,32 +69,82 @@ import { inflateSync } from 'node:zlib';
 
 import { branchEvidenceSlug } from './evidenceSlug.mjs';
 
-const GUI_FILE = [
-  /\.svelte$/i,
-  /\.css$/i,
-  /^src\/lib\/theme\//,
-  /^src\/lib\/components\/shared\/Icon\.svelte$/,
-  // Component-adjacent TS: positioning, keyboard contracts, actions the
-  // markup delegates to (`shared/popoverPosition.ts`, `modalKeydown.ts`).
-  // A change there moves pixels or changes what a key does as surely as the
-  // .svelte file would.
-  /^src\/lib\/components\/.+\.ts$/,
-  // Stories and routes are GUI surfaces too (`src/routes/dev/components`).
-  /^src\/routes\/.+\.(?:svelte|ts)$/,
-  // First-paint palette + the data-theme / data-theme-mode stamps app.css keys on.
-  /^src\/app\.html$/,
-];
-// Tests under a governed folder are text ABOUT the GUI, not the GUI.
-const TEST_FILE = /(?:^|\/)__tests__\/|\.test\.[cm]?[jt]s$/;
+// Where a project keeps its evidence. `guiEvidence: "required"` starts from the
+// rule that holds for any repository: a file that is GUI by its type. A project
+// adds or replaces any field with `guiEvidenceLayout`, and controls are checked
+// only where it says which sources name them.
+const ANY_REPOSITORY = {
+  guiFiles: [/\.(?:svelte|vue|tsx|jsx|css|scss|sass|less|html)$/i],
+  // Tests and documents are text ABOUT the GUI, not the GUI.
+  testFiles: /(?:^|\/)(?:tests?|__tests__|e2e|cypress)\/|\.(?:test|spec|cy|stories)\.[^./]+$|\.(?:md|mdx|markdown|rst|txt|adoc)$/i,
+  reviewsFolder: 'docs/design/reviews',
+  controlRegistry: 'docs/design/control-registry.md',
+  controlSources: null,
+  sharedPrimitives: null,
+  captureCommand: null,
+};
 
-const DOC_ONLY = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
-export const CONTROL_REGISTRY = 'docs/design/control-registry.md';
-const REVIEW_PNG = /^docs\/design\/reviews\/([^/]+)\/.+\.png$/i;
+// `guiEvidence: "rove"`, the earlier spelling, keeps what it always meant: a
+// SvelteKit application's folders, with its controls registered.
+const SVELTEKIT = {
+  ...ANY_REPOSITORY,
+  guiFiles: [
+    /\.svelte$/i,
+    /\.css$/i,
+    /^src\/lib\/theme\//,
+    // Component-adjacent TS: positioning, keyboard contracts, actions the
+    // markup delegates to. A change there moves pixels or changes what a key
+    // does as surely as the .svelte file would.
+    /^src\/lib\/components\/.+\.ts$/,
+    // Stories and routes are GUI surfaces too.
+    /^src\/routes\/.+\.(?:svelte|ts)$/,
+    // First-paint palette + the data-theme stamps the stylesheet keys on.
+    /^src\/app\.html$/,
+  ],
+  testFiles: /(?:^|\/)__tests__\/|\.test\.[cm]?[jt]s$|\.(?:md|mdx|markdown|rst|txt|adoc)$/i,
+  // Only component sources name controls; a `data-control="…"` in a test
+  // fixture, a script or a doc is text about controls, not a control.
+  controlSources: /^src\/lib\/components\/.+\.svelte$/,
+  // The one allowed expression: a shared primitive forwarding its `dataControl`
+  // prop to its root element. The literal lives at the call site
+  // (`<IconButton data-control="pane.close" />`), which is where the registry
+  // check reads it; the primitive itself never names a control.
+  sharedPrimitives: /^src\/lib\/components\/shared\//,
+  captureCommand: 'pnpm design:capture',
+};
+
+function compileLayout(layout) {
+  const pattern = (value) => (typeof value === 'string' ? new RegExp(value) : value);
+  const folder = layout.reviewsFolder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    ...layout,
+    guiFiles: layout.guiFiles.map(pattern),
+    testFiles: pattern(layout.testFiles),
+    controlSources: pattern(layout.controlSources),
+    sharedPrimitives: pattern(layout.sharedPrimitives),
+    reviewPng: new RegExp(`^${folder}/([^/]+)/.+\\.png$`, 'i'),
+  };
+}
+
+const DEFAULT_LAYOUT = compileLayout(SVELTEKIT);
+
+/** The layout an installed configuration asks for. */
+export function evidenceLayout(config) {
+  const base = !config || config.guiEvidence === 'rove' ? SVELTEKIT : ANY_REPOSITORY;
+  return compileLayout({ ...base, ...config?.guiEvidenceLayout });
+}
+
+export const CONTROL_REGISTRY = DEFAULT_LAYOUT.controlRegistry;
 export const REVIEW_DOC = 'REVIEW.md';
 
-/** `docs/design/reviews/<slug>/REVIEW.md` — the review document for one evidence folder. */
-export function reviewDocPath(slug) {
-  return `docs/design/reviews/${slug}/${REVIEW_DOC}`;
+/** `<reviews folder>/<slug>/REVIEW.md` — the review document for one evidence folder. */
+export function reviewDocPath(slug, layout = DEFAULT_LAYOUT) {
+  return `${layout.reviewsFolder}/${slug}/${REVIEW_DOC}`;
+}
+
+/** The slug of an evidence file's folder. */
+export function evidenceSlugOf(file, layout = DEFAULT_LAYOUT) {
+  return layout.reviewPng.exec(file)[1];
 }
 // The 8-byte signature every real PNG file starts with.
 export const PNG_SIGNATURE = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -102,26 +152,18 @@ const DATA_CONTROL = /data-control\s*=\s*["']([^"']+)["']/g;
 // Any `data-control=` whose value is not a quoted string: `{expr}`, a bare
 // word, a template literal, …
 const DATA_CONTROL_EXPRESSION = /data-control\s*=\s*(?!["'])(\S+)/g;
-// The one allowed expression: a shared primitive forwarding its `dataControl`
-// prop to its root element. The literal lives at the call site
-// (`<IconButton data-control="pane.close" />`), which is where the registry
-// check reads it; the primitive itself never names a control.
-const PRIMITIVE_DIR = /^src\/lib\/components\/shared\//;
 const FORWARDED_PROP = '{dataControl}';
 
-export function isForwardedControlProp(file, value) {
-  return PRIMITIVE_DIR.test(String(file || '')) && String(value || '').startsWith(FORWARDED_PROP);
-}
-// Only component sources name controls; a `data-control="…"` in a test
-// fixture, a script or a doc is text about controls, not a control. Bare
-// hunks without file headers (tests) are scanned as if they were components.
-const CONTROL_SOURCE = /^src\/lib\/components\/.+\.svelte$/;
-
-function isControlSource(file) {
-  return file === '' || CONTROL_SOURCE.test(file);
+export function isForwardedControlProp(file, value, layout = DEFAULT_LAYOUT) {
+  return Boolean(layout.sharedPrimitives?.test(String(file || ''))) && String(value || '').startsWith(FORWARDED_PROP);
 }
 
-export const CAPTURE_COMMAND = 'pnpm design:capture';
+// Bare hunks without file headers (tests) are scanned as if they were sources.
+function isControlSource(file, layout) {
+  return Boolean(layout.controlSources) && (file === '' || (layout.controlSources.test(file) && !layout.testFiles.test(file)));
+}
+
+export const CAPTURE_COMMAND = DEFAULT_LAYOUT.captureCommand;
 
 // Re-exported so the gate, prepush and the tests keep one import site; the
 // rule itself lives with the capture that writes the folder.
@@ -275,17 +317,17 @@ export function isPngBlob(blob) {
  * `'tag'`), which has no branch slug. Prepush reads these blobs at head
  * before deciding.
  */
-export function evidenceScreenshotPaths(files, branch, refType = 'branch') {
+export function evidenceScreenshotPaths(files, branch, refType = 'branch', layout = DEFAULT_LAYOUT) {
   const slug = isTagRefType(refType) ? null : branchEvidenceSlug(branch);
   return normalizeChangedFiles(files)
-    .filter((entry) => isPresentAtHead(entry) && REVIEW_PNG.test(entry.path))
-    .filter((entry) => slug === null || REVIEW_PNG.exec(entry.path)[1] === slug)
+    .filter((entry) => isPresentAtHead(entry) && layout.reviewPng.test(entry.path))
+    .filter((entry) => slug === null || evidenceSlugOf(entry.path, layout) === slug)
     .map((entry) => entry.path);
 }
 
-export function isGuiDiff(files) {
+export function isGuiDiff(files, layout = DEFAULT_LAYOUT) {
   return normalizeChangedFiles(files).some(
-    ({ path }) => !DOC_ONLY.test(path) && !TEST_FILE.test(path) && GUI_FILE.some((pattern) => pattern.test(path)),
+    ({ path }) => !layout.testFiles.test(path) && layout.guiFiles.some((pattern) => pattern.test(path)),
   );
 }
 
@@ -313,13 +355,13 @@ function registryRowId(line) {
 
 /**
  * Ids whose registry ROW is added or removed by the patch (a `+` or `-` line
- * of docs/design/control-registry.md whose first cell is that id). An edit
+ * of the control registry whose first cell is that id). An edit
  * elsewhere in the registry does not count for a control it does not name.
  */
-export function changedRegistryRowIds(patch) {
+export function changedRegistryRowIds(patch, layout = DEFAULT_LAYOUT) {
   const ids = new Set();
   for (const { file, lines } of patchFileSections(patch)) {
-    if (file !== CONTROL_REGISTRY) continue;
+    if (file !== layout.controlRegistry) continue;
     for (const line of lines) {
       if (!line.startsWith('+') && !line.startsWith('-')) continue;
       const id = registryRowId(line.slice(1));
@@ -373,10 +415,10 @@ export function patchFileSections(patch) {
  * or edit. An id removed from one file and added to another is new in the
  * second file (a move between surfaces is a placement decision too).
  */
-export function addedControlIds(patch) {
+export function addedControlIds(patch, layout = DEFAULT_LAYOUT) {
   const added = new Set();
   for (const { file, lines } of patchFileSections(patch)) {
-    if (!isControlSource(file)) continue;
+    if (!isControlSource(file, layout)) continue;
     const inFileAdded = new Set();
     const atBase = new Set();
     for (const line of lines) {
@@ -399,10 +441,10 @@ export function addedControlIds(patch) {
  * `addedControlIds` this tells a move between surfaces apart from a brand-new
  * control — both need a registry update, the message just names the right one.
  */
-export function removedControlIds(patch) {
+export function removedControlIds(patch, layout = DEFAULT_LAYOUT) {
   const removed = new Set();
   for (const { file, lines } of patchFileSections(patch)) {
-    if (!isControlSource(file)) continue;
+    if (!isControlSource(file, layout)) continue;
     const gone = new Set();
     const kept = new Set();
     for (const line of lines) {
@@ -424,14 +466,14 @@ export function removedControlIds(patch) {
  * file it lives in. The registry can only be checked against a literal; the
  * single exception is a shared primitive forwarding `{dataControl}`.
  */
-export function expressionControlAttributes(patch) {
+export function expressionControlAttributes(patch, layout = DEFAULT_LAYOUT) {
   const found = [];
   for (const { file, lines } of patchFileSections(patch)) {
-    if (!isControlSource(file)) continue;
+    if (!isControlSource(file, layout)) continue;
     for (const line of lines) {
       if (!line.startsWith('+')) continue;
       for (const match of line.matchAll(DATA_CONTROL_EXPRESSION)) {
-        if (isForwardedControlProp(file, match[1])) continue;
+        if (isForwardedControlProp(file, match[1], layout)) continue;
         found.push({ file, value: match[1] });
       }
     }
@@ -443,7 +485,7 @@ export function expressionControlAttributes(patch) {
  * Human-readable problems; an empty array means the GUI diff carries its
  * evidence (or is not a GUI diff at all). `patch` is the base...head diff text
  * — raw `git diff` output (file headers included, so per-file decisions work).
- * `registry` is docs/design/control-registry.md AS COMMITTED AT HEAD (empty
+ * `registry` is the control registry AS COMMITTED AT HEAD (empty
  * when the file does not exist there). `readBlob(path)` returns the bytes of
  * an evidence file AS COMMITTED AT HEAD (Buffer / Uint8Array; `null` or
  * `undefined` when unreadable) so a screenshot is checked to be a real PNG;
@@ -453,15 +495,18 @@ export function expressionControlAttributes(patch) {
  * a `refs/tags/…` push and `'branch'` (the default) otherwise — the ref's
  * type as parsed, never inferred from `branch`'s name.
  */
-export function guiEvidenceProblems({ files, branch, refType = 'branch', patch = '', registry = '', readBlob, pngValid, hasFile }) {
+export function guiEvidenceProblems({ files, branch, refType = 'branch', patch = '', registry = '', readBlob, pngValid, hasFile, layout = DEFAULT_LAYOUT }) {
   const list = normalizeChangedFiles(files);
-  if (!isGuiDiff(list)) return [];
+  if (!isGuiDiff(list, layout)) return [];
   const problems = [];
   const tag = isTagRefType(refType);
   const slug = tag ? null : branchEvidenceSlug(branch);
-  const expectedFolder = tag ? 'docs/design/reviews/<slug>/' : `docs/design/reviews/${slug}/`;
-  const pngs = list.filter((entry) => REVIEW_PNG.test(entry.path));
-  const inFolder = (entry) => tag || REVIEW_PNG.exec(entry.path)[1] === slug;
+  const expectedFolder = `${layout.reviewsFolder}/${tag ? '<slug>' : slug}/`;
+  const capture = layout.captureCommand;
+  const reviewPng = layout.reviewPng;
+  const controlRegistry = layout.controlRegistry;
+  const pngs = list.filter((entry) => reviewPng.test(entry.path));
+  const inFolder = (entry) => tag || evidenceSlugOf(entry.path, layout) === slug;
   const notPng = [];
   const screenshots = [];
   for (const entry of pngs.filter((candidate) => isPresentAtHead(candidate) && inFolder(candidate))) {
@@ -485,9 +530,9 @@ export function guiEvidenceProblems({ files, branch, refType = 'branch', patch =
     typeof hasFile === 'function' ? Boolean(hasFile(file)) : changedInDiff(file);
   const hasReviewDocFor = tag ? presentAtHead : changedInDiff;
   const reviewFolders = tag
-    ? [...new Set(screenshots.map((entry) => REVIEW_PNG.exec(entry.path)[1]))]
+    ? [...new Set(screenshots.map((entry) => evidenceSlugOf(entry.path, layout)))]
     : [slug];
-  const reviewDocs = reviewFolders.map(reviewDocPath);
+  const reviewDocs = reviewFolders.map((folder) => reviewDocPath(folder, layout));
   // EVERY folder that contributed a counted screenshot must carry its own
   // review document: a tag whose diff spans two evidence folders is not
   // reviewed because one of them was.
@@ -501,45 +546,45 @@ export function guiEvidenceProblems({ files, branch, refType = 'branch', patch =
       hints.push(` This diff only DELETES screenshots under ${expectedFolder} (${deletedHere.length}); a removed file is not evidence.`);
     }
     if (elsewhere.length) {
-      hints.push(` This diff only adds screenshots under ${[...new Set(elsewhere.map((entry) => REVIEW_PNG.exec(entry.path)[1]))].map((other) => `docs/design/reviews/${other}/`).join(', ')}, which belong to a different branch.`);
+      hints.push(` This diff only adds screenshots under ${[...new Set(elsewhere.map((entry) => evidenceSlugOf(entry.path, layout)))].map((other) => `${layout.reviewsFolder}/${other}/`).join(', ')}, which belong to a different branch.`);
     }
     if (tag) {
-      hints.push(' A tag has no branch slug, so a screenshot under any docs/design/reviews/<slug>/ folder in its diff counts; git never required the tagged commit to be pushed through a branch, so the tag itself must carry the evidence.');
+      hints.push(` A tag has no branch slug, so a screenshot under any ${layout.reviewsFolder}/<slug>/ folder in its diff counts; git never required the tagged commit to be pushed through a branch, so the tag itself must carry the evidence.`);
     }
     problems.push(
-      `GUI diff without committed visual evidence: no .png under ${expectedFolder} is part of this diff.${hints.join('')} Run \`${CAPTURE_COMMAND}\` on this branch and commit the screenshots it writes to ${expectedFolder} (visual-redesign-plan.md §5.1).`,
+      `GUI diff without committed visual evidence: no .png under ${expectedFolder} is part of this diff.${hints.join('')} ${capture ? `Run \`${capture}\` on this branch and commit the screenshots it writes to ${expectedFolder}.` : `Commit screenshots of the change to ${expectedFolder}.`}`,
     );
   }
   if (notPng.length) {
     problems.push(
-      `Evidence file${notPng.length > 1 ? 's are' : ' is'} not a readable PNG as committed at head: ${notPng.join(', ')}. A screenshot must start with the 8-byte PNG signature and carry image data (and stay under the evidence size limit); commit the real capture \`${CAPTURE_COMMAND}\` writes.`,
+      `Evidence file${notPng.length > 1 ? 's are' : ' is'} not a readable PNG as committed at head: ${notPng.join(', ')}. A screenshot must start with the 8-byte PNG signature and carry image data (and stay under the evidence size limit); commit a real capture${capture ? `, the one \`${capture}\` writes` : ''}.`,
     );
   }
   if (!hasReviewDoc) {
     const expectedDoc = tag
-      ? (missingReviewDocs.length ? missingReviewDocs.join(' and ') : reviewDocPath('<slug>'))
+      ? (missingReviewDocs.length ? missingReviewDocs.join(' and ') : reviewDocPath('<slug>', layout))
       : reviewDocs[0];
     const why = tag
       ? `${missingReviewDocs.length > 1 ? 'are' : 'is'} not present at head`
       : 'is not added or modified in this diff (base...head)';
     problems.push(
-      `GUI diff without its review document: ${expectedDoc} ${why}. Screenshots alone are not a review — write the §8 checklist, findings and deviations there (design-system.md §7.3) and commit it${tag ? ' next to the evidence PNGs the tag carries' : ' on this branch, so the review is produced for the evidence this diff adds'}.`,
+      `GUI diff without its review document: ${expectedDoc} ${why}. Screenshots alone are not a review — write the checklist, findings and deviations there and commit it${tag ? ' next to the evidence PNGs the tag carries' : ' on this branch, so the review is produced for the evidence this diff adds'}.`,
     );
   }
-  const expressions = expressionControlAttributes(patch);
+  const expressions = expressionControlAttributes(patch, layout);
   if (expressions.length) {
     problems.push(
-      `data-control must be a string literal so the registry can be checked: ${expressions.map(({ file, value }) => `${file ? `${file}: ` : ''}data-control=${value}`).join(', ')}. Give each rendered control its own literal id (one row per id in ${CONTROL_REGISTRY}).`,
+      `data-control must be a string literal so the registry can be checked: ${expressions.map(({ file, value }) => `${file ? `${file}: ` : ''}data-control=${value}`).join(', ')}. Give each rendered control its own literal id (one row per id in ${controlRegistry}).`,
     );
   }
-  const controls = addedControlIds(patch);
+  const controls = addedControlIds(patch, layout);
   if (controls.length) {
     const registered = registryControlIds(registry);
-    const registryTouched = list.some((entry) => entry.path === CONTROL_REGISTRY && isPresentAtHead(entry));
+    const registryTouched = list.some((entry) => entry.path === controlRegistry && isPresentAtHead(entry));
     const missing = controls.filter((id) => !registered.has(id));
     if (missing.length) {
       problems.push(
-        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${CONTROL_REGISTRY} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${CONTROL_REGISTRY} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one row per control with surface · zone · order · visibility rule · precedent and commit it (visual-redesign-plan.md §4.7).`,
+        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one table row per control, seven cells with the backticked id first and surface · zone · order · visibility rule · precedent among them, and commit it.`,
       );
     }
     // A registered id that appears in a file where it did not exist at base
@@ -547,20 +592,20 @@ export function guiEvidenceProblems({ files, branch, refType = 'branch', patch =
     // row must be revisited in THIS diff, not merely exist from before.
     // The control's OWN row must be among the registry's changed lines: an
     // unrelated edit to the registry file does not revisit this placement.
-    const rowsChanged = changedRegistryRowIds(patch);
+    const rowsChanged = changedRegistryRowIds(patch, layout);
     const registeredHere = controls.filter((id) => registered.has(id) && !rowsChanged.has(id));
     if (registeredHere.length) {
-      const removed = new Set(removedControlIds(patch));
+      const removed = new Set(removedControlIds(patch, layout));
       const moved = registeredHere.filter((id) => removed.has(id));
       const other = registeredHere.filter((id) => !removed.has(id));
       const parts = [];
       if (moved.length) parts.push(`moved control${moved.length > 1 ? 's' : ''} ${moved.map((id) => `data-control="${id}"`).join(', ')} (removed from one component and added to another)`);
       if (other.length) parts.push(`registered control${other.length > 1 ? 's' : ''} ${other.map((id) => `data-control="${id}"`).join(', ')} added on a surface where ${other.length > 1 ? 'they' : 'it'} did not exist`);
       const how = registryTouched
-        ? `${CONTROL_REGISTRY} changes in this diff but ${registeredHere.length > 1 ? 'their rows are' : 'its row is'} not among the changed lines`
-        : `without touching ${CONTROL_REGISTRY}`;
+        ? `${controlRegistry} changes in this diff but ${registeredHere.length > 1 ? 'their rows are' : 'its row is'} not among the changed lines`
+        : `without touching ${controlRegistry}`;
       problems.push(
-        `${parts.join('; ')} ${how}: a registered id on a new surface is a placement decision — update ${registeredHere.length > 1 ? 'each' : 'its'} registry row (surface · zone · order · visibility rule · precedent) in this diff so the row cannot keep naming the old placement (visual-redesign-plan.md §4.7).`,
+        `${parts.join('; ')} ${how}: a registered id on a new surface is a placement decision — update ${registeredHere.length > 1 ? 'each' : 'its'} registry row (surface · zone · order · visibility rule · precedent) in this diff so the row cannot keep naming the old placement.`,
       );
     }
   }
@@ -571,6 +616,6 @@ export function formatGuiEvidenceRefusal(branch, problems) {
   return [
     `Shared review gate refused ${branch} before any reviewer ran: the GUI diff is missing its committed evidence.`,
     ...problems.map((problem) => `  - ${problem}`),
-    'Check locally with: node scripts/review-gate/cli.mjs design-evidence --base origin/main --head HEAD',
+    'Check locally with: npx --no-install rove-sentinel design-evidence --base origin/main --head HEAD',
   ].join('\n');
 }

@@ -10,7 +10,7 @@ import { HELP } from './help.mjs';
 import { formatLimits, sentinelLimits } from './limits.mjs';
 import { detectLintTools } from './toolLanes.mjs';
 import { firstUseToolsNotice, formatToolsNotice, installPlan, installTools, missingTools } from './tools.mjs';
-import { readReviewPolicy, loadInstalledReviewPolicy } from './context.mjs';
+import { readReviewPolicy, loadInstalledReviewPolicy, policyForLocalCheck } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
@@ -353,8 +353,9 @@ async function main() {
     if (refType !== 'branch' && refType !== 'tag') {
       throw new Error(`--ref-type must be "branch" or "tag"; received ${JSON.stringify(refType)}.`);
     }
+    const policy = await policyForLocalCheck((await createGateContext(root, { stateRoot: options['state-root'] })).paths, root);
     const refusal = await guiEvidenceRefusal({
-      repoRoot: root, identity: { baseSha, headSha }, branch, refType,
+      repoRoot: root, identity: { baseSha, headSha }, branch, refType, config: policy.config,
     });
     if (refusal) {
       process.stderr.write(`${refusal}\n`);

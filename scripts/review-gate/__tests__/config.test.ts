@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizeConfig } from '../config.mjs';
-import { readReviewPolicy, reviewPolicySnapshot } from '../context.mjs';
+import { policyForLocalCheck, readReviewPolicy, reviewPolicySnapshot } from '../context.mjs';
+import { ensureState } from '../storage.mjs';
 import { classifyRisk, isOrdinaryDocumentationSkip } from '../risk.mjs';
 import { initializeRepository, uninstallGeneratedHook } from '../init.mjs';
 import { guiEvidenceRefusal } from '../prepush.mjs';
@@ -66,6 +67,41 @@ describe('standalone policy and onboarding', () => {
     expect(normalizeConfig({})).not.toHaveProperty('clippyCrates');
     for (const clippyCrates of [[], 'crates/a', [1], ['../outside'], ['/absolute'], ['crates/a/'], Array(65).fill('a')]) {
       expect(() => normalizeConfig({ clippyCrates })).toThrow(/clippyCrates/);
+    }
+  });
+
+  it('fails a local check on a broken installed policy, and falls back only when there is none', async () => {
+    const root = await temp();
+    const paths = await ensureState(path.join(root, 'state'));
+    await expect(policyForLocalCheck(paths, root)).resolves.toMatchObject({ config: { guiEvidence: 'none' } });
+    for (const broken of ['null', 'false', '0', '""', '{"charter":"x"}', 'not json']) {
+      await writeFile(paths.policy, broken);
+      await expect(policyForLocalCheck(paths, root)).rejects.toThrow();
+    }
+    // A replacement that stopped midway leaves the installed policy in its copy.
+    await rm(paths.policy);
+    const installed = reviewPolicySnapshot({ charter: '# Rules', lessons: '# Lessons', config: { guiEvidence: 'required' } });
+    await writeFile(`${paths.policy}.previous`, JSON.stringify(installed));
+    await expect(policyForLocalCheck(paths, root)).resolves.toMatchObject({ config: { guiEvidence: 'required' } });
+  });
+
+  it('takes project paths as files or folders of the repository, sorted', () => {
+    expect(normalizeConfig({ highRiskPaths: ['b/', 'a/file.md', 'b'] }).highRiskPaths).toEqual(['a/file.md', 'b']);
+    expect(normalizeConfig({ scriptPaths: ['tools'] }).scriptPaths).toEqual(['tools']);
+    const none = normalizeConfig({});
+    for (const key of ['highRiskPaths', 'scriptPaths', 'guiEvidenceLayout']) expect(none).not.toHaveProperty(key);
+    for (const key of ['highRiskPaths', 'scriptPaths']) {
+      for (const value of [[], 'a', [1], ['../outside'], ['/absolute'], ['.'], Array(65).fill('a')]) {
+        expect(() => normalizeConfig({ [key]: value })).toThrow(new RegExp(key));
+      }
+    }
+  });
+
+  it('takes a GUI evidence layout, and refuses what is not one', () => {
+    const layout = { guiFiles: ['^ui/'], testFiles: '^ui/fixtures/', reviewsFolder: 'qa/shots', controlRegistry: 'qa/controls.md', controlSources: '\\.vue$', sharedPrimitives: '^ui/shared/', captureCommand: 'make shots' };
+    expect(normalizeConfig({ guiEvidenceLayout: layout }).guiEvidenceLayout).toEqual(layout);
+    for (const guiEvidenceLayout of [[], 'x', { typo: 1 }, { guiFiles: [] }, { guiFiles: ['('] }, { guiFiles: [1] }, { testFiles: '(' }, { reviewsFolder: '../x' }, { controlRegistry: '/x' }, { controlSources: '(' }, { sharedPrimitives: 'a'.repeat(201) }, { captureCommand: '' }]) {
+      expect(() => normalizeConfig({ guiEvidenceLayout })).toThrow(/guiEvidenceLayout/);
     }
   });
 

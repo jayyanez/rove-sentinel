@@ -372,7 +372,7 @@ describe('shared review pre-push enforcement', () => {
   it('does not auto-skip review-policy Markdown', async () => {
     const repository = await makeRepository();
     await mkdir(path.join(repository.root, 'docs'), { recursive: true });
-    await writeFile(path.join(repository.root, 'docs', 'shared-review-charter.md'), '# Charter\n');
+    await writeFile(path.join(repository.root, 'docs', 'review-gate-recall-ledger.md'), '# Charter\n');
     git(repository.root, 'add', '.');
     git(repository.root, 'commit', '-m', 'policy');
     const head = git(repository.root, 'rev-parse', 'HEAD');
