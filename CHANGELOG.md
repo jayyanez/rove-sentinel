@@ -16,8 +16,8 @@
   boot time that cannot be read. By its documentation, a Windows shut down with Fast Startup
   does not count as a boot; that has not been measured. A new
   `takeover.lock` lets one process at a time remove a lock it did not write, and `stop` and
-  `recover` honour it. If its holder dies, starts refuse until `recover`. No real restart has
-  run through this yet.
+  `recover` honour it. If its holder dies, a later takeover refuses until a person deletes that
+  file. No real restart has run through this yet.
 
 ## 1.16.0 — any project's paths, and a watcher you can see
 

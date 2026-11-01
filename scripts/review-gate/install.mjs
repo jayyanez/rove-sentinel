@@ -889,7 +889,7 @@ export async function recoverStaleDaemonState(
     }
     await rm(context.paths.lock, { force: true });
     return { lock, heartbeat };
-  }, { adoptAbandoned: true });
+  });
   await rm(context.paths.queueSubmitLock, { force: true });
   await removeStoredJson(context.paths.heartbeat);
   const [technicalOutcomesCleared, claimsRecovered, resourcesRecovered] = await Promise.all([

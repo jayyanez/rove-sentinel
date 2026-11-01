@@ -1203,15 +1203,15 @@ export function daemonLockOutlivedOwner(
 }
 
 // A takeover lasts milliseconds. Age only tells a marker in use from one its
-// holder left behind, and a starter removes neither.
+// holder left behind, and code removes neither: only its holder or a person does.
 const TAKEOVER_MARKER_IN_USE_MS = 60_000;
 
-async function takeoverMarkerInUse(paths, { now, inspect }) {
+async function takeoverMarkerAge(paths, { now = Date.now, inspect = stat } = {}) {
   try {
     const { mtimeMs } = await inspect(paths.takeover);
-    return Math.abs(now() - mtimeMs) < TAKEOVER_MARKER_IN_USE_MS;
+    return Math.abs(now() - mtimeMs);
   } catch (error) {
-    if (error?.code === 'ENOENT') return true; // Its holder has just finished.
+    if (error?.code === 'ENOENT') return null;
     throw error;
   }
 }
@@ -1219,25 +1219,24 @@ async function takeoverMarkerInUse(paths, { now, inspect }) {
 /**
  * Runs `work`, which removes a daemon lock its caller did not write, as the only
  * process doing so. Without the marker, one remover can take the lock that
- * another's removal let a starter create. Only `recover`, a person's decision,
- * may adopt a marker its holder left behind.
+ * another's removal let a starter create.
  */
 export async function withTakeoverMarker(
   paths,
   work,
-  { adoptAbandoned = false, openFile = open, remove = rm, inspect = stat, now = Date.now } = {},
+  { openFile = open, remove = rm, inspect = stat, now = Date.now } = {},
 ) {
   try {
     const marker = await openFile(paths.takeover, 'wx', 0o600);
     await marker.close().catch(() => {});
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
-    if (await takeoverMarkerInUse(paths, { now, inspect })) {
+    // A marker that vanished has just been freed by its holder.
+    const age = await takeoverMarkerAge(paths, { now, inspect });
+    if (age === null || age < TAKEOVER_MARKER_IN_USE_MS) {
       throw Object.assign(new Error(`Another Sentinel process is replacing the review daemon lock. Retry shortly. Marker: ${paths.takeover}`), { code: 'TAKEOVER_IN_USE' });
     }
-    if (!adoptAbandoned) {
-      throw new Error(`A replacement of the review daemon lock never finished. Confirm no Sentinel process is working in ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>". Marker: ${paths.takeover}`);
-    }
+    throw new Error(`A replacement of the review daemon lock never finished. Confirm no Sentinel process is working in ${paths.root}, delete ${paths.takeover}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>".`);
   }
   try {
     return await work();
@@ -1256,6 +1255,7 @@ export async function acquireDaemonLock(
     ownerTokenFactory = randomUUID,
     isAlive = isProcessAlive,
     bootTime = bootTimeMs,
+    announceOwner = async () => {},
   } = {},
 ) {
   const tryAcquire = async () => {
@@ -1320,6 +1320,9 @@ export async function acquireDaemonLock(
           await remove(paths.lock, { force: true });
         }
         const lock = await tryAcquire();
+        // Under the marker: once it is free, nobody may find this live owner
+        // beside the dead one's heartbeat, which reads as a stale owner.
+        await announceOwner(lock.ownerToken).catch(() => {});
         return { ...lock, replaced: { pid: existing.pid, lastHeartbeatAt: heartbeat.at } };
       }, { openFile, remove });
     } catch (error) {
@@ -1328,6 +1331,15 @@ export async function acquireDaemonLock(
       throw error;
     }
   }
+  // These records were read one at a time, so a replacement may have run
+  // between them. That is no refusal: it would send a person to `recover`.
+  const age = await takeoverMarkerAge(paths);
+  if (age !== null && age < TAKEOVER_MARKER_IN_USE_MS) return null;
+  const [current, currentHeartbeat] = await Promise.all([
+    read(paths.lock, existing).catch(() => existing),
+    read(paths.heartbeat).catch(() => null),
+  ]);
+  if (current?.ownerToken !== existing.ownerToken || daemonOwnerIsHealthy(current, currentHeartbeat)) return null;
   if (isAlive(existing?.pid)) {
     throw new Error(`Review daemon lock names live PID ${existing.pid} without a fresh matching owner heartbeat; refusing to trust a possibly reused PID. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" to clear it without signaling that PID.`);
   }

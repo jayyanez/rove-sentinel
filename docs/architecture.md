@@ -171,8 +171,8 @@ machine: process ids and boot times prove nothing between two. A start replaces
 a lock only when the machine booted after that lock's last heartbeat and its
 process is gone. `takeover.lock` lets one process at a time remove a lock it did
 not write. A `stop` or `recover` from an engine older than that marker does not
-honour it, so one beside a takeover can still cost a second watcher, and a
-`recover` run over a marker left by a suspended holder can too. See
+honour it, so one beside a takeover can still cost a second watcher. Sentinel
+never removes a marker it did not take: a person deletes one left behind. See
 [the plan](https://github.com/jayyanez/rove-sentinel/pull/22) for what this does
 not cover.
 

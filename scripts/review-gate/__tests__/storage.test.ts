@@ -183,7 +183,7 @@ describe('shared review local state', () => {
       : null);
 
     await expect(acquireDaemonLock(
-      { lock: 'lock', heartbeat: 'heartbeat', root: 'state' },
+      { lock: 'lock', heartbeat: 'heartbeat', takeover: 'no-such-marker', root: 'state' },
       { openFile, read, remove, isAlive: () => false },
     )).rejects.toThrow('refusing automatic removal');
 

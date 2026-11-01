@@ -387,15 +387,67 @@ describe('starters meeting over a lock left by a restart', () => {
     expect(await exists(paths.takeover)).toBe(true);
   });
 
-  it('refuses beside a marker whose holder never finished, naming recover', async () => {
+  it('refuses beside a marker whose holder never finished, naming the file to delete', async () => {
     const paths = await leftByRestart();
     await writeFile(paths.takeover, '');
     await utimes(paths.takeover, new Date(BOOT), new Date(BOOT));
 
-    await expect(acquireDaemonLock(paths, proofOptions)).rejects.toThrow('rove-sentinel recover');
+    await expect(acquireDaemonLock(paths, proofOptions)).rejects.toThrow(`delete ${paths.takeover}`);
 
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
     expect(await exists(paths.takeover)).toBe(true);
+  });
+
+  it('announces its owner while it still holds the marker', async () => {
+    const paths = await leftByRestart();
+    const seen: unknown[] = [];
+    const lock = await acquireDaemonLock(paths, {
+      ...proofOptions,
+      announceOwner: async (ownerToken: string) => { seen.push(ownerToken, await exists(paths.takeover)); },
+    });
+
+    expect(seen).toEqual([lock.ownerToken, true]);
+    expect(await exists(paths.takeover)).toBe(false);
+  });
+
+  it('keeps the lock it took when announcing its owner fails', async () => {
+    const paths = await leftByRestart();
+    const lock = await acquireDaemonLock(paths, { ...proofOptions, announceOwner: async () => { throw new Error('disk full'); } });
+
+    await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: lock.ownerToken });
+    expect(await exists(paths.takeover)).toBe(false);
+  });
+
+  it('gives way to a replacement in progress rather than naming recover', async () => {
+    const paths = await leftByRestart({}, { pid: process.pid, ownerToken: 'replacing-owner-token' });
+    await writeFile(paths.takeover, '');
+
+    await expect(acquireDaemonLock(paths, proofOptions)).resolves.toBeNull();
+  });
+
+  it('gives way when the lock changed between its reads, rather than naming recover', async () => {
+    const paths = await leftByRestart();
+    let looks = 0;
+    const read = async (target: string, fallback?: unknown) => {
+      if (target !== paths.lock) return await readJson(target, fallback);
+      looks += 1;
+      return looks === 1 ? LOCK : { pid: process.pid, ownerToken: 'replacing-owner-token' };
+    };
+
+    await expect(acquireDaemonLock(paths, { ...proofOptions, bootTime: () => null, read })).resolves.toBeNull();
+  });
+
+  it('gives way when the heartbeat came between its reads, rather than naming recover', async () => {
+    const owner = { pid: process.pid, ownerToken: 'replacing-owner-token' };
+    const paths = await leftByRestart({}, owner);
+    let beats = 0;
+    const read = async (target: string, fallback?: unknown) => {
+      if (target !== paths.heartbeat) return await readJson(target, fallback);
+      beats += 1;
+      return beats === 1 ? HEARTBEAT : { ...owner, at: new Date().toISOString() };
+    };
+
+    await expect(acquireDaemonLock(paths, { ...proofOptions, read })).resolves.toBeNull();
   });
 
   it('counts a marker that vanished under it as in use: its holder has finished', async () => {
@@ -411,11 +463,12 @@ describe('starters meeting over a lock left by a restart', () => {
     const storage = pathToFileURL(path.resolve('scripts/review-gate/storage.mjs')).href;
     const racer = path.join(await stateRoot(), 'racer.mjs');
     await writeFile(racer, [
-      `import { acquireDaemonLock, ensureState } from ${JSON.stringify(storage)};`,
+      `import { acquireDaemonLock, ensureState, writeHeartbeat } from ${JSON.stringify(storage)};`,
       'const paths = await ensureState(process.argv[2]);',
       'process.stdout.write("ready\\n");',
       'await new Promise((resolve) => { process.stdin.once("data", resolve); });',
-      'const lock = await acquireDaemonLock(paths, { bootTime: () => Date.now() + 60000 }).catch((error) => ({ refused: error.message }));',
+      'const announceOwner = (ownerToken) => writeHeartbeat(paths, { ownerToken });',
+      'const lock = await acquireDaemonLock(paths, { bootTime: () => Date.now() + 60000, announceOwner }).catch((error) => ({ refused: error.message }));',
       'process.stdout.write(`${JSON.stringify({ owner: lock?.ownerToken ?? null, refused: lock?.refused ?? null })}\\n`);',
       'setTimeout(() => process.exit(0), 750);',
     ].join('\n'));
@@ -443,9 +496,7 @@ describe('starters meeting over a lock left by a restart', () => {
       const owners = outcomes.filter(({ owner }) => owner).map(({ owner }) => owner);
       expect(outcomes).toHaveLength(8);
       expect(owners).toHaveLength(1);
-      for (const { refused } of outcomes.filter((outcome) => outcome.refused)) {
-        expect(refused).toMatch(/refusing/);
-      }
+      expect(outcomes.filter(({ refused }) => refused)).toEqual([]);
       await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: owners[0] });
       expect(await exists(paths.takeover)).toBe(false);
     }
@@ -500,14 +551,17 @@ describe('a person beside a takeover', () => {
     expect(await exists(paths.takeover)).toBe(false);
   });
 
-  it('recover clears a marker left behind, and the next start is plain', async () => {
+  it('recover leaves a marker left behind to the person, and works once it is deleted', async () => {
     const paths = await leftByRestart();
     await writeFile(paths.takeover, '');
     await utimes(paths.takeover, new Date(BOOT), new Date(BOOT));
 
-    await expect(recover(paths)).resolves.toMatchObject({ recovered: true, previousLockPid: LOCK.pid });
+    await expect(recover(paths)).rejects.toThrow(`delete ${paths.takeover}`);
+    await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
+    expect(await exists(paths.takeover)).toBe(true);
 
-    expect(await exists(paths.takeover)).toBe(false);
+    await rm(paths.takeover);
+    await expect(recover(paths)).resolves.toMatchObject({ recovered: true, previousLockPid: LOCK.pid });
     expect(await exists(paths.lock)).toBe(false);
     const lock = await acquireDaemonLock(paths);
     expect(lock.replaced).toBeUndefined();
@@ -518,7 +572,7 @@ describe('a person beside a takeover', () => {
     await writeFile(paths.takeover, '');
     await utimes(paths.takeover, new Date(BOOT), new Date(BOOT));
 
-    await expect(stopDaemon({ repoRoot: process.cwd(), paths }, { isAlive: () => false })).rejects.toThrow('rove-sentinel recover');
+    await expect(stopDaemon({ repoRoot: process.cwd(), paths }, { isAlive: () => false })).rejects.toThrow(`delete ${paths.takeover}`);
 
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
     expect(await exists(paths.takeover)).toBe(true);
@@ -547,6 +601,28 @@ describe('a person beside a takeover', () => {
 });
 
 describe('a watcher started after a restart', () => {
+  it('announces itself with a heartbeat that makes it healthy', async () => {
+    const pid = await endedProcessId();
+    const paths = await leftByRestart({ pid, at: '2001-01-01T00:00:00.000Z' }, { pid });
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    let healthyWhileHoldingMarker = false;
+
+    await runWatcher({
+      repoRoot: process.cwd(), stateRoot: paths.root, once: true, github: false,
+      recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      acquireLock: (target: typeof paths, options: { announceOwner: (ownerToken: string) => Promise<void> }) => acquireDaemonLock(target, {
+        ...options,
+        announceOwner: async (ownerToken: string) => {
+          await options.announceOwner(ownerToken);
+          healthyWhileHoldingMarker = await exists(paths.takeover)
+            && daemonOwnerIsHealthy(await readJson(paths.lock), await readJson(paths.heartbeat));
+        },
+      }),
+    });
+
+    expect(healthyWhileHoldingMarker).toBe(true);
+  });
+
   it('replaces the lock, runs, and records that it did', async () => {
     const pid = await endedProcessId();
     const paths = await leftByRestart({ pid, at: '2001-01-01T00:00:00.000Z' }, { pid });
@@ -556,7 +632,8 @@ describe('a watcher started after a restart', () => {
     const outcome = await runWatcher({
       repoRoot: process.cwd(), stateRoot: paths.root, once: true, github: false,
       recoverResources: async () => {
-        duringRecovery = daemonOwnerIsHealthy(await readJson(paths.lock), await readJson(paths.heartbeat));
+        const heartbeat = await readJson(paths.heartbeat);
+        duringRecovery = heartbeat.activity === 'recovering' && daemonOwnerIsHealthy(await readJson(paths.lock), heartbeat);
       },
       recoverQueuedClaims: async () => {},
     });

@@ -285,6 +285,7 @@ export async function runWatcher({
   recoverResources = recoverStaleReviewResources,
   recoverQueuedClaims = recoverClaims,
   pause = pauseGate,
+  acquireLock = acquireDaemonLock,
 } = {}) {
   // A watcher is long-lived even when started manually in the foreground.
   // One-shot API-billing authority must never survive into later reviews.
@@ -293,7 +294,15 @@ export async function runWatcher({
   try {
     context.policy = await loadWatcherPolicy(context);
     await clearDaemonError(context.paths);
-    const lock = await acquireDaemonLock(context.paths);
+    const lock = await acquireLock(context.paths, {
+      announceOwner: (ownerToken) => writeHeartbeat(context.paths, {
+        repoRoot: context.repoRoot,
+        ownerToken,
+        gateVersion: GATE_VERSION,
+        charterVersion: CHARTER_VERSION,
+        policyDigest: context.policy.policyDigest,
+      }),
+    });
     if (!lock) return { alreadyRunning: true, stateRoot: context.stateRoot };
     context.daemonOwnerToken = lock.ownerToken;
     if (lock.replaced) {
@@ -320,19 +329,17 @@ export async function runWatcher({
     const stopMonitoring = monitorDaemonStopRequests(context, stop);
 
     try {
+      const recoverState = async () => {
+        await recoverResources(context.repoRoot);
+        await recoverQueuedClaims(context.paths);
+      };
+      // An owner that announced itself keeps its heartbeat fresh while it
+      // recovers: a stale one would let `recover` remove this live lock.
       if (lock.replaced) {
-        // The dead owner's heartbeat would make this live owner look stale all
-        // through recovery, and tell whoever looks to run `recover` over it.
-        await writeHeartbeat(context.paths, {
-          repoRoot: context.repoRoot,
-          ownerToken: context.daemonOwnerToken,
-          gateVersion: GATE_VERSION,
-          charterVersion: CHARTER_VERSION,
-          policyDigest: context.policy.policyDigest,
-        }).catch(() => {});
+        await runWithHeartbeat(context, { activity: 'recovering' }, recoverState, { requireInitialWrite: false });
+      } else {
+        await recoverState();
       }
-      await recoverResources(context.repoRoot);
-      await recoverQueuedClaims(context.paths);
       do {
         try {
           await writeHeartbeat(context.paths, {
