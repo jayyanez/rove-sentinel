@@ -87,9 +87,11 @@ npx --no-install rove-sentinel status
 
 Installation sets this repository's `core.hooksPath` to `.githooks`, saves an
 immutable snapshot of the selected review policy, and starts a repository-specific
-watcher. On Windows it registers a hidden logon task. Keep this checkout and
-its installed dependency available; do not install the watcher from a temporary
-review worktree that will be deleted.
+watcher. On Windows it registers a hidden task for your own logon, which needs no
+administrator, and its wrapper keeps the `PATH` and tool settings of the shell you
+install from: run `install` again after moving Git or a provider CLI. Keep this
+checkout and its installed dependency available; do not install the watcher from
+a temporary review worktree that will be deleted.
 
 In `status`, check that the watcher and policy are compatible, the scheduler is
 installed, and `paused` is `null`. A healthy heartbeat alone does not mean reviews
