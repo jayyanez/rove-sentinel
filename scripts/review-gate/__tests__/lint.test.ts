@@ -145,18 +145,31 @@ describe('deterministic lanes', () => {
     expect(parsed.findings[0].title).toContain('Rust compile error');
   });
 
-  it('places a compiler message relative to the crate or to the workspace above it', () => {
+  it('places a compiler message relative to the folder rustc ran in', async () => {
     const warning = (file: string) => clippyMessage({ level: 'warning', message: 'w', code: 'clippy::x', file, line: 3 });
-    const added = new Map([['rust/app/src/lib.rs', new Set([3])], ['src/src/lib.rs', new Set([3])]]);
-    const inChecked = (...existing: string[]) => (file: string) => existing.includes(file);
-    const files = (output: string, crateRoot: string, exists: (file: string) => boolean) =>
-      parseClippyMessages(output, { addedLines: added, crateRoot, exists }).findings.map((finding) => finding.file);
-    expect(files(warning('src/lib.rs'), 'rust/app', inChecked('rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
-    expect(files(warning('app/src/lib.rs'), 'rust/app', inChecked('rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
-    expect(files(warning('rust/app/src/lib.rs'), 'rust/app', inChecked('rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
-    expect(files(warning('src/lib.rs'), 'src', inChecked('src/lib.rs', 'src/src/lib.rs'))).toEqual(['src/src/lib.rs']);
-    // A workspace path that also exists inside the crate lands on the changed file.
-    expect(files(warning('app/src/lib.rs'), 'rust/app', inChecked('rust/app/app/src/lib.rs', 'rust/app/src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
+    const added = new Map([['rust/app/src/lib.rs', new Set([3])]]);
+    const files = (output: string, spanRoot?: string) =>
+      parseClippyMessages(output, { addedLines: added, crateRoot: 'rust/app', spanRoot }).findings.map((finding) => finding.file);
+    expect(files(warning('src/lib.rs'))).toEqual(['rust/app/src/lib.rs']);
+    expect(files(warning('app/src/lib.rs'), 'rust')).toEqual(['rust/app/src/lib.rs']);
+    expect(files(warning('rust/app/src/lib.rs'), '')).toEqual(['rust/app/src/lib.rs']);
+
+    // The lane asks Cargo for the workspace; the same name inside the crate does not mislead it.
+    const checkout = await makeCheckout({ 'rust/Cargo.toml': '', 'rust/app/Cargo.toml': '', 'rust/app/src/lib.rs': '', 'rust/app/app/src/lib.rs': '' });
+    const stateRoot = await makeCheckout({});
+    const patch = 'diff --git a/rust/app/src/lib.rs b/rust/app/src/lib.rs\n--- a/rust/app/src/lib.rs\n+++ b/rust/app/src/lib.rs\n@@ -3,0 +3,1 @@\n+x\n';
+    const located = (manifest: string) => async (_program: string, args: string[]) => (args[0] === 'locate-project'
+      ? { stdout: `${manifest}\n`, stderr: '', code: 0 }
+      : { stdout: warning('app/src/lib.rs'), stderr: '', code: 0 });
+    const lane = await runClippyLane({ checkout, files: ['rust/app/src/lib.rs'], crates: ['rust/app'], patch, stateRoot, run: located(path.join(checkout, 'rust', 'Cargo.toml')) });
+    expect(lane.findings.map((finding) => finding.file)).toEqual(['rust/app/src/lib.rs']);
+    // A manifest outside the checkout, or an answer that is no path, falls back to the crate.
+    for (const answer of [path.join(stateRoot, 'Cargo.toml'), 'not a path']) {
+      const fallback = await runClippyLane({ checkout, files: ['rust/app/src/lib.rs'], crates: ['rust/app'], patch: '', stateRoot, run: async (_program: string, args: string[]) => (args[0] === 'locate-project'
+        ? { stdout: answer, stderr: '', code: 0 }
+        : { stdout: clippyMessage({ level: 'error', message: 'e', code: 'E0308', file: 'src/lib.rs', line: 3 }), stderr: '', code: 101 }) });
+      expect(fallback.findings.map((finding) => finding.file)).toEqual(['rust/app/src/lib.rs']);
+    }
     expect(parseClippyMessages(JSON.stringify({
       reason: 'compiler-message', message: { level: 'error', message: 'no manifest', spans: [] },
     }), {}).findings[0].file).toBe('Cargo.toml');
@@ -198,7 +211,8 @@ describe('deterministic lanes', () => {
     await writeFile(path.join(checkout, 'a/lib.rs'), '');
     const run = vi.fn(async () => ({ stdout: clippyMessage({ level: 'warning', message: 'w', code: 'clippy::x', file: 'src/lib.rs', line: 3 }), stderr: '', code: 0 }));
     const lane = await runClippyLane({ checkout, files: ['a/src/lib.rs', 'a/src/two.rs', 'b/src/lib.rs'], patch, stateRoot, run });
-    expect(run.mock.calls.map(([, , options]) => (options as { cwd: string }).cwd)).toEqual([path.join(checkout, 'a'), path.join(checkout, 'b')]);
+    const clippyFolders = run.mock.calls.filter(([, args]) => (args as unknown as string[])[0] === 'clippy').map(([, , options]) => (options as unknown as { cwd: string }).cwd);
+    expect(clippyFolders).toEqual([path.join(checkout, 'a'), path.join(checkout, 'b')]);
     expect(lane).toMatchObject({ status: 'ok', note: expect.stringContaining('a: 1 warning(s)') });
     expect(lane.findings.map((finding) => [finding.candidate_id, finding.file])).toEqual([['clippy-0', 'a/src/lib.rs'], ['clippy-1', 'b/src/lib.rs']]);
 
@@ -219,7 +233,7 @@ describe('deterministic lanes', () => {
       code: 101,
     }));
     const lane = await runClippyLane({ checkout, files: ['a/inner/src/lib.rs'], patch: '', stateRoot, run });
-    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls.filter(([, args]) => args[0] === 'clippy')).toHaveLength(2);
     expect(lane.findings.map((finding) => finding.file)).toEqual(['a/inner/src/lib.rs']);
   });
 
@@ -229,7 +243,13 @@ describe('deterministic lanes', () => {
     const files = ['a/src/lib.rs', 'b/src/lib.rs', 'c/src/lib.rs'];
     const located = { stdout: clippyMessage({ level: 'error', message: 'mismatched types', code: 'E0308', file: 'src/lib.rs', line: 3 }), stderr: '', code: 101 };
     const timeout = Object.assign(new Error('timed out'), { code: 'TIMEOUT' });
-    const timedOut = vi.fn().mockResolvedValueOnce(located).mockRejectedValueOnce(timeout).mockResolvedValueOnce(located);
+    let crate = 0;
+    const timedOut = vi.fn(async (_program: string, args: string[]) => {
+      if (args[0] !== 'clippy') return { stdout: '', stderr: '', code: 1 };
+      crate += 1;
+      if (crate === 2) throw timeout;
+      return located;
+    });
     const lane = await runClippyLane({ checkout, files, patch: '', stateRoot, run: timedOut });
     expect(lane.status).toBe('timeout');
     expect(lane.findings.map((finding) => finding.file)).toEqual(['a/src/lib.rs', 'c/src/lib.rs']);
@@ -249,7 +269,7 @@ describe('deterministic lanes', () => {
     const stateRoot = await makeCheckout({});
     const run = vi.fn(async () => ({ stdout: '', stderr: '', code: 0 }));
     await runDeterministicLanes({ checkout, files: ['a/x.rs', 'b/x.rs'], patch: '', stateRoot, run, config: { clippy: true, clippyCrates: ['b'], lintLanes: { shellcheck: false, actionlint: false, gitleaks: false, ruff: false } } });
-    expect(run.mock.calls.filter(([program]) => program === 'cargo').map(([, , options]) => (options as { cwd: string }).cwd)).toEqual([path.join(checkout, 'b')]);
+    expect(run.mock.calls.filter(([, args]) => (args as unknown as string[])[0] === 'clippy').map(([, , options]) => (options as unknown as { cwd: string }).cwd)).toEqual([path.join(checkout, 'b')]);
   });
 
   it('runs clippy only for Rust changes, with a dedicated target directory, and degrades on timeout or a missing cargo', async () => {

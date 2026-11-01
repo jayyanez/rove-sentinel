@@ -1,5 +1,4 @@
-import { existsSync } from 'node:fs';
-import { access, open } from 'node:fs/promises';
+import { access, open, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -287,25 +286,13 @@ async function markdownlintLaneBody({
 }
 
 /**
- * Where a compiler message's file is in the repository. rustc names it from the
- * folder Cargo ran it in: the crate's, or its workspace's, which is one of the
- * folders above. When several hold such a file, one this diff changed wins, then
- * the deepest.
- */
-function spanFile(file, crateRoot, exists, addedLines) {
-  const folders = crateRoot ? crateRoot.split('/') : [];
-  const candidates = folders.map((_, depth) => path.posix.join(...folders.slice(0, folders.length - depth), file));
-  const present = [...candidates, file].filter(exists);
-  return present.find((candidate) => addedLines?.has(candidate)) ?? present[0] ?? path.posix.join(crateRoot, file);
-}
-
-/**
  * Parse `cargo clippy --message-format json` output. Warnings count only on
  * added lines; a compile ERROR is reported wherever it is, because a head
  * that does not compile is a defect the deterministic gates never see
- * (`pnpm verify` builds no Rust).
+ * (`pnpm verify` builds no Rust). `spanRoot` is the folder rustc ran in, which
+ * its file names are relative to: the crate's, or its workspace's.
  */
-export function parseClippyMessages(output, { addedLines, crateRoot = '', exists = () => false, maxFindings = LIMITS.maxDeterministicFindings } = {}) {
+export function parseClippyMessages(output, { addedLines, crateRoot = '', spanRoot = crateRoot, maxFindings = LIMITS.maxDeterministicFindings } = {}) {
   const findings = [];
   let warnings = 0;
   let errors = 0;
@@ -344,7 +331,7 @@ export function parseClippyMessages(output, { addedLines, crateRoot = '', exists
       }));
       continue;
     }
-    const file = spanFile(normalizePath(span.file_name), crateRoot, exists, addedLines);
+    const file = normalizePath(path.posix.join(spanRoot, normalizePath(span.file_name)));
     const line = span.line_start;
     const onAddedLine = addedLines?.get(file)?.has(line);
     if (message.level === 'warning' && !onAddedLine) continue;
@@ -411,14 +398,40 @@ export async function clippyCratesFor({ checkout, files, configured = null }) {
   return [...crates].sort();
 }
 
-async function clippyCrate({ checkout, crate, added, stateRoot, run, timeoutMs, boundMs, env }) {
-  const crateDir = path.join(checkout, crate);
-  let result;
+/**
+ * The folder of the checkout rustc runs in for a crate: Cargo runs it in the
+ * workspace's root, as Cargo itself reports, and that is the crate's own folder
+ * outside a workspace. Anything unexpected falls back to the crate.
+ */
+async function rustcFolder({ checkout, crate, run, env, timeoutMs }) {
+  const located = await run('cargo', ['locate-project', '--workspace', '--message-format', 'plain'], {
+    cwd: path.join(checkout, crate),
+    env,
+    timeoutMs,
+    allowFailure: true,
+    maxOutputBytes: 64 * 1024,
+  });
+  const manifest = String(located.stdout || '').trim();
+  if (located.code !== 0 || !path.isAbsolute(manifest) || path.basename(manifest) !== 'Cargo.toml') return crate;
   try {
+    const relative = path.relative(await realpath(checkout), await realpath(path.dirname(manifest)));
+    return relative.startsWith('..') || path.isAbsolute(relative) ? crate : normalizePath(relative);
+  } catch {
+    return crate;
+  }
+}
+
+async function clippyCrate({ checkout, crate, added, stateRoot, run, deadline, boundMs, env }) {
+  const crateDir = path.join(checkout, crate);
+  const remaining = () => Math.max(1, deadline - Date.now());
+  let result;
+  let spanRoot;
+  try {
+    spanRoot = await rustcFolder({ checkout, crate, run, env, timeoutMs: remaining() });
     result = await run('cargo', ['clippy', '--no-deps', '--quiet', '--message-format', 'json'], {
       cwd: crateDir,
       env: { ...env, CARGO_TARGET_DIR: path.join(stateRoot, 'cargo-target') },
-      timeoutMs,
+      timeoutMs: remaining(),
       allowFailure: true,
       maxOutputBytes: 16 * 1024 * 1024,
     });
@@ -436,7 +449,7 @@ async function clippyCrate({ checkout, crate, added, stateRoot, run, timeoutMs, 
   const parsed = parseClippyMessages(result.stdout, {
     addedLines: added,
     crateRoot: crate,
-    exists: (file) => existsSync(path.join(checkout, file)),
+    spanRoot,
   });
   const compileErrors = parsed.findings.filter((finding) => finding.priority === 'P2');
   if (result.code !== 0 && !compileErrors.length) {
@@ -484,9 +497,8 @@ export async function runClippyLane({
   const deadline = Date.now() + timeoutMs;
   const outcomes = [];
   for (const crate of crates.slice(0, maxCrates)) {
-    const remaining = deadline - Date.now();
-    const outcome = remaining > 0
-      ? await clippyCrate({ checkout, crate, added, stateRoot, run, timeoutMs: remaining, boundMs: timeoutMs, env })
+    const outcome = deadline > Date.now()
+      ? await clippyCrate({ checkout, crate, added, stateRoot, run, deadline, boundMs: timeoutMs, env })
       : { status: 'timeout', note: 'not started: the lane ran out of time', findings: [] };
     outcomes.push({ crate, ...outcome });
     if (outcome.status === 'unavailable') break;
