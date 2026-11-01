@@ -523,6 +523,22 @@ describe('review-gate native installer plans', () => {
       }
     });
 
+    it('recovers through a claim whose result a power cut tore', async () => {
+      const { stateRoot, paths } = await ownerState('2026-01-01T00:00:00.000Z');
+      const kill = denied();
+      try {
+        await atomicWriteJson(path.join(paths.claims, 'request-1.json.12.owner.claim'), { id: 'request-1' });
+        await writeFile(path.join(paths.results, 'request-1.json'), '{"status":"pa');
+        await expect(recoverStaleDaemonState({ repoRoot: process.cwd(), paths }, {
+          reason: 'a stale watcher to recover', recoverResources: async () => 0,
+        })).resolves.toMatchObject({ recovered: true, claimsRecovered: 1 });
+        await expect(readJson(path.join(paths.requests, 'request-1.json'))).resolves.toMatchObject({ id: 'request-1' });
+      } finally {
+        kill.mockRestore();
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
     it('refuses stale-state recovery of a healthy owner', async () => {
       const { stateRoot, paths, owner } = await ownerState(new Date().toISOString());
       const kill = denied();

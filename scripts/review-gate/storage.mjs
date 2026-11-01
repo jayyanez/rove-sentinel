@@ -945,6 +945,27 @@ async function failCorruptClaim(paths, claimName, target) {
   await rm(target, { force: true });
 }
 
+/**
+ * Whether a claimed request already has its result. A file that does not parse,
+ * or carries no status, is no result: a power cut can tear one, and it says
+ * nothing about the review. It goes first, so a waiting hook never reads it and
+ * the new review's result cannot be the one removed.
+ */
+async function hasCompletedResult(paths, requestId) {
+  const target = path.join(paths.results, `${requestId}.json`);
+  let result;
+  try {
+    result = await readJson(target);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    result = undefined;
+  }
+  if (result === null) return false;
+  if (typeof result?.status === 'string') return true;
+  await removeStoredJson(target);
+  return false;
+}
+
 export async function recoverClaims(paths) {
   const entries = await readdir(paths.claims, { withFileTypes: true });
   let recovered = 0;
@@ -969,8 +990,7 @@ export async function recoverClaims(paths) {
       await failCorruptClaim(paths, entry.name, target);
       continue;
     }
-    const completed = await readJson(path.join(paths.results, `${request.id}.json`));
-    if (!completed) {
+    if (!(await hasCompletedResult(paths, request.id))) {
       await atomicWriteJson(path.join(paths.requests, `${request.id}.json`), request);
       recovered += 1;
     }
