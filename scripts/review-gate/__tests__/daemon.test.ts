@@ -18,7 +18,7 @@ import {
   startDaemonDetached,
   waitForWatcherDelay,
 } from '../daemon.mjs';
-import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
+import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
@@ -47,6 +47,10 @@ describe('a computer whose watcher leaves GitHub alone', () => {
   it('polls GitHub by default, and after installing again without the flag', async () => {
     expect(await pollsGitHub()).toBe(true);
     expect(await pollsGitHub({ github: true })).toBe(true);
+  });
+
+  it('leaves an install the time to record its choice before the first poll', () => {
+    expect(LIMITS.githubFirstPollDelayMs).toBeGreaterThanOrEqual(30_000);
   });
 });
 

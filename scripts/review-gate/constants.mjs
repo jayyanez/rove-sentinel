@@ -180,6 +180,7 @@ export const LIMITS = Object.freeze({
   hookProgressEveryMs: 30 * 1000,
   queuePollMs: 1000,
   githubPollMs: 60 * 1000,
+  githubFirstPollDelayMs: 30_000,
   githubMaxBackoffMs: 10 * 60 * 1000,
   githubErrorRetryBaseMs: 60 * 1000,
   githubErrorMaxAttempts: 3,

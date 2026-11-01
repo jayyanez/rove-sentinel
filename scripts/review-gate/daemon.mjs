@@ -292,16 +292,15 @@ export async function runWatcher({
   const context = await createGateContext(repoRoot, { stateRoot });
   try {
     context.policy = await loadWatcherPolicy(context);
-    // Every start of this watcher, the scheduler's or a hook's, honours the
-    // machine's choice: `install --no-github`.
-    github = github && await readWatcherGithub(context.paths);
     await clearDaemonError(context.paths);
     const lock = await acquireDaemonLock(context.paths);
     if (!lock) return { alreadyRunning: true, stateRoot: context.stateRoot };
     context.daemonOwnerToken = lock.ownerToken;
 
     let stopped = false;
-    let nextGithubAt = 0;
+    // An install records this machine's choice as its last step, once this
+    // watcher answers, so the first poll leaves it the time to.
+    let nextGithubAt = once ? 0 : Date.now() + LIMITS.githubFirstPollDelayMs;
     let githubBackoffMs = LIMITS.githubPollMs;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };
@@ -344,7 +343,7 @@ export async function runWatcher({
               policyDigest: context.policy.policyDigest,
               activity: 'paused',
             });
-          } else if (github && Date.now() >= nextGithubAt) {
+          } else if (github && Date.now() >= nextGithubAt && await readWatcherGithub(context.paths)) {
             try {
               await runWithHeartbeat(
                 context,

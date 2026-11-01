@@ -497,7 +497,7 @@ describe('review-gate native installer plans', () => {
     }
   });
 
-  it('keeps the watcher\'s GitHub choice through a failed install and an engine update', async () => {
+  it('records the watcher\'s GitHub choice last: a failed install and an engine update keep it', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
     try {
       const paths = await ensureState(stateRoot);
