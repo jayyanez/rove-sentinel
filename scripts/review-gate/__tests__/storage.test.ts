@@ -79,6 +79,31 @@ describe('whether a process exists', () => {
   });
 });
 
+describe('a hook waiting across a clock step', () => {
+  it('neither expires nor stops', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    const real = Date.now;
+    let polls = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + (polls > 0 ? 3_600_000 : 0));
+    try {
+      // The clock steps at the first poll and the result comes at a later one:
+      // a wait timed by the clock has ended by then, and its last read finds nothing.
+      const waiting = waitForResult(paths, 'request-1', {
+        timeoutMs: 2_000,
+        pollMs: 10,
+        shouldCancel: async () => {
+          polls += 1;
+          if (polls === 3) await writeFile(path.join(paths.results, 'request-1.json'), '{"requestId":"request-1"}');
+          return null;
+        },
+      });
+      await expect(waiting).resolves.toMatchObject({ requestId: 'request-1' });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
 describe('shared review local state', () => {
   it('preserves case-sensitive repository paths while retaining GitHub identity', () => {
     expect(normalizeRepositoryIdentity('', '/tmp/Project', { platform: 'linux' }))

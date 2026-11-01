@@ -98,26 +98,69 @@ export async function submitAndStartReview(
     submit = submitRequest,
     clearError = clearDaemonError,
     start = startDaemonDetached,
-    cancel = cancelQueuedRequest,
   } = {},
 ) {
-  const request = await submit(context.paths, { type: 'gate', options });
-  try {
-    await clearError(context.paths);
-    await start(context.repoRoot, context.stateRoot);
-    return request;
-  } catch (error) {
+  // The watcher first: a full queue refuses, and a request a restart left
+  // behind can only be cleared by a watcher.
+  await clearError(context.paths);
+  await start(context.repoRoot, context.stateRoot);
+  return await submit(context.paths, { type: 'gate', options });
+}
+
+/**
+ * The wait for a watcher's first heartbeat. An owner that exits just as this
+ * push's start gave way to it leaves nobody, so a wait that sees no owner
+ * starts again. A watcher that answers wrongly or failed to start still throws.
+ */
+export async function waitForFirstHeartbeat(context, options, {
+  wait = waitForDaemonHeartbeat,
+  clearError = clearDaemonError,
+  start = startDaemonDetached,
+  attempts = LIMITS.hookStartAttempts,
+} = {}) {
+  for (let attempt = 1; ; attempt += 1) {
     try {
-      await cancel(context.paths, request.id);
-    } catch (cancelError) {
-      throw new Error(`${error?.message || String(error)} The queued request also could not be cancelled: ${cancelError?.message || String(cancelError)}. Run npx --no-install rove-sentinel status before retrying.`, {
-        cause: error,
-      });
+      return await wait(context.paths, context.repoRoot, options);
+    } catch (error) {
+      if (error?.code !== 'NO_WATCHER_HEARTBEAT' || attempt >= attempts) throw error;
+      await clearError(context.paths);
+      await start(context.repoRoot, context.stateRoot).catch(() => {});
     }
-    throw error;
   }
 }
 
+/**
+ * A waiting hook's answer to its watcher being gone: not a refusal yet. The
+ * watcher may be restarting, or may have exited just as this push's start gave
+ * way to it, so the hook starts one itself and refuses only if none appears. A
+ * second start is harmless: it finds a healthy owner and leaves.
+ */
+export function watcherKeeper(context, {
+  clearError = clearDaemonError,
+  start = startDaemonDetached,
+  readError = (paths) => readJson(paths.daemonError).catch(() => null),
+  startAfter = LIMITS.hookStartAfterPolls,
+  startEvery = LIMITS.hookStartEveryPolls,
+  giveUpAfter = LIMITS.hookGiveUpPolls,
+} = {}) {
+  let missed = 0;
+  return async (problem) => {
+    if (!problem?.gone) {
+      missed = 0;
+      return problem?.message ?? null;
+    }
+    missed += 1;
+    if (missed >= giveUpAfter) {
+      const failure = await readError(context.paths);
+      return failure?.message ? `${problem.message} A new watcher could not start: ${failure.message}` : problem.message;
+    }
+    if (missed >= startAfter && (missed - startAfter) % startEvery === 0) {
+      await clearError(context.paths);
+      await start(context.repoRoot, context.stateRoot).catch(() => {});
+    }
+    return null;
+  };
+}
 export async function waitForHookResult(
   paths,
   requestId,
@@ -154,25 +197,34 @@ export async function waitForHookResult(
   }
 }
 
-export async function waitingWatcherProblem(paths, expectedPolicyDigest) {
+/**
+ * What is wrong with the watcher, read from one snapshot of its records.
+ * `gone` tells a watcher that went away from one that answers and is wrong.
+ */
+export async function watcherProblem(paths, expectedPolicyDigest) {
   const [lock, heartbeat] = await Promise.all([
     readJson(paths.lock).catch(() => null),
     readJson(paths.heartbeat).catch(() => null),
   ]);
+  const wrong = (message) => ({ message, gone: false });
   if (!daemonOwnerIsHealthy(lock, heartbeat)) {
-    return 'The shared review watcher stopped or lost its healthy owner heartbeat while this push was waiting. Run npx --no-install rove-sentinel status, then retry after recovery.';
+    return { gone: true, message: 'The shared review watcher stopped or lost its healthy owner heartbeat while this push was waiting. Run npx --no-install rove-sentinel status, then retry after recovery.' };
   }
   if (
     heartbeat.gateVersion !== GATE_VERSION ||
     heartbeat.charterVersion !== CHARTER_VERSION ||
     (expectedPolicyDigest && heartbeat.policyDigest !== expectedPolicyDigest)
   ) {
-    return `The shared review watcher changed to incompatible policy identity ${heartbeat.gateVersion || 'unknown'}/${heartbeat.charterVersion || 'unknown'}/${heartbeat.policyDigest || 'unknown'} while this push was waiting. Run npx --no-install rove-sentinel install from your trusted main checkout.`;
+    return wrong(`The shared review watcher changed to incompatible policy identity ${heartbeat.gateVersion || 'unknown'}/${heartbeat.charterVersion || 'unknown'}/${heartbeat.policyDigest || 'unknown'} while this push was waiting. Run npx --no-install rove-sentinel install from your trusted main checkout.`);
   }
   if (heartbeat.activity === 'error') {
-    return `The shared review watcher reported an internal loop error: ${String(heartbeat.error || 'unknown error').slice(0, 1000)}. Run npx --no-install rove-sentinel status and retry after recovery.`;
+    return wrong(`The shared review watcher reported an internal loop error: ${String(heartbeat.error || 'unknown error').slice(0, 1000)}. Run npx --no-install rove-sentinel status and retry after recovery.`);
   }
   return null;
+}
+
+export async function waitingWatcherProblem(paths, expectedPolicyDigest) {
+  return (await watcherProblem(paths, expectedPolicyDigest))?.message ?? null;
 }
 
 /**
@@ -512,10 +564,9 @@ export async function runPrePush({
         buildGateRequestOptions({ repoRoot: context.repoRoot, identity, branch }),
       );
       let response;
+      const keepWatcher = watcherKeeper(context);
       try {
-        await waitForDaemonHeartbeat(context.paths, context.repoRoot, {
-          policyDigest: reviewPolicy.policyDigest,
-        });
+        await waitForFirstHeartbeat(context, { policyDigest: reviewPolicy.policyDigest });
         output(`Shared review gate: checking ${branch} at ${targetSha.slice(0, 12)}…`);
         response = await waitForHookResult(context.paths, request.id, {
           // Past the base bound the wait goes on while the healthy watcher is
@@ -533,7 +584,7 @@ export async function runPrePush({
             if (currentPause) {
               return `Shared review gate was paused while this push was waiting: ${currentPause.reason}`;
             }
-            return await waitingWatcherProblem(context.paths, reviewPolicy.policyDigest);
+            return await keepWatcher(await watcherProblem(context.paths, reviewPolicy.policyDigest));
           },
         });
       } catch (error) {
