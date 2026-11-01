@@ -109,7 +109,7 @@ Everything else in this plan was found by reasoning, review or measurement, not 
 | Shut down and power on with Windows Fast Startup | No | Recovers | **A person:** the boot time does not move | Recovers at logon | A person |
 | Log off | No | Recovers | **A person** | Recovers at logon | A person |
 | A crash or a kill, same boot | No | Recovers | **A person** | Recovers at logon | A person |
-| A power cut that tears a record | No | Lock yes, C9 still stops it | **A person:** no readable heartbeat, no proof | Recovers at logon, unless C9 stops it | A person |
+| A power cut that tears a record | No | Recovers | **A person:** no readable heartbeat, no proof | Recovers at logon | A person |
 | A hung owner | No | `recover --kill`, disputed by C4 | As `main` | As `main` | As `main` |
 
 The Fast Startup row comes from how that feature is documented. It has not been measured.
@@ -119,10 +119,10 @@ The Fast Startup row comes from how that feature is documented. It has not been 
 | Property | Full, as promised | Full, after review | A | B | C |
 | --- | --- | --- | --- | --- | --- |
 | H1 One watcher | Promised | Not held: C1, C2, C3 | **Not promised.** As `main` | **Not promised.** As `main` | **Not promised** |
-| H2 Dead owner recovered | Promised | Not held: C2, C5, C9 | **Narrowed** to an owner from an earlier boot | **Narrowed** to a logon after the process is gone | **Not promised** |
+| H2 Dead owner recovered | Promised | Not held: C2, C5 | **Narrowed** to an owner from an earlier boot | **Narrowed** to a logon after the process is gone | **Not promised** |
 | H3 Records untouched | Promised | Not held: C1, C3 | **Not promised.** As `main` | **Not promised.** As `main` | **Not promised** |
 | H4 No refusal by a race | Promised | Not held: C5, C7 | **Not promised.** As far as the small fixes reach | **Not promised** | **Not promised** |
-| H5 A person can recover | Promised | Not held: C4, C9, C10 | **Not promised.** `recover` as today | **Not promised** | **Not promised** |
+| H5 A person can recover | Promised | Not held: C4, C10 | **Not promised.** `recover` as today | **Not promised** | **Not promised** |
 
 "As `main`" is not a guarantee. An old or a new `recover` beside a hung owner removes its lock
 today, and nothing here changes that.
@@ -161,8 +161,9 @@ holding `takeover.lock` leaves a refusal until `recover` or the next boot. It re
 old engines already write, so the first restart after an update is covered. A rollback finds what
 it expects.
 
-**What it does not fix.** A truncated `results/<id>.json` makes `recoverClaims` throw on every
-attempt, for a starter and for `recover` alike (C9). That needs its own small fix in every option.
+**What it does not need.** A truncated `results/<id>.json` used to make `recoverClaims` throw on
+every attempt, for a starter and for `recover` alike (C9). That no longer depends on any option: #26
+returns the request to the queue, and a broken file is never read as a verdict.
 
 ### Why not the others
 
@@ -413,7 +414,7 @@ Status describes the full design. The last column says what happens under Option
 | # | Finding | Status | How it was checked, and what remains | Under Option A |
 | --- | --- | --- | --- | --- |
 | R1 | A refused connect proves nothing | Resolved | Reproduced on Windows and macOS. No connect remains | Does not arise |
-| R2 | A power cut can leave the newest record unreadable | Resolved | The lock's proof reads no record. C9 is what is left | A torn heartbeat refuses |
+| R2 | A power cut can leave the newest record unreadable | Resolved | The lock's proof reads no record, and #26 closed the part of C9 that stopped recovery | A torn heartbeat refuses |
 | R3 | A failing exit refuses a waiting push | **Open** | Confirmed in `handleRequestFailure`. The fix stopped at the gate: see below | Still applies, independent of the design |
 | R4 | Nobody starts a watcher during a hook's wait | **Open** | #25 did this and stopped at the gate: a start can land after the hook's lease, inside an update's fence, and a wait past its base timeout never reaches it. #25 is a draft, not to merge | Still applies, own fix |
 | R5 | A released marker leaves no watcher | Resolved | No bridge exists | Does not arise |
@@ -438,14 +439,14 @@ Status describes the full design. The last column says what happens under Option
 | C6 | Network folders may not fail loudly | **Open** | Not reproduced, and SQLite's own warning stands. The plan's sentence is withdrawn | No kernel lock. Pid and boot tests are no proof between two machines sharing a state root |
 | C7 | Node 22.13 has no `timeout` option | Accepted | Confirmed from Node's source: absent at v22.13.0 and v22.15.0, present at v22.16.0 and v24.0.0. The warning is emitted at all four. The floor must rise or use `PRAGMA busy_timeout`. Node 23 not checked | No `node:sqlite` |
 | C8 | The updater that must check a new floor is the old one | **Open** | Confirmed: `automatic-updates.mjs` stops the watcher first, and `engine-store.mjs` does not read `engines` | No new floor |
-| C9 | A truncated result stops recovery; requests are not durable | **Open** | **Run on Windows and macOS:** `recoverClaims` threw `SyntaxError` twice and the claim stayed. `atomicWriteJson` does not sync | **Still applies**, on `main` today. Own fix |
+| C9 | A truncated result stops recovery; requests are not durable | **Open, narrowed** | **Run on Windows and macOS:** `recoverClaims` threw `SyntaxError` twice and the claim stayed. #26 fixed that: the request returns to the queue. `atomicWriteJson` still does not sync, so a power cut can lose a write | **Still applies**, narrowed to the sync. Own fix |
 | C10 | Replacing a junk lock file repeats check-then-remove | **Open** | Reasoned, and the plan contradicts itself: `recover` must take the lock it cannot open | No kernel lock file |
 | C11 | The SQLite protocol is incomplete | **Open** | Conditional, not reproduced. Exact SQL and journal modes are unspecified | No SQLite |
 | C12 | Several tests can pass with the guarantees broken | Accepted | Confirmed by reading their failure conditions. Each needs a negative control | A's tests need the same |
 
 **Not resolved, and stated:** R3, R4, R6, R7, R11, R14, C1 to C6 and C8 to C11 stay open on the full
-design. That is the reason it is not recommended. Under Option A, R3, R4, R8, R11 and C9 remain and
-need their own fixes, R12 returns in a narrow form, and C3 and C6 leave stated windows.
+design. That is the reason it is not recommended. Under Option A, R3, R4, R8, R11 and the rest of C9 remain
+and need their own fixes, R12 returns in a narrow form, and C3 and C6 leave stated windows.
 
 **R3 stopped at the gate.** Leaving a stopped review's claim unresolved is a small change, but a
 claimed request has no durable cancel: a cancel during a review removes nothing, and recovery
@@ -576,11 +577,12 @@ That work is on a local branch at `8a73e68` and stays unpublished.
 
 **Whichever option is chosen.** These stand alone and depend on no design:
 
-1. `git.mjs`'s `EPERM` reading: #24.
+1. `git.mjs`'s `EPERM` reading: merged as #24.
 2. The hook starts a watcher before it can refuse and during its wait (R4, R11): stopped at the gate
    both ways, for the maintainer to decide.
 3. A stop during a review (R3): stopped at the gate, for the maintainer to decide.
-4. A truncated result must not stop `recoverClaims` (C9): not started.
+4. A truncated result must not stop `recoverClaims` (C9): merged as #26. `atomicWriteJson` not
+   syncing is what stays of C9: not started.
 5. Startup cleanup moves into the retrying loop (R8): not started.
 
 **For Option A:**
