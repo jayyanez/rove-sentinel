@@ -684,19 +684,28 @@ describe('shared review local state', () => {
       ['not a result', '"pass"'],
       ['without a status', '{"requestId":"request"}'],
     ])('runs the review again when it is %s', async (_kind, content) => {
-      const { paths, request, target } = await claimedWithResult(content);
+      const { paths, request } = await claimedWithResult(content);
 
       await expect(recoverClaims(paths)).resolves.toBe(1);
 
-      await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(readdir(paths.claims)).resolves.toEqual([]);
       expect((await claimNextRequest(paths))?.request.id).toBe(request.id);
     });
 
-    it('stops nothing on the next recovery either', async () => {
-      const { paths } = await claimedWithResult('{');
+    it('recovers again if a second restart finds the same file', async () => {
+      const { paths, request } = await claimedWithResult('{');
       await recoverClaims(paths);
-      await expect(recoverClaims(paths)).resolves.toBe(0);
+      expect(await claimNextRequest(paths)).not.toBeNull();
+
+      await expect(recoverClaims(paths)).resolves.toBe(1);
+
+      expect((await claimNextRequest(paths))?.request.id).toBe(request.id);
+    });
+
+    it('leaves the file alone, so recovery cannot take a newer result', async () => {
+      const { paths, target } = await claimedWithResult('{');
+      await recoverClaims(paths);
+      await expect(readFile(target, 'utf8')).resolves.toBe('{');
     });
 
     it('gives a waiting hook the verdict of the new review, never the broken file', async () => {

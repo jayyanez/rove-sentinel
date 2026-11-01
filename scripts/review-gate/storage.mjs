@@ -948,22 +948,17 @@ async function failCorruptClaim(paths, claimName, target) {
 /**
  * Whether a claimed request already has its result. A file that does not parse,
  * or carries no status, is no result: a power cut can tear one, and it says
- * nothing about the review. It goes first, so a waiting hook never reads it and
- * the new review's result cannot be the one removed.
+ * nothing about the review. It stays where it is: the new review's result
+ * replaces it, and removing it here could take that result instead.
  */
 async function hasCompletedResult(paths, requestId) {
-  const target = path.join(paths.results, `${requestId}.json`);
-  let result;
   try {
-    result = await readJson(target);
+    const result = await readJson(path.join(paths.results, `${requestId}.json`));
+    return typeof result?.status === 'string';
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    result = undefined;
+    return false;
   }
-  if (result === null) return false;
-  if (typeof result?.status === 'string') return true;
-  await removeStoredJson(target);
-  return false;
 }
 
 export async function recoverClaims(paths) {
