@@ -451,6 +451,91 @@ describe('review-gate native installer plans', () => {
     }
   });
 
+  describe('with an owner this process may not signal', () => {
+    const denied = () => vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    });
+    async function ownerState(at: string) {
+      const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
+      const paths = await ensureState(stateRoot);
+      const owner = { pid: 4242, ownerToken: 'live-owner' };
+      await atomicWriteJson(paths.lock, owner);
+      await atomicWriteJson(paths.heartbeat, {
+        ...owner, repoRoot: process.cwd(), gateVersion: GATE_VERSION, charterVersion: CHARTER_VERSION, at,
+      });
+      return { stateRoot, paths, owner };
+    }
+    const keeps = async (paths: { lock: string; heartbeat: string }, owner: object) => {
+      await expect(readJson(paths.lock)).resolves.toMatchObject(owner);
+      await expect(readJson(paths.heartbeat)).resolves.toMatchObject(owner);
+    };
+
+    it('keeps the state of an owner with a stale heartbeat', async () => {
+      const { stateRoot, paths, owner } = await ownerState('2026-01-01T00:00:00.000Z');
+      const kill = denied();
+      try {
+        await expect(stopDaemon({ repoRoot: process.cwd(), paths })).rejects.toThrow('Refusing to signal or unlock a live PID');
+        await keeps(paths, owner);
+      } finally {
+        kill.mockRestore();
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the state of a healthy owner that a signal cannot reach', async () => {
+      const { stateRoot, paths, owner } = await ownerState(new Date().toISOString());
+      const kill = denied();
+      try {
+        await expect(stopDaemon({ repoRoot: process.cwd(), paths }, { platform: 'linux' })).rejects.toThrow('operation not permitted');
+        await keeps(paths, owner);
+      } finally {
+        kill.mockRestore();
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the state of a healthy owner that does not answer a stop request', async () => {
+      const { stateRoot, paths, owner } = await ownerState(new Date().toISOString());
+      const kill = denied();
+      try {
+        await expect(stopDaemon({ repoRoot: process.cwd(), paths }, {
+          platform: 'win32', writeStopRequest: async () => {}, delay: async () => {}, timeoutMs: 0,
+        })).rejects.toThrow('did not stop');
+        await keeps(paths, owner);
+      } finally {
+        kill.mockRestore();
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('leaves an owner with a stale heartbeat to the person who runs recover', async () => {
+      // A reused process id looks the same, and recover is the only way out of one.
+      const { stateRoot, paths } = await ownerState('2026-01-01T00:00:00.000Z');
+      const kill = denied();
+      try {
+        await expect(recoverStaleDaemonState({ repoRoot: process.cwd(), paths }, {
+          reason: 'a stale watcher to recover', recoverResources: async () => 0,
+        })).resolves.toMatchObject({ recovered: true, previousLockPid: 4242 });
+        await expect(readJson(paths.lock)).resolves.toBeNull();
+      } finally {
+        kill.mockRestore();
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses stale-state recovery of a healthy owner', async () => {
+      const { stateRoot, paths, owner } = await ownerState(new Date().toISOString());
+      const kill = denied();
+      try {
+        await expect(recoverStaleDaemonState({ repoRoot: process.cwd(), paths }, { reason: 'a stale watcher to recover' })).rejects.toThrow('is healthy');
+        await keeps(paths, owner);
+      } finally {
+        kill.mockRestore();
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('does not delete a replacement watcher lock during graceful shutdown', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
     try {

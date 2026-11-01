@@ -18,6 +18,7 @@ import {
   clearDaemonError,
   clearTechnicalErrorOutcomes,
   hashText,
+  isProcessAlive,
   pauseGate,
   readJson,
   reviewTimingSummary,
@@ -202,21 +203,11 @@ export async function verifyPrerequisites(
   };
 }
 
-function processIsAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function heartbeatIsHealthy(
   heartbeat,
   repoRoot,
   maxAgeMs = 30_000,
-  { isAlive = processIsAlive, now = Date.now } = {},
+  { isAlive = isProcessAlive, now = Date.now } = {},
 ) {
   const ageMs = now() - Date.parse(heartbeat?.at);
   return Boolean(
@@ -244,7 +235,7 @@ export async function stopDaemon(
   {
     platform = process.platform,
     kill = process.kill,
-    isAlive = processIsAlive,
+    isAlive = isProcessAlive,
     writeStopRequest = atomicWriteJson,
     delay = sleep,
     timeoutMs = 30_000,

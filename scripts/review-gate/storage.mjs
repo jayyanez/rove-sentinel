@@ -1119,13 +1119,15 @@ export async function pruneDirectory(directory, { maxFiles, maxAgeMs, now = Date
   );
 }
 
-function isProcessAlive(pid) {
+// Only ESRCH says a process is gone. EPERM says it exists and may not be
+// signalled, such as a watcher of another user or another elevation.
+export function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error?.code !== 'ESRCH';
   }
 }
 
