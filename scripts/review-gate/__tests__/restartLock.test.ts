@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readdir, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -250,32 +250,53 @@ describe('a starter finding a lock', () => {
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
   });
 
-  it('keeps the lock and leaves no marker when it cannot remove it', async () => {
+  it('keeps the old lock, and leaves nothing behind, when it cannot replace it', async () => {
     const paths = await leftByRestart();
-    const denied = Object.assign(new Error('in use'), { code: 'EPERM' });
-    const remove = vi.fn(async (target: string) => {
-      if (target === paths.lock) throw denied;
-      await rm(target, { force: true });
-    });
+    const failure = Object.assign(new Error('disk'), { code: 'EIO' });
+    const move = vi.fn(async () => { throw failure; });
 
-    await expect(acquireDaemonLock(paths, { ...proofOptions, remove })).rejects.toBe(denied);
+    await expect(acquireDaemonLock(paths, { ...proofOptions, move })).rejects.toBe(failure);
 
+    expect(move).toHaveBeenCalledOnce();
+    await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
+    expect(await exists(paths.takeover)).toBe(false);
+    expect((await readdir(paths.root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('waits out a reader holding the old file, then replaces it', async () => {
+    const paths = await leftByRestart();
+    let refusals = 2;
+    const move = async (from: string, to: string) => {
+      if (refusals-- > 0) throw Object.assign(new Error('in use'), { code: 'EPERM' });
+      await rename(from, to);
+    };
+
+    const lock = await acquireDaemonLock(paths, { ...proofOptions, move, delay: async () => {} });
+
+    await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: lock.ownerToken });
+  });
+
+  it('stops waiting for a reader that never lets go', async () => {
+    const paths = await leftByRestart();
+    const inUse = Object.assign(new Error('in use'), { code: 'EPERM' });
+    const move = vi.fn(async () => { throw inUse; });
+
+    await expect(acquireDaemonLock(paths, { ...proofOptions, move, delay: async () => {} })).rejects.toBe(inUse);
+
+    expect(move).toHaveBeenCalledTimes(20);
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
     expect(await exists(paths.takeover)).toBe(false);
   });
 
-  it('frees the marker when it cannot create its own lock', async () => {
+  it('never leaves the name free, so no plain start can take it', async () => {
     const paths = await leftByRestart();
-    const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
-    let lockOpens = 0;
-    const openFile = async (target: string, flags: string, mode: number) => {
-      if (target === paths.lock && ++lockOpens === 2) throw denied;
-      return await open(target, flags, mode);
+    const move = async (from: string, to: string) => {
+      await expect(writeFile(paths.lock, '', { flag: 'wx' })).rejects.toMatchObject({ code: 'EEXIST' });
+      await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
+      await rename(from, to);
     };
 
-    await expect(acquireDaemonLock(paths, { ...proofOptions, openFile })).rejects.toBe(denied);
-
-    expect(await exists(paths.takeover)).toBe(false);
+    await expect(acquireDaemonLock(paths, { ...proofOptions, move })).resolves.toMatchObject({ replaced: { pid: LOCK.pid } });
   });
 });
 
@@ -364,14 +385,19 @@ describe('starters meeting over a lock left by a restart', () => {
     await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'late-owner-token' });
   });
 
-  it('gives way to a plain starter that takes the name inside its removal', async () => {
+  it('gives way when a plain start took the name after the lock vanished', async () => {
     const paths = await leftByRestart();
-    const remove = async (target: string, options: { force: boolean }) => {
-      await rm(target, options);
-      if (target === paths.lock) await writeFile(paths.lock, `${JSON.stringify({ pid: 7, ownerToken: 'plain-starter' })}\n`, { flag: 'wx' });
+    let looks = 0;
+    const read = async (target: string, fallback?: unknown) => {
+      if (target === paths.lock && ++looks === 2) {
+        await rm(paths.lock);
+        await writeFile(paths.lock, `${JSON.stringify({ pid: 7, ownerToken: 'plain-starter' })}\n`, { flag: 'wx' });
+        return fallback;
+      }
+      return await readJson(target, fallback);
     };
 
-    await expect(acquireDaemonLock(paths, { ...proofOptions, remove })).resolves.toBeNull();
+    await expect(acquireDaemonLock(paths, { ...proofOptions, read })).resolves.toBeNull();
 
     await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'plain-starter' });
     expect(await exists(paths.takeover)).toBe(false);

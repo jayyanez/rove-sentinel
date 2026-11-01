@@ -1256,14 +1256,26 @@ export async function acquireDaemonLock(
     isAlive = isProcessAlive,
     bootTime = bootTimeMs,
     announceOwner = async () => {},
+    move = rename,
+    delay = sleep,
   } = {},
 ) {
+  const lockRecord = (ownerToken) => `${JSON.stringify({ pid: ownerPid, ownerToken, startedAt: new Date().toISOString() })}\n`;
+  const ownedLock = (ownerToken) => ({
+    ownerToken,
+    async release() {
+      const current = await read(paths.lock);
+      if (current?.pid === ownerPid && current?.ownerToken === ownerToken) {
+        await remove(paths.lock, { force: true });
+      }
+    },
+  });
   const tryAcquire = async () => {
     const ownerToken = ownerTokenFactory();
     const handle = await openFile(paths.lock, 'wx', 0o600);
     let writeError;
     try {
-      await handle.writeFile(`${JSON.stringify({ pid: ownerPid, ownerToken, startedAt: new Date().toISOString() })}\n`);
+      await handle.writeFile(lockRecord(ownerToken));
     } catch (error) {
       writeError = error;
     } finally {
@@ -1273,15 +1285,34 @@ export async function acquireDaemonLock(
       await remove(paths.lock, { force: true });
       throw writeError;
     }
-    return {
-      ownerToken,
-      async release() {
-        const current = await read(paths.lock);
-        if (current?.pid === ownerPid && current?.ownerToken === ownerToken) {
-          await remove(paths.lock, { force: true });
+    return ownedLock(ownerToken);
+  };
+  // One rename, so the name is never free and the file never empty: a plain
+  // start cannot slip in as an owner that has not announced itself. A reader
+  // holding the old file open can refuse it on Windows for a moment.
+  const replaceLock = async () => {
+    const ownerToken = ownerTokenFactory();
+    const temp = `${paths.lock}.${ownerToken}.tmp`;
+    const handle = await openFile(temp, 'wx', 0o600);
+    try {
+      try {
+        await handle.writeFile(lockRecord(ownerToken));
+      } finally {
+        await handle.close().catch(() => {});
+      }
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await move(temp, paths.lock);
+          return ownedLock(ownerToken);
+        } catch (error) {
+          if (attempt >= 20 || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) throw error;
+          await delay(25);
         }
-      },
-    };
+      }
+    } catch (error) {
+      await remove(temp, { force: true }).catch(() => {});
+      throw error;
+    }
   };
 
   try {
@@ -1315,11 +1346,8 @@ export async function acquireDaemonLock(
           if (error instanceof SyntaxError) return null;
           throw error;
         });
-        if (current !== missingLock) {
-          if (current?.ownerToken !== existing.ownerToken) return null;
-          await remove(paths.lock, { force: true });
-        }
-        const lock = await tryAcquire();
+        if (current !== missingLock && current?.ownerToken !== existing.ownerToken) return null;
+        const lock = await (current === missingLock ? tryAcquire() : replaceLock());
         // Under the marker: once it is free, nobody may find this live owner
         // beside the dead one's heartbeat, which reads as a stale owner. An
         // owner that cannot say so gives the lock back and fails its start.
