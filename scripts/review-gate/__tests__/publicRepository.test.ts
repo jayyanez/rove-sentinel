@@ -21,7 +21,7 @@ const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 // that could name a function makes a call: one that starts with a digit cannot.
 const HEXTET = '[0-9a-f]{1,4}';
 const BEFORE_V6 = `(?<![0-9a-z]|::|(?<![0-9a-z])${HEXTET}:)`;
-const NO_CALL = '(?:(?<=::|[:.]\\d[0-9a-f]{0,3})|(?!\\w*\\())';
+const NO_CALL = '(?:(?<=::)(?!_)|(?<=[:.]\\d[0-9a-f]{0,3})|(?!\\w*\\())';
 const AFTER_V6 = `(?![0-9a-z]|:[\\w:])${NO_CALL}`;
 const LOCAL_V6 = new RegExp(`${BEFORE_V6}(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:(?::${HEXTET}){7}|(?::${HEXTET}){5}:\\d{1,3}(?:\\.\\d{1,3}){3}|(?::${HEXTET}){0,6}::(?:${HEXTET}(?::${HEXTET}){0,6})?)${AFTER_V6}`, 'i');
 
@@ -110,7 +110,7 @@ describe('what the guard catches', () => {
     '2001:db8::1', '::1', '::ffff:192.0.2.1', 'fec0::1', 'fd::new', 'fd0::1', 'fe80', 'fd12:3456', 'abfd00::1',
     '0xfe80::1', 'Foo::fd00::Bar', 'fd00::new', 'fd00::new()', 'fe80::Thing', 'fc00::from_raw', 'fd00::1new', 'fd00:1::abcde',
     'fd00:1:2:3:4:5:6:7new', 'fd00::1:new', 'fd00:::new', 'fd00::add()', 'fd00::add(1)', 'fe80::add_one()', 'fd00::add_one(1)',
-    '2001:fd00::1', '2001:db8:fd00::1', '1:2:fe80::1'
+    '2001:fd00::1', '2001:db8:fd00::1', '1:2:fe80::1', 'fd00::_add()', 'fe80::_new(1)'
   ])('leaves %s alone', (text) => {
     expect(LOCAL_V6.test(`host ${text} up`)).toBe(false);
   });
