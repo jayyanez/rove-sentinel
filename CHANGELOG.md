@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.16.0 — any project's paths, and a watcher you can see
+
+The review knew the folders of the project it came from, and a watcher could stop
+without anyone being told. Sentinel now reads what a project needs from configuration
+any project can set, and says when its watcher is not running.
+
+**This release changes how changes are rated for a project that sets nothing.** An
+automatic update applies it by itself. See the review bullet below.
 
 - **A stopped watcher shows.** A scheduler's task can report success while its watcher
   refused to start, for example after a restart left a dead process's lock. `status` and

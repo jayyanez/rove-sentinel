@@ -1,5 +1,26 @@
 # Standalone validation record
 
+## 1.16.0 generic paths, and a watcher you can see
+
+Deterministic tests cover risk ratings and shard lenses for a repository that sets
+nothing and for one that lists its paths; the GUI evidence check with and without
+`guiEvidenceLayout`, including that the settings documented for leaving `rove` behind
+classify the same files as `rove`; Clippy's crate discovery, its shared bound and its
+placement of a workspace member's messages; `watcher.state` in each state, a corrupt
+lock, a scheduler that cannot be read or started, and `uninstall`; `doctor` warning
+before a check fails; and the engine install's environment and flags.
+
+Live: `cargo clippy` 0.1.94 through the lane on a synthetic workspace placed both
+warnings on their real files. A local listener recorded each `CONNECT` on Windows
+(Node 24.18, npm 12.0.1) and macOS (Node 26.13, npm 11.20): npm honoured `HTTPS_PROXY`,
+and Node's `fetch` did only with `NODE_USE_ENV_PROXY=1`. Node releases before 22.21 were
+not run. npm 12.0.1 reproduced `EALLOWSCRIPTS` with `npm_config_allow_scripts` set, and
+an install with the new flags and no such variable succeeded.
+
+The suite passed on macOS, 756 tests. Each change went through the review gate.
+No project has yet run this engine's new ratings on real changes, and no automatic
+update to it has been exercised.
+
 ## 1.15.0 several computers, and macOS — 2026-10-31
 
 Deterministic tests cover the watcher's GitHub choice: `--no-github` stops

@@ -1,6 +1,6 @@
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 
-// What this engine version accepts and where it stops (1.15.0), from the
+// What this engine version accepts and where it stops (1.16.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -44,6 +44,11 @@ export function sentinelLimits() {
         id: 'linters',
         limit: 'installed tools',
         text: 'shellcheck, actionlint, gitleaks and ruff run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
+      },
+      {
+        id: 'clippy',
+        limit: `${LIMITS.maxClippyCrates} crates`,
+        text: `With clippy on, at most ${LIMITS.maxClippyCrates} crates of a change are linted, one after another under one bound of ${minutes(LIMITS.clippyTimeoutMs)}; the lane's note names any left out.`,
       },
       {
         id: 'skip',

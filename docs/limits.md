@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.15.0
+**Engine version:** 1.16.0
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,7 +28,7 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.15.0
+## Limits of 1.16.0
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
@@ -39,6 +39,7 @@ When a review still fails, read the report's own account of why
 | Candidates per round | 50 after merging duplicates (4 per shard past 12 shards, at most 200; 8 per shard, 4 per hypothesis) | The round fails closed |
 | Confidence floor | 50 | Not adjudicated; the report keeps up to 40 |
 | Linters | shellcheck, actionlint, gitleaks, ruff when installed; project `lintCommands` from installed policy | A missing tool is a note in the report, not a pass |
+| Clippy, when a project turns it on | 8 crates of a change, under one 8-minute bound | The lane's note names the crates left out; a timeout is a note, not a pass |
 | Documentation skip | Only `.md`, `.markdown`, `.rst`, `.adoc` outside the review policy | Everything else, `.txt` and `.mdx` included, is reviewed |
 | One push | 16 refs to check, 1 still needing review; the hook waits 120 minutes, and longer while the watcher reviews that very request (at most 12 hours) | The push is refused |
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
@@ -60,7 +61,7 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 ## Limits that remain
 
-These are real in 1.15.0; work within them rather than around them.
+These are real in 1.16.0; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:

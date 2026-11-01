@@ -56,7 +56,7 @@ Leave `guiEvidence` at `none` and none of this applies.
 | Field | Meaning |
 | --- | --- |
 | `guiFiles` | Regular expressions on repository paths, replacing the file types above |
-| `testFiles` | A regular expression for the files that are neither GUI nor control sources even if another pattern matches them; by default documents, test and story files, and `tests/`, `__tests__/`, `e2e/` and `cypress/` folders. Set it to count a document, such as a rendered `.mdx` page |
+| `testFiles` | A regular expression for the files that are neither GUI nor control sources even if another pattern matches them; by default documents, test and story files, and `tests/`, `__tests__/`, `e2e/` and `cypress/` folders. To count a document, such as a rendered `.mdx` page, set both: a `guiFiles` pattern that matches it, and a narrower `testFiles` that does not, because the default leaves out every document |
 | `reviewsFolder` | The folder holding one evidence folder per branch |
 | `captureCommand` | The command the refusal tells the author to run |
 | `controlSources` | A regular expression for the source files that name controls in a `data-control` attribute. Controls are checked only when it is set: each needs a literal id and a row in the registry, a table row of seven cells with the backticked id first, and a new or moved one must change its row |
