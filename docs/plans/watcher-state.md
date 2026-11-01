@@ -415,16 +415,16 @@ Status describes the full design. The last column says what happens under Option
 | R1 | A refused connect proves nothing | Resolved | Reproduced on Windows and macOS. No connect remains | Does not arise |
 | R2 | A power cut can leave the newest record unreadable | Resolved | The lock's proof reads no record. C9 is what is left | A torn heartbeat refuses |
 | R3 | A failing exit refuses a waiting push | **Open** | Confirmed in `handleRequestFailure`. The fix stopped at the gate: see below | Still applies, independent of the design |
-| R4 | Nobody starts a watcher during a hook's wait | Resolved | #25 | Resolved there too |
+| R4 | Nobody starts a watcher during a hook's wait | **Open** | #25 did this and stopped at the gate: a start can land after the hook's lease, inside an update's fence, and a wait past its base timeout never reaches it. #25 is a draft, not to merge | Still applies, own fix |
 | R5 | A released marker leaves no watcher | Resolved | No bridge exists | Does not arise |
 | R6 | Old engines persist indefinitely | **Open** | Confirmed. The plan said the file left behind was enough, and C3 disproves that | No protocol to retire |
 | R7 | A hung owner cannot be stopped, and `recover` has no force flag | **Open** | Confirmed. `recover --kill` was the answer, and C4 disputes it | As `main`: accepted |
 | R8 | A dead owner's child can stop the new owner from starting | Accepted | Confirmed: cleanup is in the outer `try`. Moving it into the loop is unbuilt | Still applies, own fix |
 | R9 | Pruning reuses a generation number | Resolved | No generations | Does not arise |
 | R10 | The lock-free queue breaks H4, and the bound is 1 | Accepted | A second kernel lock. C5 adds that a five-second wait proves nothing | `main`'s queue stays |
-| R11 | A stale request blocks the start that would clear it | Resolved | #25 | Resolved there too |
+| R11 | A stale request blocks the start that would clear it | **Open** | Starting before submitting stopped at the gate: a cold watcher sees an empty queue and can take an unrelated review first, delaying the push. Unpublished | Still applies, own fix |
 | R12 | A legacy removal repeats the race | Resolved | The full design removes nothing | **Back in narrow form:** the first thing a review of A must attack |
-| R13 | Clocks remain in waits | Accepted | The hook's waits are monotonic in #25. Heartbeat age still uses clocks | Adds a clock, guarded by `ESRCH` |
+| R13 | Clocks remain in waits | Accepted | The hook's waits still use `Date.now()`: the change was in #25, which is not to merge. Heartbeat age still uses clocks | Adds a clock, guarded by `ESRCH` |
 | R14 | Liveness alone hides stuck owners | **Open** | `hung` was the answer, and C5 shows busy cannot name an owner | As `main` |
 | R15 | Lifecycle gaps | Resolved | Mostly moot, and the rest is in the design | Does not arise |
 | R16 | A network-folder refusal cannot be built | Resolved | `statfs` type 0 confirmed, and the refusal is dropped. See C6 | Does not arise |
@@ -443,9 +443,9 @@ Status describes the full design. The last column says what happens under Option
 | C11 | The SQLite protocol is incomplete | **Open** | Conditional, not reproduced. Exact SQL and journal modes are unspecified | No SQLite |
 | C12 | Several tests can pass with the guarantees broken | Accepted | Confirmed by reading their failure conditions. Each needs a negative control | A's tests need the same |
 
-**Not resolved, and stated:** R3, R6, R7, R14, C1 to C6 and C8 to C11 stay open on the full design.
-That is the reason it is not recommended. Under Option A, R3, R8 and C9 remain and need their own
-fixes, R12 returns in a narrow form, and C3 and C6 leave stated windows.
+**Not resolved, and stated:** R3, R4, R6, R7, R11, R14, C1 to C6 and C8 to C11 stay open on the full
+design. That is the reason it is not recommended. Under Option A, R3, R4, R8, R11 and C9 remain and
+need their own fixes, R12 returns in a narrow form, and C3 and C6 leave stated windows.
 
 **R3 stopped at the gate.** Leaving a stopped review's claim unresolved is a small change, but a
 claimed request has no durable cancel: a cancel during a review removes nothing, and recovery
@@ -577,7 +577,8 @@ That work is on a local branch at `8a73e68` and stays unpublished.
 **Whichever option is chosen.** These stand alone and depend on no design:
 
 1. `git.mjs`'s `EPERM` reading: #24.
-2. The hook starts a watcher before it can refuse and during its wait, and counts polls: #25.
+2. The hook starts a watcher before it can refuse and during its wait (R4, R11): stopped at the gate
+   both ways, for the maintainer to decide.
 3. A stop during a review (R3): stopped at the gate, for the maintainer to decide.
 4. A truncated result must not stop `recoverClaims` (C9): not started.
 5. Startup cleanup moves into the retrying loop (R8): not started.
