@@ -585,7 +585,7 @@ export function guiEvidenceProblems({ files, branch, refType = 'branch', patch =
     const missing = controls.filter((id) => !registered.has(id));
     if (missing.length) {
       problems.push(
-        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one table row per control, seven cells with the backticked id first, and commit it.`,
+        `New control id${missing.length > 1 ? 's' : ''} ${missing.map((id) => `data-control="${id}"`).join(', ')} added without a registry row: ${registryTouched ? `${controlRegistry} changes in this diff but has no row for ${missing.length > 1 ? 'them' : 'it'} at head` : `${controlRegistry} at head has no row for ${missing.length > 1 ? 'them' : 'it'}`}. Add one table row per control, seven cells with the backticked id first and surface · zone · order · visibility rule · precedent among them, and commit it.`,
       );
     }
     // A registered id that appears in a file where it did not exist at base
