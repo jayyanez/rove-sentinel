@@ -17,10 +17,12 @@ const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 // a path in Rust or C++ such as fd00::new or a call such as fd00::add() only
 // starts like one. A lone colon delimits an address on either side, as in a YAML
 // key or peer:fd00::1, unless a hextet before it makes this the tail of another
-// address; an underscore delimits one too, as in a file name.
+// address; an underscore delimits one too, as in a file name. Only a last group
+// that could name a function makes a call: one that starts with a digit cannot.
 const HEXTET = '[0-9a-f]{1,4}';
 const BEFORE_V6 = `(?<![0-9a-z]|::|(?<![0-9a-z])${HEXTET}:)`;
-const AFTER_V6 = '(?![0-9a-z]|:[\\w:]|\\w*\\()';
+const NO_CALL = '(?:(?<=::|[:.]\\d[0-9a-f]{0,3})|(?!\\w*\\())';
+const AFTER_V6 = `(?![0-9a-z]|:[\\w:])${NO_CALL}`;
 const LOCAL_V6 = new RegExp(`${BEFORE_V6}(?:f[cd][0-9a-f]|fe[89ab])[0-9a-f](?:(?::${HEXTET}){7}|(?::${HEXTET}){5}:\\d{1,3}(?:\\.\\d{1,3}){3}|(?::${HEXTET}){0,6}::(?:${HEXTET}(?::${HEXTET}){0,6})?)${AFTER_V6}`, 'i');
 
 // An address counts as synthetic only whole, so neither a real mailbox at these
@@ -98,7 +100,8 @@ describe('what the guard catches', () => {
     'fd00::1', 'fc00::', 'fd7a:115c:a1e0::53', 'fe80::1%eth0', 'FE80::ABCD', 'febf::1', '[fd12:3456::1]:8080',
     'fd12:3456:789a:1:2:3:4:5', 'fe80:0:0:0:1:2:3:4', 'fd00:1:2:3:4:5:192.0.2.1', 'fd00::192.0.2.1', 'fd00::/8',
     'fd00::1:', 'fc00:::', 'fe80:0:0:0:1:2:3:4:', 'peer:fd00::1', 'peer:fe80::1', 'a=peer:fc00::', 'docs/fd00::1_backup.md',
-    'fd00::1_backup', 'backup_fe80::1.md'
+    'fd00::1_backup', 'backup_fe80::1.md', 'fd00::1(lan)', 'fe80::1()', 'fd00::(lan)', 'fd00::1a(lan)', 'fd00:1:2:3:4:5:6:7(lan)',
+    'fd00:1:2:3:4:5:192.0.2.1(lan)'
   ])('finds the IPv6 address %s', (address) => {
     expect(LOCAL_V6.test(`host ${address} up`)).toBe(true);
   });
