@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 const list = (...args: string[]) => execFileSync('git', args, { encoding: 'utf8' }).split('\0').filter(Boolean);
 const tracked = list('ls-files', '-z')
-  .filter((file) => file && existsSync(file) && !/\.(tgz|png)$|^pnpm-lock\.yaml$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
+  .filter((file) => !/\.(tgz|png)$|^pnpm-lock\.yaml$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
 const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
 
 const PRIVATE = [
@@ -25,7 +25,7 @@ const OTHER_REPOSITORY = /\bjayyanez\/(?!rove-sentinel\b|rove-memory\b)[\w.-]+/i
 // what a commit would take: the working file, and what is staged if it differs
 const staged = new Set(list('diff', '--cached', '--name-only', '-z', '--diff-filter=d'));
 const versions = (file: string) => [
-  readFileSync(file, 'utf8'),
+  ...(existsSync(file) ? [readFileSync(file, 'utf8')] : []),
   ...(staged.has(file) ? [execFileSync('git', ['show', `:${file}`], { encoding: 'utf8', maxBuffer: 2 ** 28 })] : [])
 ];
 
