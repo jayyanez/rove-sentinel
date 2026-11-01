@@ -1149,6 +1149,7 @@ export function daemonOwnerIsHealthy(
 }
 
 const takeoverMarker = (paths) => `${paths.lock}.takeover`;
+const interruptedTakeover = (paths) => `A starter is taking over the review daemon lock. Retry shortly. If this persists and no watcher is starting, one was interrupted: delete ${takeoverMarker(paths)} and retry.`;
 
 async function markTakeover(paths, openFile) {
   const marker = await openFile(takeoverMarker(paths), 'wx', 0o600);
@@ -1163,20 +1164,16 @@ async function markTakeover(paths, openFile) {
  * Remove a dead owner's daemon lock from outside a starter: explicit recovery
  * and a stop. Everything that removes a lock it did not write holds the takeover
  * marker, so what it judged is still what it removes. `decide` runs under the
- * marker and returns true to remove the lock. A marker whose process is gone was
- * left by an interrupted starter, and goes.
+ * marker and returns true to remove the lock. Nothing removes a marker it did
+ * not write: judging one abandoned and deleting it could not be one step, and
+ * could delete a newer one. An interrupted starter's marker waits for a person.
  */
-export async function removeDaemonLockExclusively(paths, decide, { gone = processIsGone, now = Date.now } = {}) {
+export async function removeDaemonLockExclusively(paths, decide) {
   try {
     await markTakeover(paths, open);
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
-    const written = await stat(takeoverMarker(paths)).then((details) => details.mtimeMs, () => null);
-    const owner = await readFile(takeoverMarker(paths), 'utf8').then((text) => JSON.parse(text)?.pid).catch(() => null);
-    const abandoned = written !== null && (Number.isInteger(owner) ? await gone(owner, written) : now() - written > 60_000);
-    if (!abandoned) throw new Error(`A watcher is taking over the review daemon lock. Retry shortly. State: ${paths.root}`);
-    await rm(takeoverMarker(paths), { force: true });
-    await markTakeover(paths, open);
+    throw new Error(interruptedTakeover(paths));
   }
   try {
     const remove = await decide();
@@ -1263,7 +1260,7 @@ export async function acquireDaemonLock(
     await markTakeover(paths, openFile);
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
-    throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}, and another starter is taking it over. Retry shortly; if this persists, the starter was interrupted. ${inspect}.`);
+    throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}. ${interruptedTakeover(paths)}`);
   }
   try {
     const live = await workStillLive(paths);

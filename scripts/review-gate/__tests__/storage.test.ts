@@ -251,7 +251,7 @@ describe('shared review local state', () => {
       await staleLock(paths);
       await writeFile(`${paths.lock}.takeover`, '');
 
-      await expect(acquireDaemonLock(paths, gone)).rejects.toThrow('another starter is taking it over');
+      await expect(acquireDaemonLock(paths, gone)).rejects.toThrow('A starter is taking over');
       await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
       await expect(access(`${paths.lock}.takeover`)).resolves.toBeUndefined();
     });
@@ -315,19 +315,23 @@ describe('shared review local state', () => {
       await atomicWriteJson(paths.lock, lockOf('stale-owner'));
       await writeFile(`${paths.lock}.takeover`, JSON.stringify({ pid: process.pid }));
 
-      await expect(removeDaemonLockExclusively(paths, async () => true, { gone: async () => false })).rejects.toThrow('taking over');
+      await expect(removeDaemonLockExclusively(paths, async () => true)).rejects.toThrow('taking over');
       await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
     });
 
-    it('clears the marker of an interrupted starter, however it was left', async () => {
+    it('leaves an interrupted starter\'s marker to a person, and says which file', async () => {
       const paths = await ensureState(await temporaryDirectory());
+      await atomicWriteJson(paths.lock, lockOf('stale-owner'));
       await writeFile(`${paths.lock}.takeover`, JSON.stringify({ pid: 2_147_483_647 }));
-      await removeDaemonLockExclusively(paths, async () => true);
+      const decide = vi.fn(async () => true);
 
-      await writeFile(`${paths.lock}.takeover`, '');
-      await expect(removeDaemonLockExclusively(paths, async () => true)).rejects.toThrow('taking over');
-      await removeDaemonLockExclusively(paths, async () => true, { now: () => Date.now() + 120_000 });
-      await expect(access(`${paths.lock}.takeover`)).rejects.toThrow();
+      await expect(removeDaemonLockExclusively(paths, decide)).rejects.toThrow(`delete ${paths.lock}.takeover`);
+      expect(decide).not.toHaveBeenCalled();
+      await expect(access(`${paths.lock}.takeover`)).resolves.toBeUndefined();
+
+      await rm(`${paths.lock}.takeover`);
+      await removeDaemonLockExclusively(paths, decide);
+      await expect(access(paths.lock)).rejects.toThrow();
     });
   });
 
