@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.16.0 — any project's paths, and a watcher you can see
+
+The review knew the folders of the project it came from, and a watcher could stop
+without anyone being told. Sentinel now reads what a project needs from configuration
+any project can set, and says when its watcher is not running.
+
+**This release changes how changes are rated for a project that sets nothing.** An
+automatic update applies it by itself, so a project that relied on the old built-in paths
+should run `updates --disable` before its watcher activates this release, and then follow
+[adopting a new setting](docs/configuration.md#adopting-a-new-setting).
 
 - **A stop no longer takes a live watcher for dead.** `EPERM` means a process exists and may
   not be signalled, such as a watcher of another user or elevation. It read as gone, so a stop
@@ -16,6 +25,8 @@
   reach the install, which uses the public registry. `--ignore-scripts` and the checksum
   stay. A proxy set in `.npmrc` must move to `HTTPS_PROXY`,
   and the release download needs `NODE_USE_ENV_PROXY=1` beside it, on Node 22.21 or later.
+  The upgrade to this release still runs the previous engine's install; see
+  [troubleshooting](docs/troubleshooting.md) if it fails with `EALLOWSCRIPTS`.
 - **Clippy finds your crates.** The lane runs for each crate that holds a changed
   Rust file, found by its `Cargo.toml` or listed in the new `clippyCrates`, no longer
   for one folder name only. Messages from a crate in a workspace now land on the
@@ -27,7 +38,8 @@
   documents are no longer high risk by name, and their scripts folders no longer get the
   scripts lens: a project lists its own in the new `highRiskPaths` and `scriptPaths`.
   Any agent skill and any `*.config.*` or `*.conf.*` file but prose is now high risk.
-  **A project that relied on those names must list them to keep its review depth.**
+  **A project that relied on those names must list them to keep its review depth,** in the
+  same change that moves its pin to this release: an older pin refuses the keys.
 - **`guiEvidenceLayout`** sets the GUI evidence check's folders and patterns.
   `required` alone now recognizes GUI files by type and checks no controls; `rove`
   keeps its layout.
