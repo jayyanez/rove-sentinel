@@ -14,7 +14,7 @@ private remote URLs, and private source excerpts.
 | Process cleanup failure pauses work | Investigate the recorded process and children; use `resume` if the watcher is healthy, or recover stale state before restarting |
 | GUI evidence requested unexpectedly | Inspect the installed `guiEvidence` configuration; `none` turns the check off |
 | Watcher stopped | `status` and `doctor` report `watcher.state`, and if it is `stopped`, why. After a restart that left a dead process's lock, inspect the state folder, then run `recover`, then `install` |
-| `update` fails in npm | An engine installs without your npm configuration, from the public registry. Behind a proxy, set `HTTPS_PROXY`: a proxy or private registry in `.npmrc` is not read |
+| `update` fails behind a proxy, or in npm | An engine installs without your npm configuration, from the public registry, so a proxy or private registry in `.npmrc` is not read. The two steps differ. The npm install honours `HTTPS_PROXY`. The update check and the release download use Node's `fetch`, which ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set too, on Node 22.21 or later. Earlier Node 22 releases have no such setting, so those two steps need a direct connection. Set both for the account the watcher runs as |
 | Clippy timeout | Check the lane note and cold build cost; do not treat it as a passing Rust check |
 | No GitHub PR comment | Check draft state, author allowlist, same-repository head, `gh` permissions, and watcher health |
 | Hook no longer runs | Inspect `git config --get core.hooksPath` and the committed hook adapter |

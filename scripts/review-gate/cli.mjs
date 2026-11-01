@@ -31,6 +31,7 @@ import { buildLedgerEntries, formatLedgerResult } from './ledger.mjs';
 import { createGateContext, formatGateResult, runGate } from './gate.mjs';
 import {
   gateStatus,
+  watcherReport,
   installGate,
   pauseReviewGate,
   recoverReviewGate,
@@ -107,8 +108,10 @@ async function readHookInput() {
 }
 
 /** The installed policy's configuration, or the repository's when none is installed. */
-function warnOfStoppedWatcher(watcher) {
+function warnOfWatcher(watcher, scheduler) {
   if (watcher?.state === 'stopped') process.stderr.write(`The review watcher is stopped: ${watcher.reason} ${watcher.action}\n`);
+  if (watcher?.state === 'unknown') process.stderr.write(`The review watcher's state is unknown: ${watcher.reason}\n`);
+  else if (scheduler?.error) process.stderr.write(`The scheduler could not be read: ${scheduler.error}\n`);
 }
 
 async function installedConfig(repoRoot) {
@@ -238,6 +241,9 @@ async function main() {
   }
   if (command === 'doctor') {
     const root = await findRepoRoot(repoRoot);
+    // First: a stopped watcher matters most when a later check fails.
+    const { watcher, scheduler } = await watcherReport(root);
+    warnOfWatcher(watcher, scheduler);
     // Desired configuration is used only for an explicit pre-install probe.
     const context = await createGateContext(root);
     const policy = options['project-config'] ? await readReviewPolicy(root)
@@ -254,8 +260,8 @@ async function main() {
     });
     result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
-    result.watcher = (await gateStatus({ repoRoot: root })).watcher;
-    warnOfStoppedWatcher(result.watcher);
+    result.watcher = watcher;
+    result.scheduler = scheduler;
     print(result, true);
     return;
   }
@@ -387,7 +393,7 @@ async function main() {
     result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
     result.engine = await updateInformation((await createGateContext(repoRoot)).paths);
-    warnOfStoppedWatcher(result.watcher);
+    warnOfWatcher(result.watcher, result.scheduler);
     print(result, true);
     return;
   }

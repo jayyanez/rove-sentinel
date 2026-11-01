@@ -10,7 +10,7 @@ import { readReviewPolicy, reviewPolicySnapshot } from './context.mjs';
 import { detachedWatcherEnvironment, startDaemonDetached } from './daemon.mjs';
 import { createGateContext } from './gate.mjs';
 import { recoverStaleReviewResources, runGit } from './git.mjs';
-import { runProcess } from './process.mjs';
+import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { hookCallsSentinel, uninstallGeneratedHook } from './init.mjs';
 import {
   daemonOwnerIsHealthy,
@@ -697,20 +697,24 @@ export async function executeUninstall({
 
 /**
  * What a person needs to know of the watcher: `running`, `outdated` (running
- * another version or policy), `stopped`, or `not-installed`. A scheduler's task
- * can report success while its watcher refused to start, so this reads the
- * watcher's own records.
+ * another version or policy), `stopped`, `not-installed`, or `unknown` when the
+ * scheduler could not be read and nothing else tells. A scheduler's task can
+ * report success while its watcher refused to start, so this reads the watcher's
+ * own records.
  */
-export function watcherState({ running, compatible, heartbeat, lock, daemonError, installed }) {
+export function watcherState({ running, compatible, heartbeat, lock, daemonError, installed, stateError, schedulerError }) {
   if (running) {
     return compatible
       ? { state: 'running', pid: heartbeat.pid }
       : { state: 'outdated', pid: heartbeat.pid, action: 'Run npx --no-install rove-sentinel install from your trusted checkout.' };
   }
-  if (!installed && !lock && !heartbeat) return { state: 'not-installed' };
+  if (!installed && !lock && !heartbeat && !stateError) {
+    return schedulerError ? { state: 'unknown', reason: schedulerError } : { state: 'not-installed' };
+  }
+  const silent = lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running';
   return {
     state: 'stopped',
-    reason: daemonError?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
+    reason: daemonError?.message ?? (stateError ? `the watcher's state is unreadable: ${stateError}` : silent),
     ...(daemonError?.at ? { since: daemonError.at } : {}),
     action: 'Pushes wait for a review nobody runs. Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.',
   };
@@ -761,13 +765,14 @@ export async function gateStatus(
   });
   let scheduler = { supported: !plan.unsupportedScheduler, installed: false };
   if (!plan.unsupportedScheduler) {
-    const result = await run(plan.query.command, plan.query.args, {
-      allowFailure: true,
-      timeoutMs: 30_000,
-    });
     try {
+      const result = await run(plan.query.command, plan.query.args, {
+        allowFailure: true,
+        timeoutMs: 30_000,
+      });
       scheduler = { supported: true, installed: schedulerQueryInstalled(plan, result) };
     } catch (error) {
+      if (processTreeCleanupFailureCode(error)) throw error;
       scheduler = {
         supported: true,
         installed: null,
@@ -816,6 +821,8 @@ export async function gateStatus(
       heartbeat,
       lock,
       daemonError,
+      stateError: lockState.error ?? heartbeatState.error,
+      schedulerError: scheduler.error,
       // Linux has no supported scheduler, so the hook counts as well.
       installed: Boolean(scheduler.installed || await hookCallsSentinel(context.repoRoot)),
     }),
@@ -840,6 +847,20 @@ export async function gateStatus(
     },
     scheduler,
   };
+}
+
+/**
+ * The watcher, for `doctor`: it reports what it can, and a failure here never
+ * costs the rest of its diagnosis.
+ */
+export async function watcherReport(repoRoot, { status = gateStatus } = {}) {
+  try {
+    const { watcher, scheduler } = await status({ repoRoot });
+    return { watcher, scheduler };
+  } catch (error) {
+    if (processTreeCleanupFailureCode(error)) throw error;
+    return { watcher: { state: 'unknown', reason: error?.message || String(error) }, scheduler: null };
+  }
 }
 
 export async function pauseReviewGate({ repoRoot = process.cwd(), reason } = {}) {

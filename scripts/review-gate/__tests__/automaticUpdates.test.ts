@@ -162,6 +162,14 @@ describe('shared immutable runtime distribution', () => {
     });
     return { root, fetchImpl, npm };
   }
+  it('tells the truth about proxies: npm reads HTTPS_PROXY, Node\'s fetch needs more', async () => {
+    const guide = await readFile('docs/troubleshooting.md', 'utf8');
+    const row = guide.split('\n').find((line) => line.startsWith('| `update` fails'));
+    expect(row).toContain('HTTPS_PROXY');
+    expect(row).toContain('NODE_USE_ENV_PROXY=1');
+    expect(row).toContain('Node 22.21');
+  });
+
   it('installs an engine without the user\'s npm configuration', async () => {
     const d = await distribution();
     await ensureEngine('1.11.0', { ...d, env: {

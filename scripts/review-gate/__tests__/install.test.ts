@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import {
   executeUninstall,
   executeInstallTransaction,
   gateStatus,
+  watcherReport,
   watcherState,
   heartbeatIsHealthy,
   recoverStaleDaemonState,
@@ -55,6 +56,27 @@ describe('what a person is told of the watcher', () => {
     expect(watcherState({ running: false, installed: false, daemonError: { message: 'old refusal' } })).toEqual({ state: 'not-installed' });
   });
 
+  it('calls unreadable state what it is, even with nothing else recorded', () => {
+    const watcher = watcherState({ running: false, installed: false, stateError: 'Unexpected end of JSON input' });
+    expect(watcher).toMatchObject({ state: 'stopped', reason: expect.stringContaining('unreadable: Unexpected end of JSON input') });
+    expect(watcherState({ running: false, installed, stateError: 'bad', daemonError: { message: 'its own refusal' } }).reason).toBe('its own refusal');
+  });
+
+  it('does not claim to know when the scheduler could not be read', () => {
+    expect(watcherState({ running: false, installed: false, schedulerError: 'launchctl failed' })).toEqual({ state: 'unknown', reason: 'launchctl failed' });
+    expect(watcherState({ running: false, installed, schedulerError: 'launchctl failed' }).state).toBe('stopped');
+  });
+
+  it('keeps doctor going when the watcher cannot be read', async () => {
+    const scheduler = { supported: true, installed: null, error: 'query failed' };
+    await expect(watcherReport('C:\\repo', { status: async () => ({ watcher: { state: 'stopped' }, scheduler }) as never }))
+      .resolves.toEqual({ watcher: { state: 'stopped' }, scheduler });
+    await expect(watcherReport('C:\\repo', { status: async () => { throw new Error('no state'); } }))
+      .resolves.toEqual({ watcher: { state: 'unknown', reason: 'no state' }, scheduler: null });
+    const orphan = Object.assign(new Error('tree lost'), { code: 'ORPHANED_PROCESS_TREE' });
+    await expect(watcherReport('C:\\repo', { status: async () => { throw orphan; } })).rejects.toBe(orphan);
+  });
+
   describe('reading the repository', () => {
     const missingService = async () => ({ code: 1, stdout: '', stderr: process.platform === 'darwin'
       ? 'Could not find service' : 'ERROR: The system cannot find the file specified.' });
@@ -71,7 +93,7 @@ describe('what a person is told of the watcher', () => {
         getHooksPath: async () => '.githooks',
         run: missingService,
       })).watcher;
-      return { repoRoot, status };
+      return { repoRoot, status, paths, stateRoot };
     }
 
     it('counts the generated hook as installed, and not after uninstall', async () => {
@@ -87,6 +109,39 @@ describe('what a person is told of the watcher', () => {
       } finally {
         await rm(repoRoot, { recursive: true, force: true });
       }
+    });
+
+    it('reports a corrupt lock as unreadable state', async () => {
+      const { paths, status } = await installedRepository();
+      await writeFile(paths.lock, '{ not json');
+      await expect(status()).resolves.toMatchObject({ state: 'stopped', reason: expect.stringContaining('unreadable') });
+    });
+
+    it('survives a scheduler that cannot even be started, and says so apart', async () => {
+      const { repoRoot, paths, stateRoot } = await installedRepository();
+      const status = await gateStatus({ repoRoot }, {
+        createContext: async () => ({ repoRoot, stateRoot, paths }),
+        getHooksPath: async () => '.githooks',
+        run: async () => { throw Object.assign(new Error('spawn launchctl ENOENT'), { code: 'ENOENT' }); },
+      });
+      expect(status.scheduler).toMatchObject({ installed: null, error: expect.stringContaining('ENOENT') });
+      expect(status.watcher.state).toBe('stopped');
+    });
+
+    it('warns of a stopped watcher before a doctor check fails, and still exits with the error', async () => {
+      const { repoRoot } = await installedRepository();
+      const home = await mkdtemp(path.join(os.tmpdir(), 'rove-review-doctor-home-'));
+      await writeFile(path.join(repoRoot, '.rove-sentinel.json'), '{ "typo": true }');
+      const cli = path.resolve('scripts/review-gate/cli.mjs');
+      const run = spawnSync(process.execPath, [cli, 'doctor', '--project-config', '--no-update-check'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, ROVE_SENTINEL_UPDATE_NOTIFICATIONS: '0', ROVE_SENTINEL_UPDATE_CHECK: '0' },
+      });
+      expect(run.stderr).toContain('The review watcher is stopped');
+      expect(run.stderr).toContain('Unknown Sentinel configuration key');
+      expect(run.status).not.toBe(0);
     });
 
     it('counts a project\'s own hook only while it calls Sentinel', async () => {
