@@ -42,6 +42,12 @@ need design discussion first. Preserve bounded resources, exact-commit identity,
 fail-closed cleanup, structured provider output, and explicit finding dispositions.
 Never make a test pass by dropping the behavior it was meant to protect.
 
+## Public and generic
+
+This repository is public, and any project can adopt it. Read
+[Public and generic](docs/public-and-generic.md): no private project, machine or
+account in anything you write, and nothing that works for only one project.
+
 ## Review and release
 
 Maintainers run the shared review pipeline against the committed change and

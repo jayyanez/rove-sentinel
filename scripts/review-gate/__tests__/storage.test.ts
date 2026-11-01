@@ -78,8 +78,8 @@ describe('shared review local state', () => {
   });
   it('never persists credentials embedded in a remote URL', () => {
     expect(
-      normalizeRepositoryIdentity('https://x-access-token:secret@github.com/JayYanez/Rove.git', 'C:\\repo'),
-    ).toBe('https://github.com/jayyanez/rove');
+      normalizeRepositoryIdentity('https://x-access-token:secret@github.com/Example-Owner/Example-Repo.git', 'C:\\repo'),
+    ).toBe('https://github.com/example-owner/example-repo');
     expect(
       normalizeRepositoryIdentity('ftp://deploy:secret@example.com/Rove.git', 'C:\\repo'),
     ).toBe('https://example.com/Rove');
@@ -90,24 +90,24 @@ describe('shared review local state', () => {
 
   it('shares one repository identity across SSH and HTTPS clones', () => {
     expect(normalizeRepositoryIdentity(
-      'ssh://git@github.com/JayYanez/Rove.git',
+      'ssh://git@github.com/Example-Owner/Example-Repo.git',
       'C:\\ssh-clone',
     )).toBe(normalizeRepositoryIdentity(
-      'https://github.com/jayyanez/rove.git',
+      'https://github.com/example-owner/example-repo.git',
       'C:\\https-clone',
     ));
   });
 
   it('uses per-repository, per-platform state roots', () => {
     expect(
-      stateRootFor('https://github.com/jayyanez/rove', {
+      stateRootFor('https://github.com/example-owner/example-repo', {
         platform: 'win32',
         env: { LOCALAPPDATA: 'C:\\Local' },
         home: 'C:\\Users\\me',
       }),
     ).toMatch(/^C:\\Local\\Rove\\shared-review-gate\\[a-f0-9]{16}$/);
     expect(
-      stateRootFor('https://github.com/jayyanez/rove', {
+      stateRootFor('https://github.com/example-owner/example-repo', {
         platform: 'darwin',
         env: {},
         home: '/Users/me',

@@ -3,7 +3,7 @@
 | Surface | Current scope |
 | --- | --- |
 | Windows | First release target; release notes record the tested host and results |
-| macOS | LaunchAgent and process adapters exist; live standalone qualification pending |
+| macOS | Apple silicon, as a second computer: LaunchAgent, watcher, gate and hook qualified on 1.15.0; automatic engine updates remain Windows only |
 | Linux | Portable core exists; no supported scheduler integration or live qualification |
 | Review providers | Claude Code and/or Codex, subscription-authenticated; project-selected models/efforts |
 | Windows launchers | Native `claude.exe` and `codex.exe`; shell-only wrappers are not supported |

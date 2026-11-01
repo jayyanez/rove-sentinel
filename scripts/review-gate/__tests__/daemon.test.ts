@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -76,7 +75,8 @@ describe('a computer whose watcher leaves GitHub alone', () => {
     expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid, until } })).toBe(false);
     // a live process past the time an install can last has reused the id
     expect(await pollsGitHub({ github: true, pending: { github: false, pid: process.pid, until: Date.now() - 1 } })).toBe(true);
-    const dead = Number(spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8' }).stdout.trim());
+    // an id no process can hold: a finished child's id can be reused at once
+    const dead = 2 ** 31 - 2;
     expect(await pollsGitHub({ github: true, pending: { github: false, pid: dead, until } })).toBe(true);
     expect(await pollsGitHub({ github: false, pending: { github: true, pid: dead, until } })).toBe(false);
   });

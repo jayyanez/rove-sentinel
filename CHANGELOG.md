@@ -1,16 +1,23 @@
 # Changelog
 
-## Unreleased
+## 1.15.0 — several computers on one repository, and macOS
 
-- **`install --no-github`.** A second computer on one repository keeps its hook
-  and its local reviews, and its watcher does not review pull requests too.
+A watcher reviews every eligible pull request it finds, so two computers on one
+repository reviewed each one twice and paid twice.
+
+- **`install --no-github`.** A second computer keeps its hook, its local queue
+  and its attestations, and its watcher leaves pull requests alone. An engine
+  update keeps the choice, and an install killed midway leaves it as it was.
+- **macOS, on Apple silicon.** The suite, the LaunchAgent, the watcher, a full
+  review with Claude Code and Codex, and a push through the hook all ran on a
+  real project ([validation record](docs/validation.md)).
 
 ## 1.14.0 — a large change gets more reviewers, not thinner ones
 
 A round had at most 8 shard reviewers whatever the size of the change, so on
 a 4 MiB change each reviewer was given about 500 KB to cover, and reviewers
 of big shards finished almost as fast as small ones (2 minutes at 400 changed
-lines, 5 at 7,000 on Tramoya): they skimmed. The 4 MiB bound then refused
+lines, 5 at 7,000 on a consumer project): they skimmed. The 4 MiB bound then refused
 anything larger.
 
 - **More shards past one wave.** Up to about 830 KB of patch a high-risk
@@ -19,7 +26,7 @@ anything larger.
   most 128). Reviewers still run 8 at a time, so 16 shards take a second wave.
   Past the cap shards grow, and the report and progress say they were
   reviewed more thinly.
-- **Measured on a real 3.6 MB change** (Tramoya's Colores batch 2, full
+- **Measured on a real 3.6 MB change** (a consumer project's large change, full
   high-risk round, both providers, one run each): 1.13.0 with 8 shards took
   7.6 minutes and verified 7 P2 and 2 P3 findings; 1.14.0 with 16 shards took
   8.4 minutes and verified 16 P2 and 7 P3.
@@ -139,7 +146,7 @@ attestations and kept shard reviews do not carry over.
 ## 1.12.0 — a diff that touches a file of very long lines can be reviewed
 
 A branch that edited six lines of a file of 300-character lines failed closed
-on three runs in a row (boxkite, 2026-10-10): 80 context lines either side of
+on three runs in a row (a consumer project, 2026-10-10): 80 context lines either side of
 each edit made that file's section well over 100 KB, Codex read the shard's
 parts in one command, the tool showed that output with its middle elided, and
 the reviewer rightly reported "the combined tool response was truncated". The

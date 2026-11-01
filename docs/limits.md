@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.14.0
+**Engine version:** 1.15.0
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,7 +28,7 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.14.0
+## Limits of 1.15.0
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 ## Limits that remain
 
-These are real in 1.14.0; work within them rather than around them.
+These are real in 1.15.0; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:
@@ -74,4 +74,5 @@ These are real in 1.14.0; work within them rather than around them.
   `git diff --unified=80 "$(git merge-base origin/main HEAD)...HEAD" | wc -c`.
 - AI review can miss defects and report false ones; a PASS is not a
   guarantee. Reference discovery is a line lexer, not a parser.
-- Windows is the qualified platform ([support](support.md)).
+- Windows is the qualified platform; macOS on Apple silicon is qualified as a
+  second computer ([support](support.md)).

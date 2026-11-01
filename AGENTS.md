@@ -9,6 +9,15 @@ This is the shared repository instruction file for coding agents. Keep common
 guidance here; do not add a duplicate `CLAUDE.md` or separate copies per agent.
 All repository and GitHub artifacts must be in English.
 
+## This repository is public
+
+Any GitHub repository can adopt Sentinel, and anyone can read everything here.
+[docs/public-and-generic.md](docs/public-and-generic.md) binds every change:
+nothing private enters it, in files, tests, commit messages, pull requests or
+release notes, and nothing is tied to one project. Say "a consumer project". Read
+it before your first change, and read your diff and the text around it for such
+names before a push.
+
 ## Before changing anything
 
 - Inspect the current branch and full working-tree status. Preserve other work.
@@ -105,8 +114,9 @@ configuration. Contributors without access skip this section.
 Update affected guides when behavior changes. Every release updates
 [limits](docs/limits.md) and `scripts/review-gate/limits.mjs` (`rove-sentinel
 limits`): the current limits and the workarounds it makes unnecessary, so
-consuming projects never follow a rule from an earlier engine. Windows is the qualified platform;
-do not claim macOS/Linux support or new provider integrations without evidence.
+consuming projects never follow a rule from an earlier engine. Windows is the qualified platform,
+and macOS on Apple silicon as a second computer; do not claim other platform
+support or new provider integrations without evidence.
 Keep limitations and the [validation record](docs/validation.md) accurate.
 
 Never export private Rove source, logs, credentials, or personal fixtures. Use

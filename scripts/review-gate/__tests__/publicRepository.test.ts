@@ -1,0 +1,57 @@
+// This repository is public and any project can adopt it
+// (docs/public-and-generic.md). Names only a maintainer knows stay in the
+// ignored file .private-names, so the guard never publishes what it guards.
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
+
+const list = (...args: string[]) => execFileSync('git', args, { encoding: 'utf8' }).split('\0').filter(Boolean);
+const tracked = list('ls-files', '-z')
+  .filter((file) => !/\.(tgz|png)$|^pnpm-lock\.yaml$|^THIRD_PARTY_NOTICES\.txt$/i.test(file));
+const THIS_FILE = 'scripts/review-gate/__tests__/publicRepository.test.ts';
+
+const PRIVATE = [
+  ['a tailnet address', /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/],
+  ['a private network address', /\b(?:192\.168|10\.(?!0\.\d{4,5}\b)\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/],
+  ['a tailnet name', /\b[a-z0-9-]+\.[a-z0-9-]+\.ts\.net\b/i],
+  ['a path on a computer', /\b[A-Z]:[\\/]+Workspaces\b|\b[A-Z]:[\\/]+Users[\\/]+(?!me\b|example\b|runner\b)\w|\/(?:Users|home)\/(?!me\b|example\b|runner\b)\w/i],
+  ['an email address', /\b[\w.+-]+@(?!example\.|github\.com|users\.noreply\.github\.com|noreply\.|anthropic\.com)[a-z0-9-]+\.[a-z]{2,}\b/i]
+];
+
+// the maintainer's other repositories, in any spelling; these two are public
+const OTHER_REPOSITORY = /\bjayyanez\/(?!rove-sentinel\b|rove-memory\b)[\w.-]+/i;
+
+// what a commit would take: the working file, and what is staged if it differs
+const staged = new Set(list('diff', '--cached', '--name-only', '-z', '--diff-filter=d'));
+const versions = (file: string) => [
+  ...(existsSync(file) ? [readFileSync(file, 'utf8')] : []),
+  ...(staged.has(file) ? [execFileSync('git', ['show', `:${file}`], { encoding: 'utf8', maxBuffer: 2 ** 28 })] : [])
+];
+
+function hits(pattern: RegExp) {
+  return tracked.filter((file) => file !== THIS_FILE && versions(file).some((text) => pattern.test(text)));
+}
+
+describe('a public repository any project can adopt', () => {
+  it.each(PRIVATE)('holds no %s', (_what, pattern) => {
+    expect(hits(pattern)).toEqual([]);
+  });
+
+  it("names none of the maintainer's other repositories", () => {
+    expect(hits(OTHER_REPOSITORY)).toEqual([]);
+  });
+
+  it('holds none of the names only a maintainer knows', () => {
+    if (!existsSync('.private-names')) return;
+    const names = readFileSync('.private-names', 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    for (const name of names) {
+      expect(hits(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')).length, 'a private name is in a tracked file').toBe(0);
+    }
+  });
+
+  it('never tracks the file of private names', () => {
+    expect(tracked).not.toContain('.private-names');
+    expect(readFileSync('.gitignore', 'utf8')).toMatch(/^\.private-names$/m);
+  });
+});

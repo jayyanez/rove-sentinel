@@ -29,6 +29,9 @@ See the [validation record](docs/validation.md) for what was tested.
 | Fix a setup problem | [Troubleshooting](docs/troubleshooting.md) |
 | Help build Sentinel | [Contributing](CONTRIBUTING.md) |
 
+Sentinel is public, and made for any repository: see
+[Public and generic](docs/public-and-generic.md).
+
 ## What a review looks like
 
 After installation, run your tests and commit your change:
@@ -47,7 +50,7 @@ posts status comments. It does not merge PRs or replace GitHub branch protection
 
 ## What you need
 
-- Windows for the first supported release; macOS and Linux qualification is pending.
+- Windows, or macOS on Apple silicon as a second computer; Linux qualification is pending.
 - Node.js 22+, Git, and authenticated GitHub CLI (`gh`).
 - **At least one of Claude Code or Codex CLI**, separately installed and on PATH.
 - Claude Code authenticated through a Claude subscription; Codex through ChatGPT.

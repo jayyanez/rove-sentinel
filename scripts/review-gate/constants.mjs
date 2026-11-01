@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.14.0';
+export const GATE_VERSION = '1.15.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -15,7 +15,7 @@ export const LIMITS = Object.freeze({
   // lines on each side, but no more than `patchContextSideBytes` of them, and
   // never fewer than `patchContextMinLines`. Lines alone made six one-line
   // edits to a file of 300-character lines a section of well over 100 KB
-  // (boxkite, 2026-10-10); 4 KB is what 80 lines of ordinary code cost, so
+  // (a consumer project, 2026-10-10); 4 KB is what 80 lines of ordinary code cost, so
   // code averaging up to ~50 bytes a line keeps all 80.
   patchContextLines: 80,
   patchContextSideBytes: 4 * 1024,
@@ -70,7 +70,7 @@ export const LIMITS = Object.freeze({
   // wave, measured at about +2 to 4 minutes); only past that do shards grow.
   // Before 1.14.0 a round had at most 8 shards whatever the size, so a 4 MiB
   // change gave each reviewer ~500 KB to cover; shard time hardly grew with
-  // size (about 2 minutes at 400 changed lines, 5 at 7,000: Tramoya,
+  // size (about 2 minutes at 400 changed lines, 5 at 7,000: a consumer project,
   // 2026-10-18), because reviewers skimmed.
   shardWaveBytes: 128 * 1024,
   // Shards are counted at this size, below the 128 KB a shard may reach, so

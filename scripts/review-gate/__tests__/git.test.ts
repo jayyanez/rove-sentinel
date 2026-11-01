@@ -88,9 +88,9 @@ describe('review-gate git inputs', () => {
   });
 
   it('normalizes common GitHub remote forms', () => {
-    expect(repoSlugFromRemote('git@github.com:jayyanez/rove.git')).toBe('jayyanez/rove');
-    expect(repoSlugFromRemote('https://github.com/jayyanez/rove.git')).toBe('jayyanez/rove');
-    expect(repoSlugFromRemote('https://example.com/jayyanez/rove.git')).toBeNull();
+    expect(repoSlugFromRemote('git@github.com:example-owner/example-repo.git')).toBe('example-owner/example-repo');
+    expect(repoSlugFromRemote('https://github.com/example-owner/example-repo.git')).toBe('example-owner/example-repo');
+    expect(repoSlugFromRemote('https://example.com/example-owner/example-repo.git')).toBeNull();
   });
 
   it('uses the first configured remote when no remote is named origin', async () => {
