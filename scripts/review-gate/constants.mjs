@@ -125,6 +125,7 @@ export const LIMITS = Object.freeze({
   // lane that times out degrades to an explicit note, never a failed review.
   markdownlintTimeoutMs: 2 * 60 * 1000,
   clippyTimeoutMs: 8 * 60 * 1000,
+  maxClippyCrates: 8,
   // Each linter lane (shellcheck, actionlint, gitleaks, ruff) is bounded by
   // this; a project command by its own timeoutMinutes (1.13.0).
   toolLaneTimeoutMs: 2 * 60 * 1000,

@@ -1,8 +1,7 @@
-// GUI evidence gate (docs/design/visual-redesign-plan.md §5.1, §4.7).
+// GUI evidence gate (`guiEvidence: "required"`, docs/configuration.md).
 //
-// Until `/design-review` captures its own screenshots, a GUI diff must COMMIT
-// its evidence: at least one screenshot under docs/design/reviews/<slug>/ and,
-// for every new control, a placement row in docs/design/control-registry.md.
+// A GUI diff must COMMIT its evidence: at least one screenshot under
+// docs/design/reviews/<slug>/ and, for every new control, a placement row in docs/design/control-registry.md.
 // Pure: it looks at the changed-file list, the committed patch and the HEAD
 // registry text only — no network, no PR, no working tree — so it holds
 // offline and on the first push of a new branch. Both rules are checked
@@ -193,8 +192,8 @@ function expectedRawSize({ width, height, bitDepth, colorType }) {
  * Inflate the concatenated IDAT payload: the stream must inflate to EXACTLY
  * the raw size IHDR implies (`maxOutputLength` bounds the decode at that size,
  * so an over-long stream fails inside zlib). Interlaced (Adam7) images are
- * refused outright: no screenshot tool Rove uses (Playwright/Chromium) writes
- * them, and validating seven pass geometries buys nothing for evidence.
+ * refused outright: Playwright and Chromium, the usual screenshot tools, never
+ * write them, and validating seven pass geometries buys nothing for evidence.
  */
 function idatDecodes(idat, header) {
   try {

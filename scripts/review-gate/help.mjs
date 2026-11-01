@@ -54,6 +54,6 @@ Verified P0/P1 always block. Copy the report's complete deferral command for
 eligible findings; a recorded reason is required before pushing advisories.
 
 The pre-push command is reserved for Git hooks. design-evidence validates
-the optional Rove evidence format; it does not take screenshots.
+the optional GUI evidence format; it does not take screenshots.
 
 Installation and examples: https://github.com/jayyanez/rove-sentinel#readme`;

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Clippy finds your crates.** The lane runs for each crate that holds a changed
+  Rust file, found by its `Cargo.toml` or listed in the new `clippyCrates`, no longer
+  for one folder name only. Messages from a crate in a workspace now land on the
+  right file. A repository that used the lane keeps its result for the same crate,
+  and a change to Rust elsewhere is now linted too.
+- **`guiEvidence: "required"`** names what the mode does. `rove`, its earlier
+  spelling, keeps working, and an installed policy keeps its digest.
+
 ## 1.15.0 — several computers on one repository, and macOS
 
 A watcher reviews every eligible pull request it finds, so two computers on one

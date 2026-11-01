@@ -166,8 +166,8 @@ reviews only the other shards, adjudicates every candidate afresh, and records
 which shards it reused; `--force` and a round that ends in a report keep
 nothing. A kept review is not a decision: only a completed round attests.
 
-State identity is shared by local clones of the same remote. To preserve the
-Rove migration and prevent duplicate watchers, this release retains the legacy
+State identity is shared by local clones of the same remote. To keep state
+written by earlier versions and prevent duplicate watchers, Sentinel stays on its
 `Rove/shared-review-gate` Windows state namespace and `Rove-Shared-Review-Gate`
 task prefix. Engine and policy version checks prevent stale evidence reuse.
 On macOS and Linux corresponding inherited state paths remain implemented but

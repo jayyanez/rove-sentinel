@@ -3,7 +3,7 @@
 Rove Sentinel's original engine and documentation are licensed under Apache-2.0.
 The owner authorized extracting the review tooling into this public project.
 The export includes the generic review engine, its synthetic regression tests,
-and the small visual-evidence naming helper needed by the optional Rove profile.
+and the small visual-evidence naming helper its optional GUI evidence check needs.
 It does not license or distribute the Rove application, its private project
 lessons, real review reports, user data, screenshots, or provider credentials.
 
