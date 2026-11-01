@@ -1,18 +1,14 @@
-import { randomUUID } from 'node:crypto';
-import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
-import { liveWork, processIsGone, processStartTime } from '../maintenance.mjs';
 import {
   attestationIdentity,
   attestationFileName,
   acquireDaemonLock,
-  isProcessAlive,
-  removeDaemonLockExclusively,
   atomicWriteJson,
   cancelQueuedRequest,
   claimNextRequest,
@@ -159,244 +155,21 @@ describe('shared review local state', () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
-  describe('a daemon lock whose process is gone', () => {
-    const DEAD = 2_147_483_647;
-    const staleLock = (paths: { lock: string }, pid = DEAD, startedAt = '2026-01-01T00:00:00.000Z') =>
-      atomicWriteJson(paths.lock, { pid, ownerToken: 'stale-owner', startedAt });
-    const gone = { isAlive: () => false };
+  it('preserves a dead-owner daemon lock for explicit recovery', async () => {
+    const exists = Object.assign(new Error('exists'), { code: 'EEXIST' });
+    const openFile = vi.fn().mockRejectedValue(exists);
+    const remove = vi.fn(async () => {});
+    const read = vi.fn(async (target) => target === 'lock'
+      ? { pid: 123, ownerToken: 'stale-owner' }
+      : null);
 
-    it('is taken over by a starter, after a restart left it behind', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths);
+    await expect(acquireDaemonLock(
+      { lock: 'lock', heartbeat: 'heartbeat', root: 'state' },
+      { openFile, read, remove, isAlive: () => false },
+    )).rejects.toThrow('refusing automatic removal');
 
-      const lock = await acquireDaemonLock(paths);
-
-      expect(lock).toMatchObject({ recoveredFromPid: DEAD });
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ pid: process.pid, ownerToken: lock!.ownerToken });
-      await expect(access(`${paths.lock}.takeover`)).rejects.toThrow();
-      await lock!.release();
-      await expect(access(paths.lock)).rejects.toThrow();
-    });
-
-    it('is taken over when its id was reused by a process started after the lock', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths, 4242, '2026-01-01T00:00:00.000Z');
-
-      const lock = await acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.parse('2026-01-02T00:00:00.000Z') });
-
-      expect(lock).toMatchObject({ recoveredFromPid: 4242 });
-    });
-
-    it.each([
-      ['it may be the owner, started before the lock was written', async () => Date.parse('2025-12-31T23:59:59.000Z')],
-      ['it started within a second of the lock', async () => Date.parse('2026-01-01T00:00:00.900Z')],
-      ['its start cannot be read', async () => null],
-    ])('is refused for a live id when %s', async (_why, startedAt) => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths, 4242);
-
-      await expect(acquireDaemonLock(paths, { isAlive: () => true, startedAt })).rejects.toThrow('names live PID 4242');
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
-    });
-
-    it('is refused for a live id with no start time in the lock', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await atomicWriteJson(paths.lock, { pid: 4242, ownerToken: 'stale-owner' });
-
-      await expect(acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.now() })).rejects.toThrow('names live PID');
-    });
-
-    it('is taken over behind a fresh heartbeat when its id was reused', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths, 4242);
-      await atomicWriteJson(paths.heartbeat, { pid: 4242, ownerToken: 'stale-owner', at: new Date().toISOString() });
-
-      const lock = await acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.now() });
-
-      expect(lock).toMatchObject({ recoveredFromPid: 4242 });
-    });
-
-    it('is left to a healthy owner whose identity holds', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths, 4242);
-      await atomicWriteJson(paths.heartbeat, { pid: 4242, ownerToken: 'stale-owner', at: new Date().toISOString() });
-
-      await expect(acquireDaemonLock(paths, { isAlive: () => true, startedAt: async () => Date.parse('2025-12-31T00:00:00.000Z') })).resolves.toBeNull();
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
-    });
-
-    it('takes a dead submission lock with it, or the next push would refuse', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths);
-      await atomicWriteJson(paths.queueSubmitLock, { pid: DEAD, ownerToken: 'stale-submitter' });
-
-      await expect(acquireDaemonLock(paths)).resolves.toMatchObject({ recoveredFromPid: DEAD });
-
-      await expect(access(paths.queueSubmitLock)).rejects.toThrow();
-      await expect(submitRequest(paths, { type: 'gate', options: { head: 'HEAD' } })).resolves.toMatchObject({ type: 'gate' });
-    });
-
-    it('stays while work may be live, and names it', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths);
-
-      await expect(acquireDaemonLock(paths, { ...gone, workStillLive: async () => ['claim one'] }))
-        .rejects.toThrow(/refusing automatic removal while work may still be live: claim one/);
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
-      await expect(access(`${paths.lock}.takeover`)).rejects.toThrow();
-    });
-
-    it('stays while another starter takes it over', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths);
-      await writeFile(`${paths.lock}.takeover`, '');
-
-      await expect(acquireDaemonLock(paths, gone)).rejects.toThrow('A starter is taking over');
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
-      await expect(access(`${paths.lock}.takeover`)).resolves.toBeUndefined();
-    });
-
-    it('leaves a lock that another starter replaced after it was judged', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths);
-
-      const lock = await acquireDaemonLock(paths, {
-        ...gone,
-        workStillLive: async () => {
-          await atomicWriteJson(paths.lock, { pid: 77, ownerToken: 'winning-owner', startedAt: new Date().toISOString() });
-          return [];
-        },
-      });
-
-      expect(lock).toBeNull();
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'winning-owner' });
-    });
-
-    it('lets one of two concurrent starters win', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await staleLock(paths);
-
-      const results = await Promise.allSettled([acquireDaemonLock(paths, gone), acquireDaemonLock(paths, gone), acquireDaemonLock(paths, gone)]);
-
-      expect(results.filter((result) => result.status === 'fulfilled' && result.value)).toHaveLength(1);
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ pid: process.pid });
-    });
-
-    it('says a process of another user is alive, not gone', () => {
-      const denied = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); });
-      try {
-        expect(isProcessAlive(4242)).toBe(true);
-      } finally {
-        denied.mockRestore();
-      }
-    });
-  });
-
-  describe('removing a dead lock from outside a starter', () => {
-    const lockOf = (ownerToken: string) => ({ pid: 2_147_483_647, ownerToken, startedAt: '2026-01-01T00:00:00.000Z' });
-
-    it('removes it under the marker, and only if asked', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await atomicWriteJson(paths.lock, lockOf('stale-owner'));
-
-      await removeDaemonLockExclusively(paths, async () => {
-        await expect(access(`${paths.lock}.takeover`)).resolves.toBeUndefined();
-        return false;
-      });
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
-
-      await removeDaemonLockExclusively(paths, async () => true);
-      await expect(access(paths.lock)).rejects.toThrow();
-      await expect(access(`${paths.lock}.takeover`)).rejects.toThrow();
-    });
-
-    it('waits for a starter taking it over, so neither removes the other\'s lock', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await atomicWriteJson(paths.lock, lockOf('stale-owner'));
-      await writeFile(`${paths.lock}.takeover`, JSON.stringify({ pid: process.pid }));
-
-      await expect(removeDaemonLockExclusively(paths, async () => true)).rejects.toThrow('taking over');
-      await expect(readJson(paths.lock)).resolves.toMatchObject({ ownerToken: 'stale-owner' });
-    });
-
-    it('leaves an interrupted starter\'s marker to a person, and says which file', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await atomicWriteJson(paths.lock, lockOf('stale-owner'));
-      await writeFile(`${paths.lock}.takeover`, JSON.stringify({ pid: 2_147_483_647 }));
-      const decide = vi.fn(async () => true);
-
-      await expect(removeDaemonLockExclusively(paths, decide)).rejects.toThrow(`delete ${paths.lock}.takeover`);
-      expect(decide).not.toHaveBeenCalled();
-      await expect(access(`${paths.lock}.takeover`)).resolves.toBeUndefined();
-
-      await rm(`${paths.lock}.takeover`);
-      await removeDaemonLockExclusively(paths, decide);
-      await expect(access(paths.lock)).rejects.toThrow();
-    });
-  });
-
-  describe('work that may still be live', () => {
-    const gone = async (pid: number) => pid !== 7;
-
-    it('finds none in empty state, nor when every owner is gone', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await expect(liveWork(paths, { gone })).resolves.toEqual([]);
-      await mkdir(path.join(paths.root, 'active-reviews'));
-      await writeFile(path.join(paths.root, 'active-reviews', `8-${randomUUID()}.json`), '{}');
-      await writeFile(path.join(paths.claims, `one.json.8.${randomUUID()}.claim`), '{}');
-      await writeFile(path.join(paths.claims, 'one.json.lock'), '8\n');
-      await atomicWriteJson(paths.queueSubmitLock, { pid: 8, ownerToken: 'submitter' });
-      await expect(liveWork(paths, { gone })).resolves.toEqual([]);
-    });
-
-    it('does not count a queued request, which nobody owns', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await writeFile(path.join(paths.requests, 'one.json'), '{}');
-      await expect(liveWork(paths, { gone: async () => false })).resolves.toEqual([]);
-    });
-
-    it('finds a live lease, claim, claim lock or submission', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await mkdir(path.join(paths.root, 'active-reviews'));
-      await writeFile(path.join(paths.root, 'active-reviews', `7-${randomUUID()}.json`), '{}');
-      await writeFile(path.join(paths.claims, `one.json.7.${randomUUID()}.claim`), '{}');
-      await writeFile(path.join(paths.claims, 'two.json.lock'), '7\n');
-      await atomicWriteJson(paths.queueSubmitLock, { pid: 7, ownerToken: 'submitter' });
-
-      const live = await liveWork(paths, { gone });
-      expect(live).toHaveLength(4);
-      expect(live.join(' ')).toMatch(/review lease .*claim .*a queue submission/);
-    });
-
-    it('counts a record whose owner cannot be read as live', async () => {
-      const paths = await ensureState(await temporaryDirectory());
-      await writeFile(paths.queueSubmitLock, 'not json');
-      await expect(liveWork(paths)).resolves.toEqual(['a queue submission']);
-    });
-  });
-
-  describe('whether a process is provably gone', () => {
-    it('is gone when its id no longer exists', async () => {
-      await expect(processIsGone(4242, Date.now(), { isAlive: () => false, startedAt: async () => { throw new Error('must not ask'); } })).resolves.toBe(true);
-    });
-
-    it('is gone when the process holding the id started after the record', async () => {
-      await expect(processIsGone(4242, 1_000_000, { isAlive: () => true, startedAt: async () => 1_002_000 })).resolves.toBe(true);
-    });
-
-    it('is not gone otherwise', async () => {
-      await expect(processIsGone(4242, 1_000_000, { isAlive: () => true, startedAt: async () => 999_000 })).resolves.toBe(false);
-      await expect(processIsGone(4242, 1_000_000, { isAlive: () => true, startedAt: async () => null })).resolves.toBe(false);
-      await expect(processIsGone(4242, Number.NaN, { isAlive: () => true, startedAt: async () => 2_000_000 })).resolves.toBe(false);
-    });
-
-    it('reads a start time on macOS and Linux', async () => {
-      const run = vi.fn(async () => ({ stdout: 'Sat Oct 31 21:00:00 2026\n' }));
-      await expect(processStartTime(4242, { run, platform: 'darwin' })).resolves.toBe(Date.parse('Sat Oct 31 21:00:00 2026'));
-      expect(run).toHaveBeenCalledWith('ps', ['-o', 'lstart=', '-p', '4242'], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }));
-      await expect(processStartTime(4242, { run: async () => { throw new Error('no ps'); }, platform: 'linux' })).resolves.toBeNull();
-      await expect(processStartTime(4242, { run: async () => ({ stdout: '' }), platform: 'linux' })).resolves.toBeNull();
-    });
+    expect(openFile).toHaveBeenCalledOnce();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it('preserves a dead-owner queue submission lock for explicit recovery', async () => {

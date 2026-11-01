@@ -13,7 +13,7 @@ private remote URLs, and private source excerpts.
 | Push waits for review | Inspect watcher health, its current activity and the detached review log |
 | Process cleanup failure pauses work | Investigate the recorded process and children; use `resume` if the watcher is healthy, or recover stale state before restarting |
 | GUI evidence requested unexpectedly | Inspect the installed `guiEvidence` configuration; `none` turns the check off |
-| Watcher stopped after a restart | A watcher takes over a lock whose process is provably gone by itself. `status` and `doctor` report `watcher.state`, and if it is `stopped`, why. A refusal that names live work or a live process stays until you inspect it and run `recover`. One that names a takeover marker says which file to delete if no watcher is starting |
+| Watcher stopped | `status` and `doctor` report `watcher.state`, and if it is `stopped`, why. After a restart that left a dead process's lock, inspect the state folder, then run `recover`, then `install` |
 | `update` fails in npm | An engine installs without your npm configuration, from the public registry. Behind a proxy, set `HTTPS_PROXY`: a proxy or private registry in `.npmrc` is not read |
 | Clippy timeout | Check the lane note and cold build cost; do not treat it as a passing Rust check |
 | No GitHub PR comment | Check draft state, author allowlist, same-repository head, `gh` permissions, and watcher health |

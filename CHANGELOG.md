@@ -2,13 +2,9 @@
 
 ## Unreleased
 
-- **A watcher recovers from a restart.** A restart left the lock of a dead process, and
-  every watcher of the repository then refused to start while the scheduler's task
-  reported success. A watcher now takes over a lock whose process is provably gone,
-  including an id reused since, when no review, claim or queue submission may be live;
-  any doubt keeps the refusal.
-- **A stopped watcher shows.** `status` and `doctor` report `watcher.state` and why it is
-  stopped, and warn on stderr.
+- **A stopped watcher shows.** A scheduler's task can report success while its watcher
+  refused to start, for example after a restart left a dead process's lock. `status` and
+  `doctor` now report `watcher.state` and why it is stopped, and warn on stderr.
 - **An engine installs without your npm configuration.** `npm_config_*` settings, which
   npm 12 can refuse in project-scoped installs, and the user and global `.npmrc` no longer
   reach the install, which uses the public registry. `--ignore-scripts` and the checksum

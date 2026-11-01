@@ -15,7 +15,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
-import { liveWork, processIsGone, submissionIsAbandoned } from './maintenance.mjs';
 
 export function hashText(value, length = 24) {
   return createHash('sha256').update(value).digest('hex').slice(0, length);
@@ -1120,14 +1119,13 @@ export async function pruneDirectory(directory, { maxFiles, maxAgeMs, now = Date
   );
 }
 
-// Only ESRCH says a process is gone: EPERM is a live process of another user.
-export function isProcessAlive(pid) {
+function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch (error) {
-    return error?.code !== 'ESRCH';
+  } catch {
+    return false;
   }
 }
 
@@ -1148,42 +1146,6 @@ export function daemonOwnerIsHealthy(
   );
 }
 
-const takeoverMarker = (paths) => `${paths.lock}.takeover`;
-const interruptedTakeover = (paths) => `A starter is taking over the review daemon lock. Retry shortly. If this persists and no watcher is starting, one was interrupted: delete ${takeoverMarker(paths)} and retry.`;
-
-async function markTakeover(paths, openFile) {
-  const marker = await openFile(takeoverMarker(paths), 'wx', 0o600);
-  try {
-    await marker.writeFile(`${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
-  } finally {
-    await marker.close().catch(() => {});
-  }
-}
-
-/**
- * Remove a dead owner's daemon lock from outside a starter: explicit recovery
- * and a stop. Everything that removes a lock it did not write holds the takeover
- * marker, so what it judged is still what it removes. `decide` runs under the
- * marker and returns true to remove the lock. Nothing removes a marker it did
- * not write: judging one abandoned and deleting it could not be one step, and
- * could delete a newer one. An interrupted starter's marker waits for a person.
- */
-export async function removeDaemonLockExclusively(paths, decide) {
-  try {
-    await markTakeover(paths, open);
-  } catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    throw new Error(interruptedTakeover(paths));
-  }
-  try {
-    const remove = await decide();
-    if (remove !== false) await rm(paths.lock, { force: true });
-    return remove;
-  } finally {
-    await rm(takeoverMarker(paths), { force: true });
-  }
-}
-
 export async function acquireDaemonLock(
   paths,
   {
@@ -1193,9 +1155,6 @@ export async function acquireDaemonLock(
     ownerPid = process.pid,
     ownerTokenFactory = randomUUID,
     isAlive = isProcessAlive,
-    startedAt,
-    workStillLive = liveWork,
-    submissionAbandoned = submissionIsAbandoned,
   } = {},
 ) {
   const tryAcquire = async () => {
@@ -1246,45 +1205,11 @@ export async function acquireDaemonLock(
     throw new Error(`Review daemon lock is invalid or still initializing; refusing to remove it during concurrent startup. Retry shortly, or inspect ${paths.root} and run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" if it remains invalid.`);
   }
   const heartbeat = await read(paths.heartbeat).catch(() => null);
-  // A heartbeat a restart left behind can look fresh while a reused id looks
-  // alive, so identity comes first.
-  const gone = await processIsGone(existing.pid, Date.parse(existing.startedAt), { isAlive, ...(startedAt ? { startedAt } : {}) });
-  if (!gone && daemonOwnerIsHealthy(existing, heartbeat, { isAlive })) return null;
-  if (!gone) {
+  if (daemonOwnerIsHealthy(existing, heartbeat)) return null;
+  if (isAlive(existing?.pid)) {
     throw new Error(`Review daemon lock names live PID ${existing.pid} without a fresh matching owner heartbeat; refusing to trust a possibly reused PID. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" to clear it without signaling that PID.`);
   }
-  // The file removal is the one step two starters could race on, so only the
-  // holder of this exclusive marker takes it, and only for the lock it judged.
-  const inspect = `Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why>"`;
-  try {
-    await markTakeover(paths, openFile);
-  } catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}. ${interruptedTakeover(paths)}`);
-  }
-  try {
-    const live = await workStillLive(paths);
-    if (live.length) {
-      throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}; refusing automatic removal while work may still be live: ${live.slice(0, 5).join(', ')}. ${inspect}.`);
-    }
-    // Left behind, it would refuse every later push, and a healthy watcher
-    // would then bar the explicit recovery that clears it.
-    if (await submissionAbandoned(paths)) await remove(paths.queueSubmitLock, { force: true });
-    const current = await read(paths.lock, missingLock);
-    if (current !== missingLock) {
-      // Another starter finished first: the lock is no longer the one judged.
-      if (current?.ownerToken !== existing.ownerToken) return null;
-      await remove(paths.lock, { force: true });
-    }
-    try {
-      return { ...await tryAcquire(), recoveredFromPid: existing.pid };
-    } catch (error) {
-      if (error?.code === 'EEXIST') return null;
-      throw error;
-    }
-  } finally {
-    await remove(takeoverMarker(paths), { force: true });
-  }
+  throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}; refusing automatic removal because another starter may have replaced it. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" before retrying.`);
 }
 
 export async function writeHeartbeat(paths, details = {}) {
