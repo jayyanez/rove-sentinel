@@ -1,8 +1,8 @@
 # One owner of a repository's watcher
 
-**Status:** proposal, for the maintainer to decide. No code. It replaces an earlier draft of
-this plan, which recommended generations and a liveness endpoint. An independent review
-refuted that draft's proof of death, and measurements here confirmed it.
+**Status:** proposal, for the maintainer to decide. No code. Two independent reviews read it, and
+this is the last round: every finding is listed with its status, and the open ones are stated
+rather than answered with another redesign.
 
 ## The problem
 
@@ -12,23 +12,32 @@ scheduler reports success. `status` and `doctor` now say so, and `recover` follo
 `install` clears it. Sentinel should recover by itself.
 
 An attempt to do that went through six review rounds and failed each one with new races. Each
-repair answered its race and opened another. This plan explains why, and proposes a design in
-which those races cannot be written.
+repair answered its race and opened another. This plan explains why, compares a design
+meant to rule those races out with a much narrower goal, and recommends the narrower one.
 
 ## Recommendation
 
-**Hold one kernel lock for the watcher's whole life, taken through the built-in `node:sqlite`,
-and keep today's records.**
+**Do not build the full design now. Solve the incident that happened.**
 
-- The operating system frees the lock when the process dies, however it dies. A free lock is
-  the proof of death. No process id, clock or heartbeat is part of it.
-- A live owner cannot be replaced, so there is only ever one writer of the watcher's records.
-  Nothing needs a generation number, a fence, a marker or a per-owner directory.
-- `daemon.lock.json` stays, as a description of the owner rather than the lock. Old engines
-  already understand it, so most of the migration disappears.
+The only real incident is a lock left behind by a restart, and a watcher that stayed stopped with
+nobody noticing. `status` and `doctor` already show the second. For the first, take Option A in
+[The narrower goal](#the-narrower-goal): a starter treats a lock as dead only when the machine
+booted after that lock's last heartbeat **and** its process is gone. There is no new Node floor, no
+experimental API, no change of format and no migration between protocols.
 
-The price is a higher Node floor and a dependency on an API that Node still calls experimental.
-Both are covered below. Linux has not been measured.
+Three designs in a row have failed review. The kernel lock is the strongest of them, and its core
+survived: two conforming holders cannot hold one lock on one local file. But the second review
+found ten P1 problems around that core, in replacing the file, living beside old engines, the Node
+floor and recovery. They are the price of promising all five properties below, and one incident
+does not justify that price.
+
+Option A gives up those promises on purpose. It also removes a lock file, which this plan argues
+against in general, so it has one narrow exception to defend, and **no reviewer has read it yet**.
+It needs a review before any code. If it fails, the fallback is Option C: stay as `main` is, where
+a restart costs a person one `recover` and one `install`, and `status` says so.
+
+The kernel lock stays below as the reference design, as the reviews read it. It becomes worth its
+price if a real incident of a kind Option A does not cover ever appears.
 
 ## What must hold
 
@@ -68,6 +77,106 @@ Every repair moved that gap and kept it:
 
 The sound answers are the ones where nothing is removed to change owner. Creating a name that
 does not exist is atomic, and so is a lock the kernel holds and frees.
+
+## The narrower goal
+
+### What really happened
+
+| Incident | Seen | Today |
+| --- | --- | --- |
+| A restart left `daemon.lock.json`, and every later start refused with "belongs to dead PID" | Yes | `recover` then `install` clears it |
+| The watcher stayed stopped and nobody noticed, because the scheduler reported success | Yes | `status` and `doctor` report `watcher.state` |
+
+Everything else in this plan was found by reasoning, review or measurement, not by an outage.
+
+### The options
+
+| | Option | What it does |
+| --- | --- | --- |
+| Full | Kernel lock | The design below: an owner holds a lock through `node:sqlite` for its whole life |
+| A | Boot rule | `acquireDaemonLock` replaces a lock left by an earlier boot. Every starter runs it |
+| B | Logon recover | The refusal stays. The logon task runs a safe recover before it starts the watcher |
+| C | Nothing more | `main`, plus the small fixes under Delivery |
+
+### What each one covers
+
+| Event | Seen | Full | A | B | C |
+| --- | --- | --- | --- | --- | --- |
+| Restart, then a logon | **Yes** | Recovers | Recovers | Recovers | A person |
+| Restart, then a push with no logon | No | Recovers | Recovers: the hook starts a watcher | A person | A person |
+| Restart on Linux, which has no scheduler | No | Recovers at a push | Recovers at a push | A person | A person |
+| Stopped with nobody noticing | **Yes** | Cause gone | Cause gone for a restart | Cause gone for a logon | Shown by `status` and `doctor` |
+| Shut down and power on with Windows Fast Startup | No | Recovers | **A person:** the boot time does not move | Recovers at logon | A person |
+| Log off | No | Recovers | **A person** | Recovers at logon | A person |
+| A crash or a kill, same boot | No | Recovers | **A person** | Recovers at logon | A person |
+| A power cut that tears a record | No | Lock yes, C9 still stops it | **A person:** no readable heartbeat, no proof | Recovers at logon, unless C9 stops it | A person |
+| A hung owner | No | `recover --kill`, disputed by C4 | As `main` | As `main` | As `main` |
+
+The Fast Startup row comes from how that feature is documented. It has not been measured.
+
+### The five properties
+
+| Property | Full, as promised | Full, after review | A | B | C |
+| --- | --- | --- | --- | --- | --- |
+| H1 One watcher | Promised | Not held: C1, C2, C3 | **Not promised.** As `main` | **Not promised.** As `main` | **Not promised** |
+| H2 Dead owner recovered | Promised | Not held: C2, C5, C9 | **Narrowed** to an owner from an earlier boot | **Narrowed** to a logon after the process is gone | **Not promised** |
+| H3 Records untouched | Promised | Not held: C1, C3 | **Not promised.** As `main` | **Not promised.** As `main` | **Not promised** |
+| H4 No refusal by a race | Promised | Not held: C5, C7 | **Not promised.** As far as the small fixes reach | **Not promised** | **Not promised** |
+| H5 A person can recover | Promised | Not held: C4, C9, C10 | **Not promised.** `recover` as today | **Not promised** | **Not promised** |
+
+"As `main`" is not a guarantee. An old or a new `recover` beside a hung owner removes its lock
+today, and nothing here changes that.
+
+### Option A, exactly
+
+A starter that finds an existing lock it cannot accept checks, in order:
+
+1. The heartbeat is readable and carries the lock's `ownerToken`.
+2. Its `at` is earlier than the boot time.
+3. `process.kill` on the lock's pid gives `ESRCH`.
+
+Any other answer is no proof, and the refusal stays. A proof takes `takeover.lock`, created with
+`wx`, and then reads the lock again. If the lock changed, the starter gives way. If not, it removes
+the lock, creates its own the normal way, and removes `takeover.lock`.
+
+**Why this removal differs from the one this plan rejects.** The race above needs an owner that
+releases between the look and the removal, and a process from an earlier boot cannot release
+anything. A plain `wx` cannot succeed while the file exists, so a starter cannot slip in either.
+The only other removers are takeovers, which the marker serialises, and `stop` and `recover`. New
+engines can take the marker in `recover`. Old engines cannot, and that remains a window.
+
+**Why two tests.** The boot time is computed from the wall clock, so a large forward step could
+make a live owner's last heartbeat look older than the boot. Its process is alive, and step 3
+refuses. A backward step only makes the rule not fire, and the refusal stays. A pid reused after
+the restart also refuses: that restart needs a person, and it is the safe direction.
+
+**Measured.** `Date.now() - os.uptime() * 1000` held within 17 ms on Windows and within a second on
+macOS, where `os.uptime()` gave whole seconds. On macOS it matched `kern.boottime` within a second.
+On Windows it was **27 s later** than `LastBootUpTime`, so a value from this boot can read as an
+earlier one in that first half minute. Step 3 covers that case, because such an owner is either
+alive or truly dead. No real restart has been run through this rule.
+
+**What it costs.** About a dozen lines, one marker and one new way to fail: a starter that dies
+holding `takeover.lock` leaves a refusal until `recover` or the next boot. It reads a heartbeat
+old engines already write, so the first restart after an update is covered. A rollback finds what
+it expects.
+
+**What it does not fix.** A truncated `results/<id>.json` makes `recoverClaims` throw on every
+attempt, for a starter and for `recover` alike (C9). That needs its own small fix in every option.
+
+### Why not the others
+
+**Option B** keeps every path a push uses unchanged, so a mistake can only happen at logon, and it
+reaches logoffs and crashes because its proof can be `ESRCH` alone. It misses a host nobody logs on
+to and all of Linux, it changes every project's installed task, and two logons can still race, so
+it needs the same marker. It covers more kinds of death but fewer of the machines where a restart
+happens.
+
+**`ESRCH` alone inside Option A** would add logoffs, crashes and Fast Startup. It widens the takeover
+to a live boot, where the earlier review rounds found their races. It is the natural next step if
+Option A holds up, and it should not be the first one.
+
+**Option C** is honest and cheap, and it leaves the incident in place: a person after each restart.
 
 ## Candidates
 
@@ -150,6 +259,10 @@ would build up.
 Delivery's first steps close these.
 
 ## The design
+
+This is the reference design, left as the reviews read it. It is not the recommendation. Where it
+is wrong, [Every review finding](#every-review-finding) says so, and those passages have not been
+rewritten.
 
 ### The lock
 
@@ -285,31 +398,61 @@ These are the findings of the review rounds on the earlier attempt. Each stays a
 One case remains and is accepted: a hung owner holds its lock until a person acts, because hung is
 not provably dead. `status` reports it and pushes are refused rather than left waiting.
 
-## The independent review's findings
+## Every review finding
 
-Eighteen findings. Windows claims were repeated on a separate physical machine, and code claims
-were read against the source. Where the review was wrong or incomplete, that is noted.
+Thirty findings: R1 to R18 from the first independent review, C1 to C12 from the second, which
+read this plan at `55b65eb`.
 
-| # | Finding | Outcome |
-| --- | --- | --- |
-| 1 | A refused connect proves nothing | **Accepted, and it decided the design.** Reproduced on Windows and on macOS, where the review had only a source. Its fix is taken in part: the kernel lock yes, per-owner directories no. Its "rename of the held file gives `EBUSY`" holds on Windows only, and macOS allows it, which adds the identity check. Its "still emits an experimental warning" is false on Node 24.18 and 26.13, and Node 22 is unmeasured |
-| 2 | A power cut can leave the newest record unreadable | **Resolved by design.** The proof uses no record, the lock file is empty, and a torn `daemon.lock.json` is simply overwritten by the next holder |
-| 3 | The fence's exit refuses a waiting push | **Accepted, and wider.** Confirmed in the code: `handleRequestFailure` writes an error. There is no fence now, but a clean stop has the same effect, so a stop during a review must leave the claim unresolved |
-| 4 | Nobody starts a watcher during a hook's wait | **Accepted.** The hook keeps starting during its wait, by counting polls |
-| 5 | The bridge's released marker leaves no watcher | **Moot.** No `released.json` and no bridge steps |
-| 6 | Old engines persist indefinitely | **Accepted, confirmed in the code.** `selectedEngine` returns the bundled CLI without an active version, and `startDaemonDetached` spawns its own. There is no retirement to get wrong: `daemon.lock.json` stays for good, and the file left behind is the tombstone |
-| 7 | A hung owner cannot be stopped by a fence, and `recover` has no force flag | **Accepted.** Confirmed: only `--reason` exists. `recover --kill` is new, and `--kill` needs a readable record |
-| 8 | A dead owner's child can stop the new owner from starting | **Accepted.** Confirmed: the cleanup is in the outer `try`, and providers run in the review bundle. Cleanup moves into the retrying loop |
-| 9 | Pruning reuses a generation number | **Moot.** No generations. For the record, listings never fell behind during pruning on either NTFS or APFS |
-| 10 | The lock-free queue breaks H4, and the bound is 1 | **Accepted, a different fix.** The rank rule is withdrawn. Its proposed slot names are declined, because a request's id must match its file name in today's claim path and old watchers read that. A kernel lock keeps the shape |
-| 11 | A stale request blocks the start that would clear it | **Accepted.** The hook starts before it can refuse |
-| 12 | The bridge's legacy removal repeats the race | **Accepted, and removed.** Sentinel never removes a legacy lock automatically. A crashed old watcher's lock stays a person's `recover`, as today. New engines stop old watchers through the unchanged path |
-| 13 | Clocks remain in waits | **Accepted.** Waits count polls and monotonic time, heartbeats use a sequence, and the clock test targets those |
-| 14 | Liveness alone hides stuck owners | **Accepted.** A `hung` state, and today's checks stay. The measured connect stall no longer applies, since a lock probe does not wait on the owner |
-| 15 | Lifecycle gaps | **Mostly moot.** No directories or sockets to leak, and claims stay where a rollback sees them. `recover` keeps its work, under the lock. Attempt ids are adopted. `cancelQueuedRequest` is unchanged. A dead `queue-submit.lock` from an older engine is ignored by new submitters and cleared by `recover` |
-| 16 | A network-folder refusal cannot be built | **Accepted.** Dropped. `statfs` type 0 confirmed |
-| 17 | The proposed tests prove less than claimed | **Accepted.** At-least-once replaces exactly-once, the schedule model is dropped, and each test now states how it can fail |
-| 18 | Smaller points | **Partly closed.** #23 fixed `install.mjs` and `storage.mjs`. `git.mjs` still reads `EPERM` as dead when cleaning review checkouts, and that is delivery's small fix. "Second listener refused" and "delete the folders" no longer apply |
+- **Resolved:** answered by merged code, by a pull request that passed the gate, or because the
+  design no longer has that part.
+- **Accepted:** true, and the design takes the change, which is not built yet.
+- **Open:** true and unanswered.
+
+Status describes the full design. The last column says what happens under Option A.
+
+| # | Finding | Status | How it was checked, and what remains | Under Option A |
+| --- | --- | --- | --- | --- |
+| R1 | A refused connect proves nothing | Resolved | Reproduced on Windows and macOS. No connect remains | Does not arise |
+| R2 | A power cut can leave the newest record unreadable | Resolved | The lock's proof reads no record. C9 is what is left | A torn heartbeat refuses |
+| R3 | A failing exit refuses a waiting push | **Open** | Confirmed in `handleRequestFailure`. The fix stopped at the gate: see below | Still applies, independent of the design |
+| R4 | Nobody starts a watcher during a hook's wait | Resolved | #25 | Resolved there too |
+| R5 | A released marker leaves no watcher | Resolved | No bridge exists | Does not arise |
+| R6 | Old engines persist indefinitely | **Open** | Confirmed. The plan said the file left behind was enough, and C3 disproves that | No protocol to retire |
+| R7 | A hung owner cannot be stopped, and `recover` has no force flag | **Open** | Confirmed. `recover --kill` was the answer, and C4 disputes it | As `main`: accepted |
+| R8 | A dead owner's child can stop the new owner from starting | Accepted | Confirmed: cleanup is in the outer `try`. Moving it into the loop is unbuilt | Still applies, own fix |
+| R9 | Pruning reuses a generation number | Resolved | No generations | Does not arise |
+| R10 | The lock-free queue breaks H4, and the bound is 1 | Accepted | A second kernel lock. C5 adds that a five-second wait proves nothing | `main`'s queue stays |
+| R11 | A stale request blocks the start that would clear it | Resolved | #25 | Resolved there too |
+| R12 | A legacy removal repeats the race | Resolved | The full design removes nothing | **Back in narrow form:** the first thing a review of A must attack |
+| R13 | Clocks remain in waits | Accepted | The hook's waits are monotonic in #25. Heartbeat age still uses clocks | Adds a clock, guarded by `ESRCH` |
+| R14 | Liveness alone hides stuck owners | **Open** | `hung` was the answer, and C5 shows busy cannot name an owner | As `main` |
+| R15 | Lifecycle gaps | Resolved | Mostly moot, and the rest is in the design | Does not arise |
+| R16 | A network-folder refusal cannot be built | Resolved | `statfs` type 0 confirmed, and the refusal is dropped. See C6 | Does not arise |
+| R17 | The proposed tests prove less than claimed | Accepted | Rewritten once, and C12 extends it | Applies to A's tests |
+| R18 | Smaller points | Resolved | #23 and #24 | Resolved there too |
+| C1 | Detecting a replaced file does not keep exclusion | **Open** | Confirmed: macOS allows the rename, as measured, and an owner can act until it notices. The identity check narrows the window and does not close it | No kernel lock to lose |
+| C2 | The first new acquire is not serialised with old starters | **Open** | Confirmed from `storage.mjs`. A half-written record cannot be told from a dead new owner's | Same format, same `wx` |
+| C3 | Old `stop` and `recover` can delete a new owner's state | **Open** | Confirmed in `install.mjs`. The plan's rows for these cases are wrong | Old `recover` beside a takeover stays a window |
+| C4 | `recover --kill` cannot know the pid is the current holder | **Open** | Reasoned, not reproduced. "A live holder wrote it" proves the past only | Not built |
+| C5 | Busy and a timeout do not prove a watcher exists | **Open** | Reasoned, consistent with the measured reader interference. Zero failures in a run prove no ordering | No busy state |
+| C6 | Network folders may not fail loudly | **Open** | Not reproduced, and SQLite's own warning stands. The plan's sentence is withdrawn | No kernel lock. Pid and boot tests are no proof between two machines sharing a state root |
+| C7 | Node 22.13 has no `timeout` option | **Accepted** | Confirmed from Node's source: absent at v22.13.0 and v22.15.0, present at v22.16.0 and v24.0.0. The warning is emitted at all four. The floor must rise or use `PRAGMA busy_timeout`. Node 23 not checked | No `node:sqlite` |
+| C8 | The updater that must check a new floor is the old one | **Open** | Confirmed: `automatic-updates.mjs` stops the watcher first, and `engine-store.mjs` does not read `engines` | No new floor |
+| C9 | A truncated result stops recovery; requests are not durable | **Open** | **Run on Windows and macOS:** `recoverClaims` threw `SyntaxError` twice and the claim stayed. `atomicWriteJson` does not sync | **Still applies**, on `main` today. Own fix |
+| C10 | Replacing a junk lock file repeats check-then-remove | **Open** | Reasoned, and the plan contradicts itself: `recover` must take the lock it cannot open | No kernel lock file |
+| C11 | The SQLite protocol is incomplete | **Open** | Conditional, not reproduced. Exact SQL and journal modes are unspecified | No SQLite |
+| C12 | Several tests can pass with the guarantees broken | Accepted | Confirmed by reading their failure conditions. Each needs a negative control | A's tests need the same |
+
+**Not resolved, and stated:** R3, R6, R7, R14, C1 to C6 and C8 to C11 stay open on the full design.
+That is the reason it is not recommended. Under Option A, R3, R8 and C9 remain and need their own
+fixes, R12 returns in a narrow form, and C3 and C6 leave stated windows.
+
+**R3 stopped at the gate.** Leaving a stopped review's claim unresolved is a small change, but a
+claimed request has no durable cancel: a cancel during a review removes nothing, and recovery
+brings the request back. Recording the cancel closed most of it. The gate then found recovery can
+read "no result" just before the cancel writes one. The cost is one abandoned review run again,
+and no false verdict, but closing it means another step of the kind this plan warns about. That
+work stopped there, unpublished, for the maintainer to decide.
 
 ## Migration
 
@@ -431,18 +574,25 @@ That work is on a local branch at `8a73e68` and stays unpublished.
 
 ## Delivery
 
-1. **Measure what is unmeasured:** the floor on exact Node versions, the warning on Node 22, and
-   Linux when a machine exists. Stop and rethink if the floor is unworkable.
-2. `git.mjs`'s `EPERM` reading, on its own.
-3. Leave the claim unresolved on a stop, and move startup cleanup into the loop. Both are fixes that
-   stand alone.
-4. The hook: start before refusing, keep starting during a wait, count polls. These stand alone too.
-5. The lock module and its tests, unused.
-6. Readers: one "who owns this" function, with `hung`.
-7. The watcher takes the lock, with the floor raised.
-8. The queue's kernel lock, and `recover --kill`.
-9. Real restart qualification, recorded in the [validation record](../validation.md).
+**Whichever option is chosen.** These stand alone and depend on no design:
 
-Steps 2 to 4 help every project now, and none depends on this design. Step 7 changes how every
-project's watcher starts, so it should reach one project on a pinned engine before a release turns
-it on everywhere. Until then, a restart needs `recover` and `install`, and `watcher.state` says so.
+1. `git.mjs`'s `EPERM` reading: #24.
+2. The hook starts a watcher before it can refuse and during its wait, and counts polls: #25.
+3. A stop during a review (R3): stopped at the gate, for the maintainer to decide.
+4. A truncated result must not stop `recoverClaims` (C9): not started.
+5. Startup cleanup moves into the retrying loop (R8): not started.
+
+**For Option A:**
+
+6. A review of Option A before any code, by a reader who has not seen this plan's argument for it.
+   If it fails, stop at Option C rather than repair it.
+7. Run a real restart on Windows and macOS, and Windows Fast Startup on a client edition.
+8. The rule, the marker and tests that pause between each step and hold two starters at the same
+   point. It should reach one project on a pinned engine before a release turns it on everywhere.
+
+**If the full design is ever chosen,** C1 to C11 need answers first, beginning with the transition
+from old engines. Its work is then: measure the floor, the lock module, one "who owns this"
+reader, the watcher taking the lock, the queue's kernel lock, and a real restart recorded in the
+[validation record](../validation.md).
+
+Until then, a restart needs `recover` and `install`, and `watcher.state` says so.
