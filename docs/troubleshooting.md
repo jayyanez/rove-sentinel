@@ -7,6 +7,7 @@ private remote URLs, and private source excerpts.
 | Symptom | What to check |
 | --- | --- |
 | A tool cannot launch | Open a fresh terminal; check each CLI's version and PATH |
+| npm refuses the release URL with `EALLOWREMOTE` | npm 12 and later refuse a dependency given as a URL by default. Add `allow-remote=root` to the project's `.npmrc`, or pass `--allow-remote=root`, as in [installation](installation.md). pnpm and engine updates are not affected: an engine installs from a downloaded archive whose checksum it has verified |
 | Authentication refused | Sign in through the provider(s) required by installed configuration; API-only authentication is insufficient |
 | Policy missing or version mismatch | Reinstall from the trusted stable checkout after updating the dependency |
 | Another checkout owns the watcher | Operate from that checkout; avoid competing watchers for the same remote |
