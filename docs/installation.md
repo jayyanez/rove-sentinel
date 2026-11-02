@@ -41,8 +41,14 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.16.1/rove-sentinel-1.16.1.tgz
+npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.16.1/rove-sentinel-1.16.1.tgz
 ```
+
+From npm 12, npm refuses a dependency given as a URL (`EALLOWREMOTE`)
+unless `allow-remote` permits it. `root` permits your project's own
+dependencies and nothing deeper. Add `allow-remote=root` to the project's
+`.npmrc` so that later `npm install` and `npm ci` runs accept the pin too.
+Releases before npm 12 install the URL without it.
 
 Or with pnpm:
 
