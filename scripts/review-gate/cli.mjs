@@ -110,6 +110,7 @@ async function readHookInput() {
 /** The installed policy's configuration, or the repository's when none is installed. */
 function warnOfWatcher(watcher, scheduler) {
   if (watcher?.state === 'stopped') process.stderr.write(`The review watcher is stopped: ${watcher.reason} ${watcher.action}\n`);
+  if (watcher?.state === 'failing') process.stderr.write(`The review watcher runs but is failing: ${watcher.reason} ${watcher.action}\n`);
   if (watcher?.state === 'unknown') process.stderr.write(`The review watcher's state is unknown: ${watcher.reason}\n`);
   else if (scheduler?.error) process.stderr.write(`The scheduler could not be read: ${scheduler.error}\n`);
 }

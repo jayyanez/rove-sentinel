@@ -1,5 +1,23 @@
 # Standalone validation record
 
+## Unreleased: a macOS watcher's tools, and failing polls — 2026-11-02
+
+Deterministic tests cover what a LaunchAgent carries: the shell's `PATH` without the
+checkout, however it is spelled or linked, any `node_modules`, relative or unusable entries or
+a missing folder, in the plist's XML and bounded, with launchd's own folders last and no
+credential. They also cover the count of failed polls across a real `runWatcher`, and
+`watcher.state` `failing`, `watcherHealthy` and `watcherRunning` in `status` and `doctor`, after one
+failure, after two, after `--no-github` and after `install`; an automatic update reads
+`watcherRunning`.
+
+Live on macOS 27 on Apple silicon, Node 26, with a throwaway repository whose remote does not
+exist, in a real LaunchAgent. The previous engine recorded `Could not start gh: spawn gh ENOENT`
+and `status` said `watcherHealthy: true`, `running`. This engine's plist carried the shell's
+tool folders and no `node_modules`; `gh` started under launchd, and its two polls failed on the
+missing repository. Both `status` and `doctor` then warned, with `failing` and
+`watcherHealthy: false`. A poll that succeeds under launchd has not run live, nor has this on
+Windows or through an automatic update.
+
 ## 1.16.0 generic paths, and a watcher you can see — 2026-11-01
 
 Deterministic tests cover risk ratings and shard lenses for a repository that sets

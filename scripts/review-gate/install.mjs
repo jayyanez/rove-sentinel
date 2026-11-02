@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,11 +17,13 @@ import {
   daemonOwnerIsHealthy,
   atomicWriteJson,
   clearDaemonError,
+  clearGithubFailure,
   clearTechnicalErrorOutcomes,
   hashText,
   isProcessAlive,
   pauseGate,
   readJson,
+  readWatcherGithub,
   readWatcherStartLog,
   reviewTimingSummary,
   removeStoredJson,
@@ -128,6 +131,10 @@ function windowsAccount(environment) {
 const WATCHER_TOOL_SETTINGS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLAUDE_CODE_GIT_BASH_PATH'];
 // The wrapper's `set "PATH=..."` is one cmd.exe line, of at most 8191 characters.
 const WATCHER_PATH_MAX_CHARACTERS = 8000;
+// What launchd gives an agent that names no PATH.
+const LAUNCHD_PATH = ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+// Not representable in a plist's XML.
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 /**
  * The installing shell's PATH, for a scheduled watcher. A task starts with the
@@ -163,6 +170,50 @@ export function watcherPath(pathValue, repoRoot) {
   return kept.join(';');
 }
 
+/**
+ * The installing shell's PATH, for a LaunchAgent. launchd gives an agent only the
+ * system's folders, so `gh` and the provider CLIs of a Homebrew or per-user
+ * install are missing there: the watcher runs, its heartbeat is fresh, and every
+ * GitHub poll fails with `spawn gh ENOENT`. As on Windows, nothing of the
+ * repository or of any `node_modules` is carried, since a watcher reviews that
+ * checkout. An empty or relative entry means the working directory, which is the
+ * checkout, so only an absolute one is kept. macOS folders usually ignore case
+ * and a link can lead into the checkout, so entries are compared by what they
+ * resolve to as well as by how they are spelled, and one that resolves to nothing
+ * cannot be compared and held no tool. launchd's own folders stay last: a shell
+ * may lack them, and the watcher had them before.
+ */
+export function launchAgentPath(pathValue, repoRoot, { realPath = realpathSync.native } = {}) {
+  const fold = (value) => value.toLowerCase().replace(/\/+$/, '');
+  const resolved = (entry) => {
+    try {
+      return fold(realPath(entry));
+    } catch {
+      return null;
+    }
+  };
+  const roots = new Set([fold(path.posix.normalize(repoRoot)), resolved(repoRoot)]);
+  const reviewed = (folded) => [...roots].some((root) => root !== null && (folded === root || folded.startsWith(`${root}/`)))
+    || /(^|\/)node_modules(\/|$)/.test(folded);
+  const seen = new Set();
+  const kept = [];
+  const usable = (entry) => {
+    if (!entry.startsWith('/') || CONTROL_CHARACTERS.test(entry)) return false;
+    const real = resolved(entry);
+    if (real === null || seen.has(real) || reviewed(real) || reviewed(fold(path.posix.normalize(entry)))) return false;
+    seen.add(real);
+    return true;
+  };
+  let length = 0;
+  for (const entry of String(pathValue || '').split(':')) {
+    if (length + entry.length + 1 > WATCHER_PATH_MAX_CHARACTERS) break;
+    if (!usable(entry)) continue;
+    kept.push(entry);
+    length += entry.length + 1;
+  }
+  return [...kept, ...LAUNCHD_PATH.filter(usable)].join(':');
+}
+
 function quoteBatch(value) {
   if (value.includes('"')) throw new Error(`Unsupported quote in batch argument: ${value}`);
   return `"${value.replaceAll('%', '%%')}"`;
@@ -189,6 +240,7 @@ export function buildInstallPlan({
   autoUpdate = process.env.ROVE_SENTINEL_AUTO_UPDATE,
   updateNotifications = process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS,
   environment = process.env,
+  realPath,
 }) {
   const cliPath = fileURLToPath(new URL('./cli.mjs', import.meta.url));
   const id = hashText(stateRoot.toLowerCase(), 8);
@@ -239,6 +291,11 @@ export function buildInstallPlan({
   if (platform === 'darwin') {
     const label = `com.rove.shared-review-gate.${id}`;
     const plistPath = path.posix.join(home, 'Library', 'LaunchAgents', `${label}.plist`);
+    const carried = [
+      ['PATH', launchAgentPath(environment.PATH, repoRoot, realPath ? { realPath } : {})],
+      ...WATCHER_TOOL_SETTINGS.filter((key) => environment[key] && !CONTROL_CHARACTERS.test(environment[key]))
+        .map((key) => [key, environment[key]]),
+    ].map(([key, value]) => `    <key>${key}</key><string>${xmlEscape(value)}</string>\n`).join('');
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -249,7 +306,7 @@ export function buildInstallPlan({
   </array>
   <key>WorkingDirectory</key><string>${xmlEscape(repoRoot)}</string>
   <key>EnvironmentVariables</key><dict>
-    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
+${carried}    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
     <key>ANTHROPIC_API_KEY</key><string></string>
     <key>OPENAI_API_KEY</key><string></string>
   </dict>
@@ -614,7 +671,10 @@ export async function executeInstallTransaction(
       await git(context.repoRoot, ['config', 'core.hooksPath', '.githooks']);
       hooksConfiguredByAttempt = true;
     }
-    if (start) await clearDaemonError(context.paths);
+    if (start) {
+      await clearDaemonError(context.paths);
+      await clearGithubFailure(context.paths);
+    }
     if (plan.platform === 'win32') {
       await mkdir(path.dirname(plan.wrapperPath), { recursive: true });
       await writeFile(plan.wrapperPath, plan.wrapper, { encoding: 'utf8', mode: 0o600 });
@@ -806,17 +866,25 @@ export async function executeUninstall({
 }
 
 /**
- * What a person needs to know of the watcher: `running`, `outdated` (running
- * another version or policy), `stopped`, `not-installed`, or `unknown` when the
- * scheduler could not be read and nothing else tells. A scheduler's task can
- * report success while its watcher refused to start, so this reads the watcher's
- * own records.
+ * What a person needs to know of the watcher: `running`, `failing` (alive, but
+ * its GitHub polls keep failing), `outdated` (running another version or policy),
+ * `stopped`, `not-installed`, or `unknown` when the scheduler could not be read
+ * and nothing else tells. A scheduler's task can report success while its watcher
+ * refused to start, so this reads the watcher's own records.
  */
-export function watcherState({ running, compatible, heartbeat, lock, daemonError, startLog, installed, stateError, schedulerError }) {
+export function watcherState({ running, compatible, heartbeat, lock, daemonError, githubFailure, startLog, installed, stateError, schedulerError }) {
   if (running) {
-    return compatible
-      ? { state: 'running', pid: heartbeat.pid }
-      : { state: 'outdated', pid: heartbeat.pid, action: 'Run npx --no-install rove-sentinel install from your trusted checkout.' };
+    if (!compatible) return { state: 'outdated', pid: heartbeat.pid, action: 'Run npx --no-install rove-sentinel install from your trusted checkout.' };
+    if (githubFailure?.count >= LIMITS.githubFailuresToReport) {
+      return {
+        state: 'failing',
+        pid: heartbeat.pid,
+        reason: `its last ${githubFailure.count} GitHub polls failed: ${githubFailure.message}`,
+        since: githubFailure.since,
+        action: 'Pull requests get no review; pushes still do. Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout, in a shell that finds gh and is signed in. On a computer that should leave pull requests alone, install with --no-github.',
+      };
+    }
+    return { state: 'running', pid: heartbeat.pid };
   }
   if (!installed && !lock && !heartbeat && !stateError) {
     return schedulerError ? { state: 'unknown', reason: schedulerError } : { state: 'not-installed' };
@@ -841,10 +909,11 @@ export async function gateStatus(
 ) {
   const context = await createContext(repoRoot);
   const hooksPath = await getHooksPath(context.repoRoot);
-  const [heartbeatState, lockState, daemonErrorState, pausedState, queueSubmitLockState] = await Promise.all([
+  const [heartbeatState, lockState, daemonErrorState, githubFailureState, pausedState, queueSubmitLockState] = await Promise.all([
     readStatusState(context.paths.heartbeat),
     readStatusState(context.paths.lock),
     readStatusState(context.paths.daemonError),
+    readStatusState(context.paths.githubFailure),
     readStatusState(context.paths.paused),
     readStatusState(context.paths.queueSubmitLock),
   ]);
@@ -914,6 +983,21 @@ export async function gateStatus(
   } catch (error) {
     reviewTiming = { error: error?.message || String(error) };
   }
+  const ownerAlive = daemonOwnerIsHealthy(lock, heartbeat, { maxAgeMs: 30_000 });
+  const watcher = watcherState({
+    running: ownerAlive,
+    compatible: watcherPolicyCompatible,
+    heartbeat,
+    lock,
+    daemonError,
+    // From before `install --no-github`: such a watcher no longer polls.
+    githubFailure: await readWatcherGithub(context.paths).catch(() => true) ? githubFailureState.value : null,
+    startLog: await readWatcherStartLog(context.paths),
+    stateError: lockState.error ?? heartbeatState.error,
+    schedulerError: scheduler.error,
+    // Linux has no supported scheduler, so the hook counts as well.
+    installed: Boolean(scheduler.installed || await hookCallsSentinel(context.repoRoot)),
+  });
   return {
     repoRoot: context.repoRoot,
     stateRoot: context.stateRoot,
@@ -923,21 +1007,11 @@ export async function gateStatus(
     reviewTiming,
     hookInstalled: hooksPathIsOurs(context.repoRoot, hooksPath),
     heartbeat,
-    watcherHealthy: watcherPolicyCompatible && daemonOwnerIsHealthy(lock, heartbeat, {
-      maxAgeMs: 30_000,
-    }),
-    watcher: watcherState({
-      running: daemonOwnerIsHealthy(lock, heartbeat, { maxAgeMs: 30_000 }),
-      compatible: watcherPolicyCompatible,
-      heartbeat,
-      lock,
-      daemonError,
-      startLog: await readWatcherStartLog(context.paths),
-      stateError: lockState.error ?? heartbeatState.error,
-      schedulerError: scheduler.error,
-      // Linux has no supported scheduler, so the hook counts as well.
-      installed: Boolean(scheduler.installed || await hookCallsSentinel(context.repoRoot)),
-    }),
+    // Alive and compatible, which is what an engine update needs: its new engine
+    // may be the fix. Healthy also means it is doing its work.
+    watcherRunning: watcherPolicyCompatible && ownerAlive,
+    watcherHealthy: watcher.state === 'running',
+    watcher,
     watcherVersionCompatible,
     watcherPolicyCompatible,
     installedPolicyDigest: installedPolicy?.policyDigest ?? null,
@@ -948,6 +1022,7 @@ export async function gateStatus(
       heartbeat: heartbeatState.error,
       lock: lockState.error,
       daemonError: daemonErrorState.error,
+      githubFailure: githubFailureState.error,
       paused: pausedState.error,
       queueSubmitLock: queueSubmitLockState.error,
       queue: queueReadError,

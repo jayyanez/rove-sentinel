@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
 import {
   buildInstallPlan,
+  launchAgentPath,
   watcherPath,
   windowsTaskRefusal,
   windowsTaskRun,
@@ -23,7 +24,7 @@ import {
   stopDaemon,
   verifyPrerequisites,
 } from '../install.mjs';
-import { atomicWriteJson, ensureState, readJson, writeDaemonError } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readJson, recordGithubFailure, writeDaemonError } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { hookCallsSentinel, initializeRepository, uninstallGeneratedHook } from '../init.mjs';
 
@@ -111,6 +112,81 @@ describe('what a person is told of the watcher', () => {
       } finally {
         await rm(repoRoot, { recursive: true, force: true });
       }
+    });
+
+    describe('a live watcher whose GitHub polls keep failing', () => {
+      async function running() {
+        const fixture = await installedRepository();
+        const policy = await readJson(fixture.paths.policy);
+        await atomicWriteJson(fixture.paths.lock, { pid: process.pid, ownerToken: 'owner' });
+        await atomicWriteJson(fixture.paths.heartbeat, {
+          pid: process.pid, ownerToken: 'owner', at: new Date().toISOString(), repoRoot: fixture.repoRoot,
+          gateVersion: GATE_VERSION, charterVersion: CHARTER_VERSION, policyDigest: policy.policyDigest,
+        });
+        const full = () => gateStatus({ repoRoot: fixture.repoRoot }, {
+          createContext: async () => ({ repoRoot: fixture.repoRoot, stateRoot: fixture.stateRoot, paths: fixture.paths }),
+          getHooksPath: async () => '.githooks',
+          run: missingService,
+        });
+        return { ...fixture, full };
+      }
+
+      it('does not look healthy, and says what fails and since when', async () => {
+        const { repoRoot, paths, full } = await running();
+        try {
+          const failure = new Error('Could not start gh: spawn gh ENOENT');
+          await recordGithubFailure(paths, failure, new Date('2026-01-01T10:00:00.000Z'));
+          await recordGithubFailure(paths, failure, new Date('2026-01-01T10:02:00.000Z'));
+          const status = await full();
+          expect(status.watcherHealthy).toBe(false);
+          expect(status.watcherRunning).toBe(true);
+          expect(status.watcher).toMatchObject({
+            state: 'failing', pid: process.pid, since: '2026-01-01T10:00:00.000Z',
+            reason: expect.stringContaining('Could not start gh: spawn gh ENOENT'),
+            action: expect.stringContaining('install'),
+          });
+          expect(status.watcher.reason).toContain('2');
+        } finally {
+          await rm(repoRoot, { recursive: true, force: true });
+        }
+      });
+
+      it('stays healthy through one failure, a passing network error', async () => {
+        const { repoRoot, paths, full } = await running();
+        try {
+          await recordGithubFailure(paths, new Error('connection reset'));
+          const status = await full();
+          expect(status.watcherHealthy).toBe(true);
+          expect(status.watcher.state).toBe('running');
+        } finally {
+          await rm(repoRoot, { recursive: true, force: true });
+        }
+      });
+
+      it('does not blame a computer that leaves GitHub alone for what failed before that choice', async () => {
+        const { repoRoot, paths, full } = await running();
+        try {
+          await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
+          await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
+          await atomicWriteJson(paths.watcherOptions, { github: false });
+          const status = await full();
+          expect(status.watcherHealthy).toBe(true);
+          expect(status.watcher.state).toBe('running');
+        } finally {
+          await rm(repoRoot, { recursive: true, force: true });
+        }
+      });
+
+      it('reaches doctor, which reads the same state', async () => {
+        const { repoRoot, paths, full } = await running();
+        try {
+          await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
+          await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
+          await expect(watcherReport(repoRoot, { status: full })).resolves.toMatchObject({ watcher: { state: 'failing' } });
+        } finally {
+          await rm(repoRoot, { recursive: true, force: true });
+        }
+      });
     });
 
     it('reports a corrupt lock as unreadable state', async () => {
@@ -486,6 +562,86 @@ describe('review-gate native installer plans', () => {
     expect(plan.plist).toContain('<key>ANTHROPIC_API_KEY</key><string></string>');
     expect(plan.plist).toContain('<key>OPENAI_API_KEY</key><string></string>');
     expect(plan.create.args).toContain('gui/501');
+  });
+
+  describe('a launch agent\'s tools', () => {
+    const asSpelled = (entry: string) => entry;
+    const launchd = '/usr/bin:/bin:/usr/sbin:/sbin';
+
+    it('carries the tools the installing shell found, launchd\'s PATH having none of them, and never a credential', () => {
+      const plan = buildInstallPlan({
+        platform: 'darwin', repoRoot: '/Users/me/repo', stateRoot: '/Users/me/state', nodePath: '/opt/homebrew/bin/node',
+        home: '/Users/me', uid: 501, realPath: asSpelled,
+        environment: {
+          PATH: '/Users/me/repo/node_modules/.bin:/Users/me/.local/bin:/opt/homebrew/bin:/usr/bin:/bin',
+          CLAUDE_CONFIG_DIR: '/Users/me/settings/claude',
+          CODEX_HOME: '/Users/me/settings/codex',
+          GH_CONFIG_DIR: '/Users/me/settings/gh',
+          GIT_CONFIG_GLOBAL: '/Users/me/settings/gitconfig',
+          GH_TOKEN: 'not-for-the-plist',
+          ANTHROPIC_API_KEY: 'not-for-the-plist',
+        },
+      });
+      expect(plan.plist).toContain('<key>PATH</key><string>/Users/me/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>');
+      expect(plan.plist).toContain('<key>CLAUDE_CONFIG_DIR</key><string>/Users/me/settings/claude</string>');
+      expect(plan.plist).toContain('<key>CODEX_HOME</key><string>/Users/me/settings/codex</string>');
+      expect(plan.plist).toContain('<key>GH_CONFIG_DIR</key><string>/Users/me/settings/gh</string>');
+      expect(plan.plist).toContain('<key>GIT_CONFIG_GLOBAL</key><string>/Users/me/settings/gitconfig</string>');
+      expect(plan.plist).not.toContain('not-for-the-plist');
+      expect(plan.plist).toContain('<key>ANTHROPIC_API_KEY</key><string></string>');
+    });
+
+    it('writes a folder the plist\'s XML would misread as what it is', () => {
+      const plan = buildInstallPlan({
+        platform: 'darwin', repoRoot: '/Users/me/repo', stateRoot: '/Users/me/state', nodePath: '/opt/homebrew/bin/node',
+        home: '/Users/me', uid: 501, realPath: asSpelled, environment: { PATH: '/opt/tools & <more>/bin' },
+      });
+      expect(plan.plist).toContain('<string>/opt/tools &amp; &lt;more&gt;/bin:');
+    });
+
+    it('carries nothing of the reviewed checkout, of a package runner or of an unusable entry', () => {
+      expect(launchAgentPath([
+        '/Users/me/repo/node_modules/.bin',
+        '/Users/me/repo/scripts',
+        '/Users/me/repo',
+        '/Users/me/REPO/bin',
+        '/Users/me/other/../repo/bin',
+        '/Users/me/other/node_modules/.bin',
+        '/opt/homebrew/lib/node_modules/npm/bin',
+        '.',
+        'relative/bin',
+        '~/bin',
+        '$HOME/bin',
+        '',
+        '/opt/line\nbreak/bin',
+        '/opt/homebrew/bin',
+        '/opt/homebrew/bin/',
+        '/Users/me/repo-two/bin',
+      ].join(':'), '/Users/me/repo', { realPath: asSpelled })).toBe(`/opt/homebrew/bin:/Users/me/repo-two/bin:${launchd}`);
+    });
+
+    it('knows the checkout through a link, and a folder that is gone is not carried', () => {
+      const realPath = (entry: string) => {
+        if (entry === '/Users/me/link/bin') return '/Users/me/repo/bin';
+        if (entry === '/opt/gone') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+        return entry;
+      };
+      expect(launchAgentPath('/Users/me/link/bin:/opt/gone:/opt/homebrew/bin', '/Users/me/repo', { realPath }))
+        .toBe(`/opt/homebrew/bin:${launchd}`);
+    });
+
+    it('keeps launchd\'s own folders when the shell\'s PATH has nothing to carry', () => {
+      expect(launchAgentPath(undefined, '/Users/me/repo', { realPath: asSpelled })).toBe(launchd);
+    });
+
+    it('bounds what it carries, keeping what the shell finds first and launchd\'s own folders', () => {
+      const entries = Array.from({ length: 400 }, (_, index) => `/opt/${String(index).padStart(3, '0')}/${'x'.repeat(60)}`);
+      const carried = launchAgentPath(entries.join(':'), '/Users/me/repo', { realPath: asSpelled });
+      expect(carried.length).toBeLessThanOrEqual(8000 + launchd.length + 1);
+      expect(carried.startsWith(entries[0])).toBe(true);
+      expect(carried).not.toContain(entries[399]);
+      expect(carried.endsWith(launchd)).toBe(true);
+    });
   });
 
   it('distinguishes a proven missing scheduler entry from an unknown query failure', () => {
@@ -994,6 +1150,36 @@ describe('review-gate native installer plans', () => {
       expect(run).toHaveBeenCalledWith('launchctl', ['query'], expect.any(Object));
       expect(stop).not.toHaveBeenCalled();
       expect(await readFile(plistPath, 'utf8')).toBe('new plist');
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('starts the count of failed GitHub polls again at an install, which may be their fix', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
+    try {
+      const paths = await ensureState(stateRoot);
+      await atomicWriteJson(paths.policy, { policyDigest: 'same-policy' });
+      await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
+      await executeInstallTransaction({
+        context: { repoRoot: '/repo', stateRoot, paths },
+        plan: {
+          platform: 'darwin', plistPath: path.join(stateRoot, 'watch.plist'), plist: 'new plist',
+          query: { command: 'launchctl', args: ['query'] },
+          stop: { command: 'launchctl', args: ['stop'] },
+          create: { command: 'launchctl', args: ['create'] },
+          start: { command: 'launchctl', args: ['start'] },
+          remove: { command: 'launchctl', args: ['remove'] },
+        },
+        policy: { gateVersion: 'new', policyDigest: 'same-policy' },
+        currentHooks: '.githooks',
+        previousDaemonActive: false,
+        start: true,
+      }, {
+        run: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
+        waitHeartbeat: vi.fn(async () => ({ pid: 1 })),
+      }).catch(() => {});
+      expect(await readJson(paths.githubFailure)).toBeNull();
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

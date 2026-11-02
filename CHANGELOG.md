@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A macOS watcher finds what the installing shell found.** launchd gives an agent only the
+  system's folders, so a watcher in GitHub mode failed every poll with
+  `Could not start gh: spawn gh ENOENT`. The LaunchAgent now carries the shell's `PATH`, without
+  the checkout or any `node_modules`, however they are spelled or linked, then launchd's own
+  folders, and where the tools keep their settings. **A watcher installed by an earlier engine
+  has no `PATH`: run `install` once from a shell that finds `gh`,** and again after moving a tool.
+- **A watcher that never reviews no longer looks healthy.** It goes on after a failed GitHub
+  poll with a fresh heartbeat, and only an event recorded the failure. Two failed polls in a
+  row now make `watcher.state` `failing` in `status` and `doctor`, with the reason, since when and
+  what to do, and `watcherHealthy` false, until a poll succeeds or `install` runs. A new
+  `watcherRunning` keeps the old meaning, a live and compatible watcher: an automatic update reads
+  it, because a new engine may be the fix.
 - **The Windows watcher needs no administrator.** Its logon task now names its own user.
   `schtasks /SC ONLOGON` means any user's logon, so `install` failed with `Access is denied`
   from an administrator's limited token, and an automatic update, which installs from the
