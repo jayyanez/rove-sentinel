@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.16.1 — a watcher that comes back, and says when it cannot
+
+A watcher could stop for good after a restart, fail to install without an administrator, or
+go on failing while it looked healthy. It now replaces a dead lock after a restart, installs
+from a limited token, finds what the installing shell found, and reports failing polls.
+
+**Two cases need one step by hand.** A macOS watcher installed by an earlier engine has no
+`PATH`, and macOS has no automatic updates, so run `install` once from a shell that finds
+`gh`. A Windows task registered from an elevated shell stays an administrator's: where the
+watcher runs limited, delete it once as an administrator and run `install` from the limited
+shell. `watcherHealthy` is now false for a watcher whose polls keep failing, so a consumer that
+reads `status` for a live process should read `watcherRunning`.
 
 - **A macOS watcher finds what the installing shell found.** launchd gives an agent only the
   system's folders, so a watcher in GitHub mode failed every poll with
