@@ -29,6 +29,7 @@ import {
   resumeGate,
   sleep,
   waitForDaemonHeartbeat,
+  withTakeoverMarker,
 } from './storage.mjs';
 
 function quoteWindows(value) {
@@ -377,25 +378,28 @@ export async function stopDaemon(
       throw new Error(`Review watcher process ${signalPid} did not stop.`);
     }
   }
-  const currentLock = await readRequiredState(context.paths.lock, 'watcher lock');
-  if (currentLock) {
-    if (
-      currentLock.pid !== lock?.pid ||
-      currentLock.ownerToken !== lock?.ownerToken
-    ) {
-      throw new Error('The review watcher lock changed ownership during shutdown; preserving the replacement owner state.');
-    }
-    if (isAlive(currentLock.pid)) {
-      throw new Error(`Review watcher process ${currentLock.pid} remains alive; preserving its mutual-exclusion lock.`);
-    }
-    // The old lock still excludes a replacement daemon. Remove its auxiliary
-    // state first and the lock last, so no newly acquired owner can have its
-    // heartbeat or stop request deleted by this shutdown.
-    await Promise.all([
-      removeStoredJson(context.paths.heartbeat),
-      removeStoredJson(context.paths.stopRequest),
-    ]);
-    await rm(context.paths.lock, { force: true });
+  if (await readRequiredState(context.paths.lock, 'watcher lock')) {
+    await withTakeoverMarker(context.paths, async () => {
+      const currentLock = await readRequiredState(context.paths.lock, 'watcher lock');
+      if (!currentLock) return;
+      if (
+        currentLock.pid !== lock?.pid ||
+        currentLock.ownerToken !== lock?.ownerToken
+      ) {
+        throw new Error('The review watcher lock changed ownership during shutdown; preserving the replacement owner state.');
+      }
+      if (isAlive(currentLock.pid)) {
+        throw new Error(`Review watcher process ${currentLock.pid} remains alive; preserving its mutual-exclusion lock.`);
+      }
+      // The old lock still excludes a replacement daemon. Remove its auxiliary
+      // state first and the lock last, so no newly acquired owner can have its
+      // heartbeat or stop request deleted by this shutdown.
+      await Promise.all([
+        removeStoredJson(context.paths.heartbeat),
+        removeStoredJson(context.paths.stopRequest),
+      ]);
+      await rm(context.paths.lock, { force: true });
+    });
   }
   await recoverStaleReviewResources(context.repoRoot);
   return true;
@@ -992,14 +996,17 @@ export async function recoverStaleDaemonState(
   if (normalizedReason.length < 12) {
     throw new Error('A stale-state recovery reason of at least 12 characters is required.');
   }
-  const [lock, heartbeat] = await Promise.all([
-    readJson(context.paths.lock).catch(() => null),
-    readJson(context.paths.heartbeat).catch(() => null),
-  ]);
-  if (daemonOwnerIsHealthy(lock, heartbeat)) {
-    throw new Error(`The shared review watcher is healthy at PID ${lock.pid}; use review:uninstall for a controlled stop instead of stale-state recovery.`);
-  }
-  await rm(context.paths.lock, { force: true });
+  const { lock, heartbeat } = await withTakeoverMarker(context.paths, async () => {
+    const [lock, heartbeat] = await Promise.all([
+      readJson(context.paths.lock).catch(() => null),
+      readJson(context.paths.heartbeat).catch(() => null),
+    ]);
+    if (daemonOwnerIsHealthy(lock, heartbeat)) {
+      throw new Error(`The shared review watcher is healthy at PID ${lock.pid}; use review:uninstall for a controlled stop instead of stale-state recovery.`);
+    }
+    await rm(context.paths.lock, { force: true });
+    return { lock, heartbeat };
+  });
   await rm(context.paths.queueSubmitLock, { force: true });
   await removeStoredJson(context.paths.heartbeat);
   const [technicalOutcomesCleared, claimsRecovered, resourcesRecovered] = await Promise.all([

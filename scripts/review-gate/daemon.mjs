@@ -285,6 +285,7 @@ export async function runWatcher({
   recoverResources = recoverStaleReviewResources,
   recoverQueuedClaims = recoverClaims,
   pause = pauseGate,
+  acquireLock = acquireDaemonLock,
 } = {}) {
   // A watcher is long-lived even when started manually in the foreground.
   // One-shot API-billing authority must never survive into later reviews.
@@ -293,9 +294,20 @@ export async function runWatcher({
   try {
     context.policy = await loadWatcherPolicy(context);
     await clearDaemonError(context.paths);
-    const lock = await acquireDaemonLock(context.paths);
+    const lock = await acquireLock(context.paths, {
+      announceOwner: (ownerToken) => writeHeartbeat(context.paths, {
+        repoRoot: context.repoRoot,
+        ownerToken,
+        gateVersion: GATE_VERSION,
+        charterVersion: CHARTER_VERSION,
+        policyDigest: context.policy.policyDigest,
+      }),
+    });
     if (!lock) return { alreadyRunning: true, stateRoot: context.stateRoot };
     context.daemonOwnerToken = lock.ownerToken;
+    if (lock.replaced) {
+      await recordEvent(context.paths, { type: 'restart-lock-replaced', previousLockPid: lock.replaced.pid, lastHeartbeatAt: lock.replaced.lastHeartbeatAt }).catch(() => {});
+    }
 
     let stopped = false;
     let nextGithubAt = 0;
@@ -317,8 +329,17 @@ export async function runWatcher({
     const stopMonitoring = monitorDaemonStopRequests(context, stop);
 
     try {
-      await recoverResources(context.repoRoot);
-      await recoverQueuedClaims(context.paths);
+      const recoverState = async () => {
+        await recoverResources(context.repoRoot);
+        await recoverQueuedClaims(context.paths);
+      };
+      // An owner that announced itself keeps its heartbeat fresh while it
+      // recovers: a stale one would let `recover` remove this live lock.
+      if (lock.replaced) {
+        await runWithHeartbeat(context, { activity: 'recovering' }, recoverState);
+      } else {
+        await recoverState();
+      }
       do {
         try {
           await writeHeartbeat(context.paths, {

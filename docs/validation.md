@@ -8,8 +8,10 @@ nothing and for one that lists its paths; the GUI evidence check with and withou
 classify the same files as `rove`; Clippy's crate discovery, its shared bound and its
 placement of a workspace member's messages; `watcher.state` in each state, a corrupt
 lock, a scheduler that cannot be read or started, and `uninstall`; `doctor` warning
-before a check fails; a stop and `recover` beside an owner that cannot be signalled; and the
-engine install's environment and flags.
+before a check fails; a stop and `recover` beside an owner that cannot be signalled; the
+engine install's environment and flags; and a lock left by a restart, with each test of the
+rule, starters held at each step, and eight real processes racing. A real restart has not run
+through that rule.
 
 Live: `cargo clippy` 0.1.94 through the lane on a synthetic workspace placed both
 warnings on their real files. A local listener recorded each `CONNECT` on Windows

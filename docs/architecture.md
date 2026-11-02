@@ -166,6 +166,16 @@ reviews only the other shards, adjudicates every candidate afresh, and records
 which shards it reused; `--force` and a round that ends in a report keep
 nothing. A kept review is not a decision: only a completed round attests.
 
+A watcher's lock is a file created with `wx`, so a state root belongs to one
+machine: process ids and boot times prove nothing between two. A start replaces
+a lock only when the machine booted after that lock's last heartbeat and its
+process is gone, in one rename, so the name is never free. `takeover.lock` lets
+one process at a time replace or remove a lock it did not write. A `stop` or `recover` from an engine older than that marker does not
+honour it, so one beside a takeover can still cost a second watcher. Sentinel
+never removes a marker it did not take: a person deletes one left behind. See
+[the plan](https://github.com/jayyanez/rove-sentinel/pull/22) for what this does
+not cover.
+
 State identity is shared by local clones of the same remote. To keep state
 written by earlier versions and prevent duplicate watchers, Sentinel stays on its
 `Rove/shared-review-gate` Windows state namespace and `Rove-Shared-Review-Gate`
