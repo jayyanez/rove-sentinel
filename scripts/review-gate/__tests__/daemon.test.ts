@@ -22,6 +22,29 @@ import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
+describe('a watcher whose GitHub polls keep failing', () => {
+  it('keeps count of the failures in a row, the first one\'s time and the last reason, until a poll succeeds', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-failure-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    const poll = (syncPulls: () => Promise<void>) => runWatcher({
+      repoRoot: process.cwd(), stateRoot, once: true, syncPulls,
+      recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+    });
+    try {
+      await poll(async () => { throw new Error('Could not start gh: spawn gh ENOENT'); });
+      const first = await readJson(paths.githubFailure);
+      expect(first).toMatchObject({ count: 1, message: 'Could not start gh: spawn gh ENOENT' });
+      await poll(async () => { throw new Error('a later reason'); });
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: first.since, message: 'a later reason' });
+      await poll(async () => {});
+      expect(await readJson(paths.githubFailure)).toBeNull();
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('a computer whose watcher leaves GitHub alone', () => {
   async function pollsGitHub(options?: { github: boolean; pending?: { github: boolean; pid: number; until: number } }) {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-no-github-'));

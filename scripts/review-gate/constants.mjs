@@ -185,6 +185,9 @@ export const LIMITS = Object.freeze({
   githubMaxBackoffMs: 10 * 60 * 1000,
   githubErrorRetryBaseMs: 60 * 1000,
   githubErrorMaxAttempts: 3,
+  // One failed poll is a passing network error; two in a row, on a watcher
+  // that polls again after two minutes, are what status calls failing.
+  githubFailuresToReport: 2,
   githubCommentFindings: 20,
   maxOpenPullRequests: 1_000,
   githubSummaryChars: 4_000,

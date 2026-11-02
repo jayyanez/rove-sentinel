@@ -51,6 +51,10 @@ export async function maybeStartUpdateWorker(context, { now = Date.now(), start 
 }
 
 /** Side-by-side installation. Existing runtime files and consumer pins are never edited. */
+/** A live, compatible watcher. Failing GitHub polls hold no update back: it may be
+ *  their fix. An engine before `watcherRunning` reports only `watcherHealthy`. */
+const watcherAlive = (status) => status.watcherRunning ?? status.watcherHealthy;
+
 export async function automaticUpdate({ repoRoot = process.cwd(), force = false } = {}, {
   contextFor = createGateContext, check = checkForUpdates, ensure = ensureEngine,
   status = gateStatus, stop = stopDaemon, run = runProcess,
@@ -82,7 +86,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
     if (!await enabled(paths, env)) return { status: 'disabled' };
     await notify(context, state).catch(() => {});
     const before = await status({ repoRoot: context.repoRoot });
-    if (!before.watcherHealthy || before.heartbeat?.repoRoot !== context.repoRoot || before.paused
+    if (!watcherAlive(before) || before.heartbeat?.repoRoot !== context.repoRoot || before.paused
       || before.queue?.depth !== 0 || before.queue?.submissionOwner
       || Object.values(before.persistedStateErrors || {}).some(Boolean)) return { status: 'waiting', version: nextVersion };
     const previousPolicy = await readJson(paths.policy);
@@ -109,7 +113,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       let acknowledged = false;
       while (Date.now() <= deadline) {
         const health = await status({ repoRoot: context.repoRoot });
-        if (!health.watcherHealthy || health.heartbeat?.pid !== before.heartbeat.pid) throw new Error('Watcher ownership changed during update.');
+        if (!watcherAlive(health) || health.heartbeat?.pid !== before.heartbeat.pid) throw new Error('Watcher ownership changed during update.');
         if (health.heartbeat.activity === 'paused') { acknowledged = true; break; }
         await sleep(250);
       }
@@ -124,7 +128,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       if (await exec(nextCli, ['--version']) !== nextVersion) throw new Error('New engine reports the wrong version.');
       await exec(nextCli, ['install', '--preserve-policy']);
       const health = JSON.parse(await exec(nextCli, ['status', '--no-update-check']));
-      if (!health.watcherHealthy || health.heartbeat?.gateVersion !== nextVersion || health.heartbeat?.repoRoot !== context.repoRoot) {
+      if (!watcherAlive(health) || health.heartbeat?.gateVersion !== nextVersion || health.heartbeat?.repoRoot !== context.repoRoot) {
         throw new Error('New engine did not start a healthy watcher.');
       }
       // Publish only after health verification. New CLI invocations now choose the same runtime as the watcher.
@@ -140,7 +144,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
           await atomicWriteJson(paths.policy, previousPolicy);
           await exec(cliPath, ['install', '--preserve-policy']);
           const restored = JSON.parse(await exec(cliPath, ['status', '--no-update-check']));
-          if (!restored.watcherHealthy || restored.heartbeat?.gateVersion !== version) throw new Error('Previous watcher did not recover.');
+          if (!watcherAlive(restored) || restored.heartbeat?.gateVersion !== version) throw new Error('Previous watcher did not recover.');
         }
         state = previousState;
         await save({ phase: 'failed', failedVersion: nextVersion, lastError: error.message });

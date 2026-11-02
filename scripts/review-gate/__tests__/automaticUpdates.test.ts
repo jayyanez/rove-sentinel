@@ -52,6 +52,11 @@ describe('automatic engine activation', () => {
     expect(f.deps.ensure).toHaveBeenCalledOnce();
     expect(f.deps.stop).not.toHaveBeenCalled();
   });
+  it('updates a live watcher whose GitHub polls fail: the new engine may be the fix', async () => {
+    const f = await fixture();
+    Object.assign(f.health, { watcherHealthy: false, watcherRunning: true });
+    expect(await automaticUpdate({}, f.deps)).toEqual({ status: 'updated', version: '1.11.0' });
+  });
   it('lets a foreground review finish and refuses new reviews during activation', async () => {
     const f = await fixture();
     const release = await acquireReviewLease(f.context.paths);

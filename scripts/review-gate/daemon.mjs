@@ -15,6 +15,7 @@ import {
 import {
   acquireDaemonLock,
   clearDaemonError,
+  clearGithubFailure,
   claimNextRequest,
   completeRequest,
   hasQueuedRequests,
@@ -23,6 +24,7 @@ import {
   readJson,
   readPause,
   readWatcherGithub,
+  recordGithubFailure,
   removeStoredJson,
   recoverClaims,
   sleep,
@@ -380,11 +382,13 @@ export async function runWatcher({
                 }),
               );
               githubBackoffMs = LIMITS.githubPollMs;
+              await clearGithubFailure(context.paths);
             } catch (error) {
               await recordEvent(context.paths, {
                 type: 'github-error',
                 message: error?.message || String(error),
               });
+              await recordGithubFailure(context.paths, error);
               githubBackoffMs = Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs);
               progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${error.message}`);
             }

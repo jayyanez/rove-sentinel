@@ -91,13 +91,16 @@ watcher. On Windows it registers a hidden task for your own logon, which needs n
 administrator: install from your ordinary shell, because a task registered from an
 elevated one stays an administrator's, and automatic updates cannot replace it. Its
 wrapper keeps the `PATH` and tool settings of the shell you install from: run
-`install` again after moving Git or a provider CLI. Keep this
+`install` again after moving Git or a provider CLI. On macOS it registers a
+LaunchAgent, which keeps the same `PATH`, without this checkout or any
+`node_modules`, and the same settings, because launchd gives an agent only the
+system's folders: install from a shell that finds `gh` and the provider CLIs. Keep this
 checkout and its installed dependency available; do not install the watcher from
 a temporary review worktree that will be deleted.
 
 In `status`, check that the watcher and policy are compatible, the scheduler is
-installed, and `paused` is `null`. A healthy heartbeat alone does not mean reviews
-are enabled. An earlier safety pause survives reinstall; investigate its reason
+installed, `watcher.state` is `running`, and `paused` is `null`. A healthy heartbeat
+alone does not mean reviews are enabled. An earlier safety pause survives reinstall; investigate its reason
 and follow [recovery guidance](troubleshooting.md) before resuming.
 
 If another checkout owns an active watcher for the same remote, installation

@@ -95,6 +95,7 @@ export function statePaths(root) {
     heartbeat: path.join(root, 'heartbeat.json'),
     stopRequest: path.join(root, 'stop-request.json'),
     daemonError: path.join(root, 'daemon-error.json'),
+    githubFailure: path.join(root, 'github-failure.json'),
     watcherStartLog: path.join(root, 'watcher-start.log'),
     paused: path.join(root, 'paused.json'),
     policy: path.join(root, 'policy.json'),
@@ -1412,6 +1413,27 @@ export async function writeDaemonError(paths, error) {
     message,
   });
   return message;
+}
+
+/**
+ * The GitHub polls that failed in a row. A watcher goes on after one, keeping its
+ * heartbeat, so an event alone left one that never reviews looking well: status
+ * reads this. It stays across a restart, since a restart fixes nothing by itself,
+ * and goes with the next poll that succeeds, or with an install.
+ */
+export async function recordGithubFailure(paths, error, at = new Date()) {
+  const previous = await readJson(paths.githubFailure).catch(() => null);
+  await atomicWriteJson(paths.githubFailure, {
+    schemaVersion: 1,
+    count: (Number.isInteger(previous?.count) ? previous.count : 0) + 1,
+    since: previous?.since ?? at.toISOString(),
+    at: at.toISOString(),
+    message: String(error?.message || error || 'unknown GitHub error').slice(0, 2000),
+  });
+}
+
+export async function clearGithubFailure(paths) {
+  await removeStoredJson(paths.githubFailure);
 }
 
 /**
