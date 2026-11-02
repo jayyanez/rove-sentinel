@@ -37,8 +37,8 @@ dependencies, a working-tree policy was kept out of activation, and the real sch
 the previous watcher after an injected failure. No fixture task remained, and the real
 watchers' tasks were unchanged.
 
-A real restart has not run through the lock rule, nor has a Windows shut down with Fast
-Startup, or an older engine's `stop` or `recover` as a real process. No update from 1.16.0 to
+A real restart has not run through the lock rule, and neither has a shutdown with Windows Fast
+Startup or an older engine's `stop` or `recover` as a real process. No update from 1.16.0 to
 this release has been exercised.
 
 ## 1.16.0 generic paths, and a watcher you can see — 2026-11-01
