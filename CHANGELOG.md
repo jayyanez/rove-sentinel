@@ -59,7 +59,8 @@ reads `status` for a live process should read `watcherRunning`.
   does not count as a boot; that has not been measured. A new
   `takeover.lock` lets one process at a time replace or remove a lock it did not write, and
   `stop` and `recover` honour it. If its holder dies, a later takeover refuses until a person deletes that
-  file. No real restart has run through this yet.
+  file. A clean restart on Windows has run through this. A power cut, Fast Startup, macOS and
+  Linux have not.
 
 ## 1.16.0 — any project's paths, and a watcher you can see
 

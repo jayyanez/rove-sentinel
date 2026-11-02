@@ -37,9 +37,15 @@ dependencies, a working-tree policy was kept out of activation, and the real sch
 the previous watcher after an injected failure. No fixture task remained, and the real
 watchers' tasks were unchanged.
 
-A real restart has not run through the lock rule, and neither has a shutdown with Windows Fast
-Startup or an older engine's `stop` or `recover` as a real process. No update from 1.16.0 to
-this release has been exercised.
+A clean restart ran through the lock rule on Windows on 2026-11-02, with the build of #27 as a
+separate test watcher and no `recover` at any point. The last heartbeat was at 01:10:22.9Z and
+the boot at 01:10:43Z. The lock passed from one process to another with a new token, a
+`restart-lock-replaced` event was recorded, and the watcher came back healthy. That build came
+before the later changes in this release, so the restart has not run on this release's own head.
+
+A power cut, a shutdown with Windows Fast Startup, macOS and Linux have not run through the
+rule, and neither has an older engine's `stop` or `recover` as a real process. No update from
+1.16.0 to this release has been exercised.
 
 ## 1.16.0 generic paths, and a watcher you can see — 2026-11-01
 
