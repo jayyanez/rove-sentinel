@@ -1161,7 +1161,10 @@ describe('review-gate native installer plans', () => {
   });
 
   describe('the count of failed GitHub polls at an install', () => {
-    async function installOver(run: (command: string, args: string[]) => Promise<unknown>) {
+    async function installOver(
+      run: (command: string, args: string[]) => Promise<unknown>,
+      { start = true, currentHooks = '.githooks', git }: { start?: boolean; currentHooks?: string; git?: (paths: unknown) => Promise<string> } = {},
+    ) {
       const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
       const paths = await ensureState(stateRoot);
       await atomicWriteJson(paths.policy, { policyDigest: 'same-policy' });
@@ -1178,10 +1181,10 @@ describe('review-gate native installer plans', () => {
           remove: { command: 'launchctl', args: ['remove'] },
         },
         policy: { gateVersion: 'new', policyDigest: 'same-policy' },
-        currentHooks: '.githooks',
+        currentHooks,
         previousDaemonActive: false,
-        start: true,
-      }, { run: vi.fn(run), waitHeartbeat: vi.fn(async () => ({ pid: 1 })) });
+        start,
+      }, { run: vi.fn(run), waitHeartbeat: vi.fn(async () => ({ pid: 1 })), ...(git ? { git: () => git(paths) } : {}) });
       return { install, paths, stateRoot };
     }
 
@@ -1190,6 +1193,26 @@ describe('review-gate native installer plans', () => {
       try {
         await install;
         expect(await readJson(paths.githubFailure)).toBeNull();
+      } finally {
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('is the live watcher\'s after a failed --no-start install, which never cleared it', async () => {
+      const { install, paths, stateRoot } = await installOver(
+        async () => ({ code: 1, stdout: '', stderr: 'Could not find service' }),
+        {
+          start: false,
+          currentHooks: '',
+          git: async (state) => {
+            await recordGithubFailure(state as never, new Error('a later failure'));
+            throw new Error('git refused');
+          },
+        },
+      );
+      try {
+        await expect(install).rejects.toThrow('git refused');
+        expect(await readJson(paths.githubFailure)).toMatchObject({ count: 3, message: 'a later failure' });
       } finally {
         await rm(stateRoot, { recursive: true, force: true });
       }

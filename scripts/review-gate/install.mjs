@@ -628,12 +628,13 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, watcherOptionsBefore, githubFailureBefore, artifactBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, artifactBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
     snapshotFile(context.paths.watcherOptions),
-    snapshotFile(context.paths.githubFailure),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
   ]);
+  // Taken as it is cleared: until the watcher stops, it may be counting.
+  let githubFailureBefore = null;
   const configuredHooks = !currentHooks;
   let schedulerCreated = false;
   let schedulerReplaced = false;
@@ -674,6 +675,7 @@ export async function executeInstallTransaction(
     }
     if (start) {
       await clearDaemonError(context.paths);
+      githubFailureBefore = await snapshotFile(context.paths.githubFailure);
       await clearGithubFailure(context.paths);
     }
     if (plan.platform === 'win32') {
@@ -765,7 +767,7 @@ export async function executeInstallTransaction(
     }
     await attempt(() => restoreFile(context.paths.policy, policyBefore, { storedJson: true }));
     await attempt(() => restoreFile(context.paths.watcherOptions, watcherOptionsBefore, { storedJson: true }));
-    await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
+    if (githubFailureBefore) await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
     if (
