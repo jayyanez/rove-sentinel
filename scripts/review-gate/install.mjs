@@ -180,8 +180,8 @@ export function watcherPath(pathValue, repoRoot) {
  * checkout, so only an absolute one is kept. macOS folders usually ignore case
  * and a link can lead into the checkout, so entries are compared by what they
  * resolve to as well as by how they are spelled, and one that resolves to nothing
- * cannot be compared and held no tool. launchd's own folders stay last: a shell
- * may lack them, and the watcher had them before.
+ * cannot be compared and held no tool. Those of launchd's own folders the shell
+ * lacks follow: the watcher had them before.
  */
 export function launchAgentPath(pathValue, repoRoot, { realPath = realpathSync.native } = {}) {
   const fold = (value) => value.toLowerCase().replace(/\/+$/, '');
@@ -628,9 +628,10 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, watcherOptionsBefore, artifactBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, githubFailureBefore, artifactBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
     snapshotFile(context.paths.watcherOptions),
+    snapshotFile(context.paths.githubFailure),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
   ]);
   const configuredHooks = !currentHooks;
@@ -764,6 +765,7 @@ export async function executeInstallTransaction(
     }
     await attempt(() => restoreFile(context.paths.policy, policyBefore, { storedJson: true }));
     await attempt(() => restoreFile(context.paths.watcherOptions, watcherOptionsBefore, { storedJson: true }));
+    await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
     if (

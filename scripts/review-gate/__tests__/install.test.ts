@@ -634,6 +634,11 @@ describe('review-gate native installer plans', () => {
       expect(launchAgentPath(undefined, '/Users/me/repo', { realPath: asSpelled })).toBe(launchd);
     });
 
+    it('keeps the shell\'s order of launchd\'s own folders, and adds only those it lacks', () => {
+      expect(launchAgentPath('/bin:/opt/homebrew/bin:/usr/bin', '/Users/me/repo', { realPath: asSpelled }))
+        .toBe('/bin:/opt/homebrew/bin:/usr/bin:/usr/sbin:/sbin');
+    });
+
     it('bounds what it carries, keeping what the shell finds first and launchd\'s own folders', () => {
       const entries = Array.from({ length: 400 }, (_, index) => `/opt/${String(index).padStart(3, '0')}/${'x'.repeat(60)}`);
       const carried = launchAgentPath(entries.join(':'), '/Users/me/repo', { realPath: asSpelled });
@@ -1155,13 +1160,14 @@ describe('review-gate native installer plans', () => {
     }
   });
 
-  it('starts the count of failed GitHub polls again at an install, which may be their fix', async () => {
-    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
-    try {
+  describe('the count of failed GitHub polls at an install', () => {
+    async function installOver(run: (command: string, args: string[]) => Promise<unknown>) {
+      const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-review-install-test-'));
       const paths = await ensureState(stateRoot);
       await atomicWriteJson(paths.policy, { policyDigest: 'same-policy' });
       await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
-      await executeInstallTransaction({
+      await recordGithubFailure(paths, new Error('spawn gh ENOENT'));
+      const install = executeInstallTransaction({
         context: { repoRoot: '/repo', stateRoot, paths },
         plan: {
           platform: 'darwin', plistPath: path.join(stateRoot, 'watch.plist'), plist: 'new plist',
@@ -1175,14 +1181,32 @@ describe('review-gate native installer plans', () => {
         currentHooks: '.githooks',
         previousDaemonActive: false,
         start: true,
-      }, {
-        run: vi.fn(async () => ({ code: 0, stdout: '', stderr: '' })),
-        waitHeartbeat: vi.fn(async () => ({ pid: 1 })),
-      }).catch(() => {});
-      expect(await readJson(paths.githubFailure)).toBeNull();
-    } finally {
-      await rm(stateRoot, { recursive: true, force: true });
+      }, { run: vi.fn(run), waitHeartbeat: vi.fn(async () => ({ pid: 1 })) });
+      return { install, paths, stateRoot };
     }
+
+    it('starts again, since an install may be their fix', async () => {
+      const { install, paths, stateRoot } = await installOver(async () => ({ code: 0, stdout: '', stderr: '' }));
+      try {
+        await install;
+        expect(await readJson(paths.githubFailure)).toBeNull();
+      } finally {
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('stays after an install that failed and changed nothing, or the failing watcher it left would look healthy', async () => {
+      const { install, paths, stateRoot } = await installOver(async (_command, args) => {
+        if (args.includes('create')) throw new Error('launchctl refused');
+        return { code: 1, stdout: '', stderr: 'Could not find service' };
+      });
+      try {
+        await expect(install).rejects.toThrow('launchctl refused');
+        expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, message: 'spawn gh ENOENT' });
+      } finally {
+        await rm(stateRoot, { recursive: true, force: true });
+      }
+    });
   });
 
   it('refuses to swap policy under an active watcher during no-start reinstall', async () => {

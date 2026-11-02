@@ -5,8 +5,8 @@
 - **A macOS watcher finds what the installing shell found.** launchd gives an agent only the
   system's folders, so a watcher in GitHub mode failed every poll with
   `Could not start gh: spawn gh ENOENT`. The LaunchAgent now carries the shell's `PATH`, without
-  the checkout or any `node_modules`, however they are spelled or linked, then launchd's own
-  folders, and where the tools keep their settings. **A watcher installed by an earlier engine
+  the checkout or any `node_modules`, however they are spelled or linked, adds those of launchd's
+  own folders it lacks, and says where the tools keep their settings. **A watcher installed by an earlier engine
   has no `PATH`: run `install` once from a shell that finds `gh`,** and again after moving a tool.
 - **A watcher that never reviews no longer looks healthy.** It goes on after a failed GitHub
   poll with a fresh heartbeat, and only an event recorded the failure. Two failed polls in a

@@ -4,11 +4,11 @@
 
 Deterministic tests cover what a LaunchAgent carries: the shell's `PATH` without the
 checkout, however it is spelled or linked, any `node_modules`, relative or unusable entries or
-a missing folder, in the plist's XML and bounded, with launchd's own folders last and no
+a missing folder, in the plist's XML and bounded, with launchd's own folders kept and no
 credential. They also cover the count of failed polls across a real `runWatcher`, and
 `watcher.state` `failing`, `watcherHealthy` and `watcherRunning` in `status` and `doctor`, after one
-failure, after two, after `--no-github` and after `install`; an automatic update reads
-`watcherRunning`.
+failure, after two, after `--no-github` and after `install`, which a failed install restores;
+an automatic update reads `watcherRunning`.
 
 Live on macOS 27 on Apple silicon, Node 26, with a throwaway repository whose remote does not
 exist, in a real LaunchAgent. The previous engine recorded `Could not start gh: spawn gh ENOENT`
