@@ -1,6 +1,6 @@
 # Standalone validation record
 
-## Unreleased: a macOS watcher's tools, and failing polls — 2026-11-02
+## 1.16.1 a watcher that comes back, and says when it cannot — 2026-11-02
 
 Deterministic tests cover what a LaunchAgent carries: the shell's `PATH` without the
 checkout, however it is spelled or linked, any `node_modules`, relative or unusable entries or
@@ -18,6 +18,35 @@ missing repository. Both `status` and `doctor` then warned, with `failing` and
 `watcherHealthy: false`. A poll that succeeds under launchd has not run live, nor has this on
 Windows or through an automatic update.
 
+Deterministic tests also cover a lock left by a restart, with each test of the rule, starters
+held at each step, and eight real processes racing; a review checkout beside an owner that
+cannot be signalled; a torn result beside a claim; and the Windows task's trigger and settings,
+its wrapper's environment and line length, the refusal over an administrator's task, and the
+start log.
+
+Live on Windows 11 under a limited token: `install` from nothing and again over its own task,
+`uninstall`, the task's own-user trigger and settings, and an empty start log on a healthy
+start. Before that change's last two commits, the task's logon trigger fired after a real
+restart, and the refusal over an elevated task gave steps that worked.
+
+The suite passed on Windows Server 2025, Node 24.18: 871 tests. `pnpm verify:package` passed,
+reporting 1.16.1. `scripts/runtime-smoke.mjs` passed on this release with synthetic 1.16.2 and
+1.16.3 engines: a busy project waited while a second activated the shared runtime, two projects
+reused one download, pinned launchers selected the new runtime without editing their
+dependencies, a working-tree policy was kept out of activation, and the real scheduler restored
+the previous watcher after an injected failure. No fixture task remained, and the real
+watchers' tasks were unchanged.
+
+A clean restart ran through the lock rule on Windows on 2026-11-02, with the build of #27 as a
+separate test watcher and no `recover` at any point. The last heartbeat was at 01:10:22.9Z and
+the boot at 01:10:43Z. The lock passed from one process to another with a new token, a
+`restart-lock-replaced` event was recorded, and the watcher came back healthy. That build came
+before the later changes in this release, so the restart has not run on this release's own head.
+
+A power cut, a shutdown with Windows Fast Startup, macOS and Linux have not run through the
+rule, and neither has an older engine's `stop` or `recover` as a real process. No update from
+1.16.0 to this release has been exercised.
+
 ## 1.16.0 generic paths, and a watcher you can see — 2026-11-01
 
 Deterministic tests cover risk ratings and shard lenses for a repository that sets
@@ -26,10 +55,8 @@ nothing and for one that lists its paths; the GUI evidence check with and withou
 classify the same files as `rove`; Clippy's crate discovery, its shared bound and its
 placement of a workspace member's messages; `watcher.state` in each state, a corrupt
 lock, a scheduler that cannot be read or started, and `uninstall`; `doctor` warning
-before a check fails; a stop and `recover` beside an owner that cannot be signalled; the
-engine install's environment and flags; and a lock left by a restart, with each test of the
-rule, starters held at each step, and eight real processes racing. A real restart has not run
-through that rule.
+before a check fails; a stop and `recover` beside an owner that cannot be signalled; and the
+engine install's environment and flags.
 
 Live: `cargo clippy` 0.1.94 through the lane on a synthetic workspace placed both
 warnings on their real files. A local listener recorded each `CONNECT` on Windows

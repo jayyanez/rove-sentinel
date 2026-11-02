@@ -1,6 +1,6 @@
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 
-// What this engine version accepts and where it stops (1.16.0), from the
+// What this engine version accepts and where it stops (1.16.1), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -103,6 +103,16 @@ export function sentinelLimits() {
         rule: 'Avoid shards of about 70 KB (Codex never saw them whole)',
         unnecessarySince: '1.11.1',
         why: 'Shards are written in parts that each fit one read; since 1.13.0 a shard of up to 96 KB is in the prompt.',
+      },
+      {
+        rule: 'Run recover and install after a restart to bring a watcher back',
+        unnecessarySince: '1.16.1',
+        why: 'A start replaces a lock when the machine booted after that lock\'s last heartbeat and its process is gone. Any other dead process\'s lock still needs both; status says why a watcher is stopped.',
+      },
+      {
+        rule: 'Run install from an elevated shell on Windows',
+        unnecessarySince: '1.16.1',
+        why: 'The watcher\'s task names its own user, so a limited token may create and replace it. A task already registered from an elevated shell stays an administrator\'s.',
       },
     ],
   };

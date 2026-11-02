@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.16.0
+**Engine version:** 1.16.1
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,7 +28,7 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.16.0
+## Limits of 1.16.1
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
@@ -58,10 +58,12 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 | Keep changed lines under about 2 KB | 1.12.0 | Context is bounded by bytes, and a long line is cut across parts |
 | Keep a follow-up delta small for the adjudicator | 1.13.0 | The patch is a lookup, and an adjudicator is assigned candidates, not a diff |
 | Avoid shards of about 70 KB | 1.11.1 | Shards are written in parts that each fit one read |
+| Run `recover` and `install` after a restart to bring a watcher back | 1.16.1 | A start replaces a lock when the machine booted after that lock's last heartbeat and its process is gone. Any other dead process's lock still needs both; `status` says why a watcher is stopped |
+| Run `install` from an elevated shell on Windows | 1.16.1 | The watcher's task names its own user, so a limited token may create and replace it. A task already registered from an elevated shell stays an administrator's |
 
 ## Limits that remain
 
-These are real in 1.16.0; work within them rather than around them.
+These are real in 1.16.1; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:
@@ -75,5 +77,11 @@ These are real in 1.16.0; work within them rather than around them.
   `git diff --unified=80 "$(git merge-base origin/main HEAD)...HEAD" | wc -c`.
 - AI review can miss defects and report false ones; a PASS is not a
   guarantee. Reference discovery is a line lexer, not a parser.
+- A logoff, a crash or a kill within one boot leaves a lock that a person
+  clears with `recover` and `install`, and a `takeover.lock` left behind is a
+  person's to delete ([troubleshooting](troubleshooting.md)).
+- A scheduled watcher carries the installing shell's `PATH`, up to 8,000
+  characters, without the checkout or any `node_modules`. Run `install` again
+  after moving a tool.
 - Windows is the qualified platform; macOS on Apple silicon is qualified as a
   second computer ([support](support.md)).
