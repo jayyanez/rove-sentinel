@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
 import {
   buildInstallPlan,
+  watcherPath,
+  windowsTaskRefusal,
   windowsTaskRun,
   daemonSignalPid,
   executeUninstall,
@@ -248,15 +250,159 @@ describe('review-gate native installer plans', () => {
     });
     expect(plan.taskName).toMatch(/^Rove-Shared-Review-Gate-[a-f0-9]{8}$/);
     expect(plan.create.command).toBe('schtasks.exe');
-    expect(plan.create.args).toContain('ONLOGON');
+    expect(plan.create.args).toEqual(['/Create', '/TN', plan.taskName, '/XML', 'C:\\state\\watch-task.xml', '/F']);
     expect(plan.stop.args).toContain('/End');
-    expect(plan.create.args.join(' ')).toContain('watch.cmd');
-    expect(plan.create.args.join(' ').length).toBeLessThan(261);
+    expect(plan.taskXml).toContain('watch.cmd');
     expect(plan.wrapper).toContain('"watch" "--daemon"');
     expect(plan.wrapper).toContain('set "ROVE_REVIEW_ALLOW_API_BILLING="');
     expect(plan.wrapper).toContain('set "ANTHROPIC_API_KEY="');
     expect(plan.wrapper).toContain('set "OPENAI_API_KEY="');
-    expect(plan.create.args.join(' ')).not.toContain('powershell');
+    expect(plan.taskXml).not.toContain('powershell');
+  });
+
+  it('registers the task for its own user\'s logon, which needs no administrator', () => {
+    const plan = buildInstallPlan({
+      platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe', systemRoot: 'C:\\WINDOWS',
+      environment: { USERDOMAIN: 'EXAMPLE', USERNAME: 'me & you' },
+    });
+    expect(plan.create.args).not.toContain('ONLOGON');
+    expect(plan.taskXml).toMatch(/<LogonTrigger>\s*<Enabled>true<\/Enabled>\s*<UserId>EXAMPLE\\me &amp; you<\/UserId>\s*<\/LogonTrigger>/);
+    expect(plan.taskXml).toContain('<RunLevel>LeastPrivilege</RunLevel>');
+  });
+
+  it('says how to take over a task registered from an elevated shell, and only then', () => {
+    const denied = new Error('schtasks.exe exited with code 1: ERROR: Access is denied.');
+    expect(windowsTaskRefusal(denied, true, 'Example-Task').message).toContain('schtasks /Delete /TN Example-Task /F');
+    expect(windowsTaskRefusal(denied, true, 'Example-Task').message).toContain('install from this shell');
+    expect(windowsTaskRefusal(denied, true, 'Example-Task').cause).toBe(denied);
+    expect(windowsTaskRefusal(denied, false, 'Example-Task')).toBe(denied);
+    const other = new Error('schtasks.exe exited with code 1: ERROR: The task XML is malformed.');
+    expect(windowsTaskRefusal(other, true, 'Example-Task')).toBe(other);
+  });
+
+  it('does not try again a replacement the scheduler refused, which changed nothing', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-task-refused-'));
+    try {
+      const paths = await ensureState(stateRoot);
+      const plan = { ...buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot, nodePath: 'C:\\node.exe' }),
+        wrapperPath: path.join(stateRoot, 'watch.cmd'), taskXmlPath: path.join(stateRoot, 'watch-task.xml') };
+      const run = vi.fn(async (_command: string, args: string[]) => {
+        if (args.includes('/Create')) throw new Error('schtasks.exe exited with code 1: ERROR: Access is denied.');
+        return { code: 0, stdout: `TaskName: \\${plan.taskName}`, stderr: '' };
+      });
+      await expect(executeInstallTransaction({
+        context: { paths, repoRoot: stateRoot, stateRoot }, plan, policy: { policyDigest: 'p' }, currentHooks: '.githooks', start: false,
+      }, { run })).rejects.toThrow(/schtasks \/Delete/);
+      expect(run.mock.calls.filter(([, args]) => args.includes('/Create'))).toHaveLength(1);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a laptop\'s watcher running on battery and past the scheduler\'s default time limit', () => {
+    const plan = buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe' });
+    expect(plan.taskXml).toContain('<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>');
+    expect(plan.taskXml).toContain('<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>');
+    expect(plan.taskXml).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+  });
+
+  it('writes the task definition where the plan names it, marked as the UTF-16 it declares', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'rove-task-xml-'));
+    try {
+      const paths = await ensureState(stateRoot);
+      const plan = { ...buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot, nodePath: 'C:\\node.exe' }),
+        wrapperPath: path.join(stateRoot, 'watch.cmd'), taskXmlPath: path.join(stateRoot, 'watch-task.xml') };
+      await executeInstallTransaction({
+        context: { paths, repoRoot: stateRoot, stateRoot }, plan, policy: { policyDigest: 'p' }, currentHooks: '.githooks', start: false,
+      }, { run: vi.fn(async () => ({ code: 1, stdout: '', stderr: 'ERROR: The system cannot find the file specified.' })) });
+      const bytes = await readFile(plan.taskXmlPath);
+      expect([...bytes.subarray(0, 2)]).toEqual([0xff, 0xfe]);
+      expect(bytes.subarray(2).toString('utf16le')).toBe(plan.taskXml);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the tools the installing shell found into the scheduled watcher, and never a credential', () => {
+    const plan = buildInstallPlan({
+      platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe',
+      environment: {
+        PATH: 'C:\\tools\\git\\cmd;C:\\Windows',
+        CLAUDE_CONFIG_DIR: 'C:\\tools\\home\\claude',
+        CODEX_HOME: 'C:\\tools\\home\\codex',
+        GH_CONFIG_DIR: 'C:\\tools\\home\\gh',
+        GIT_CONFIG_GLOBAL: 'C:\\tools\\home\\gitconfig',
+        GH_TOKEN: 'not-for-the-wrapper',
+        ANTHROPIC_API_KEY: 'not-for-the-wrapper',
+      },
+    });
+    expect(plan.wrapper).toContain('set "PATH=C:\\tools\\git\\cmd;C:\\Windows"\r\n');
+    expect(plan.wrapper).toContain('set "CLAUDE_CONFIG_DIR=C:\\tools\\home\\claude"');
+    expect(plan.wrapper).toContain('set "CODEX_HOME=C:\\tools\\home\\codex"');
+    expect(plan.wrapper).toContain('set "GH_CONFIG_DIR=C:\\tools\\home\\gh"');
+    expect(plan.wrapper).toContain('set "GIT_CONFIG_GLOBAL=C:\\tools\\home\\gitconfig"');
+    expect(plan.wrapper.indexOf('set "PATH=')).toBeLessThan(plan.wrapper.indexOf('"watch"'));
+    expect(plan.wrapper).not.toContain('not-for-the-wrapper');
+    expect(plan.wrapper).toContain('set "ANTHROPIC_API_KEY="');
+  });
+
+  it('carries nothing of the reviewed checkout, of a package runner or of an unusable entry', () => {
+    expect(watcherPath([
+      'D:\\project\\node_modules\\.bin',
+      'D:\\Project\\scripts',
+      'D:\\project',
+      'C:\\other\\node_modules\\.bin',
+      'C:\\pkg\\node_modules\\npm\\bin',
+      '.',
+      'relative\\bin',
+      '%UNEXPANDED%\\bin',
+      '"C:\\Program Files\\Git\\cmd"',
+      '',
+      'C:\\tools',
+      'c:\\TOOLS\\',
+      'D:\\project-two\\bin',
+    ].join(';'), 'D:\\project')).toBe('C:\\Program Files\\Git\\cmd;C:\\tools;D:\\project-two\\bin');
+  });
+
+  it('knows the checkout and node_modules however Windows lets them be spelled', () => {
+    expect(watcherPath([
+      'D:/project/node_modules/.bin',
+      'D:/project/bin',
+      'D:\\outside\\..\\project\\bin',
+      'C:/other/node_modules/.bin',
+      '\\project\\bin',
+      '/project/bin',
+      '\\\\localhost\\D$\\project\\bin',
+      'C:/tools/bin',
+    ].join(';'), 'D:\\project')).toBe('C:\\tools\\bin');
+  });
+
+  it('bounds the carried PATH, keeping what the shell finds first, so the wrapper stays one cmd.exe line', () => {
+    const entries = Array.from({ length: 200 }, (_, index) => `C:\\tools\\${String(index).padStart(3, '0')}\\${'x'.repeat(60)}`);
+    const carried = watcherPath(entries.join(';'), 'D:\\project');
+    expect(carried.length).toBeLessThanOrEqual(8000);
+    expect(carried.startsWith(entries[0])).toBe(true);
+    expect(carried).not.toContain(entries[199]);
+  });
+
+  it('never makes a cmd.exe line past its limit: the task\'s own PATH of unknown length is not appended', () => {
+    const entries = Array.from({ length: 400 }, (_, index) => `C:\\tools\\${String(index).padStart(3, '0')}\\${'x'.repeat(60)}`);
+    const plan = buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe', environment: { PATH: entries.join(';') } });
+    const line = plan.wrapper.split('\r\n').find((text) => text.startsWith('set "PATH='));
+    expect(line).not.toContain('%PATH%');
+    expect(line.length).toBeLessThan(8191);
+  });
+
+  it('keeps what a scheduled watcher prints, the one trace of a stop before its state folder is known', () => {
+    const plan = buildInstallPlan({ platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe' });
+    expect(plan.wrapper).toMatch(/"D:\\project" 2> "C:\\state\\watcher-start\.log"\r\n$/);
+  });
+
+  it('tells a person what a stopped watcher last printed', () => {
+    expect(watcherState({ running: false, installed: true, startLog: 'Could not start git: spawn git ENOENT' }))
+      .toMatchObject({ state: 'stopped', reason: 'it stopped with: Could not start git: spawn git ENOENT' });
+    expect(watcherState({ running: false, installed: true, startLog: 'old words', daemonError: { message: 'the recorded reason' } }).reason)
+      .toBe('the recorded reason');
   });
 
   it('preserves the installed state location when Task Scheduler supplies a fresh environment', () => {
@@ -278,17 +424,18 @@ describe('review-gate native installer plans', () => {
       uid: null,
       systemRoot: 'C:\\WINDOWS',
     });
-    const taskRun = plan.create.args[plan.create.args.indexOf('/TR') + 1];
-    expect(taskRun).toBe('"C:\\WINDOWS\\System32\\conhost.exe" --headless cmd.exe /d /c "C:\\Users\\me\\AppData\\Local\\Rove\\shared-review-gate\\e931f2b632fde04a\\watch.cmd"');
-    expect(taskRun.length).toBeLessThanOrEqual(261);
+    expect(plan.taskXml).toContain('<Command>C:\\WINDOWS\\System32\\conhost.exe</Command>');
+    expect(plan.taskXml).toContain('<Arguments>--headless cmd.exe /d /c &quot;C:\\Users\\me\\AppData\\Local\\Rove\\shared-review-gate\\e931f2b632fde04a\\watch.cmd&quot;</Arguments>');
     expect(plan.installRefusal).toBeNull();
   });
 
+  it('carries a long state path, which `schtasks /TR` could not', () => {
+    const long = windowsTaskRun(`C:\\${'deep\\'.repeat(60)}state\\watch.cmd`, 'C:\\WINDOWS');
+    expect(long.args).toContain('--headless');
+    expect(long.refusal).toBeNull();
+  });
+
   it('refuses, never falls back to a window, for a path the headless command cannot carry', () => {
-    const longState = `C:\\${'deep\\'.repeat(40)}state`;
-    const long = windowsTaskRun(`${longState}\\watch.cmd`, 'C:\\WINDOWS');
-    expect(long.taskRun).toContain('--headless');
-    expect(long.refusal).toMatch(/over schtasks' 261-character limit/);
     const percent = windowsTaskRun('C:\\Users\\me\\%CACHE%\\Rove\\watch.cmd', 'C:\\WINDOWS');
     expect(percent.refusal).toMatch(/contains "%"/);
   });

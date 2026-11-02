@@ -21,6 +21,7 @@ import {
   isProcessAlive,
   pauseGate,
   readJson,
+  readWatcherStartLog,
   reviewTimingSummary,
   removeStoredJson,
   recordEvent,
@@ -36,11 +37,8 @@ function quoteWindows(value) {
   return `"${value}"`;
 }
 
-// `schtasks /Create /TR` refuses a task-run value longer than this.
-const SCHTASKS_MAX_TASK_RUN = 261;
-
 /**
- * The scheduled task's command. An ONLOGON "interactive only" task that runs a
+ * The scheduled task's command. A logon "interactive only" task that runs a
  * console program gets a console WINDOW — the watcher's `watch.cmd` kept one
  * open for the whole session, and every (re)start created a new one that took
  * the foreground from whatever the user was typing into (measured 2026-09-22
@@ -52,18 +50,117 @@ const SCHTASKS_MAX_TASK_RUN = 261;
  *
  * There is no windowed fallback: a path this command cannot carry is an
  * install refusal, never a window. `%` is refused because Task Scheduler and
- * `cmd.exe /c` would both expand it; the length bound is `schtasks /TR`'s.
+ * `cmd.exe /c` would both expand it.
  */
 export function windowsTaskRun(wrapperPath, systemRoot) {
-  const conhost = path.win32.join(systemRoot || 'C:\\Windows', 'System32', 'conhost.exe');
-  const taskRun = `${quoteWindows(conhost)} --headless cmd.exe /d /c ${quoteWindows(wrapperPath)}`;
-  let refusal = null;
-  if (wrapperPath.includes('%')) {
-    refusal = `The review watcher's state path contains "%", which Task Scheduler and cmd.exe would expand as an environment variable: ${wrapperPath}. Point LOCALAPPDATA at a path without "%" and rerun npx --no-install rove-sentinel install.`;
-  } else if (taskRun.length > SCHTASKS_MAX_TASK_RUN) {
-    refusal = `The review watcher's task command is ${taskRun.length} characters, over schtasks' ${SCHTASKS_MAX_TASK_RUN}-character limit, because its state path is too long: ${wrapperPath}. Point LOCALAPPDATA at a shorter path and rerun npx --no-install rove-sentinel install.`;
+  const command = path.win32.join(systemRoot || 'C:\\Windows', 'System32', 'conhost.exe');
+  const args = `--headless cmd.exe /d /c ${quoteWindows(wrapperPath)}`;
+  const refusal = wrapperPath.includes('%')
+    ? `The review watcher's state path contains "%", which Task Scheduler and cmd.exe would expand as an environment variable: ${wrapperPath}. Point LOCALAPPDATA at a path without "%" and rerun npx --no-install rove-sentinel install.`
+    : null;
+  return { command, args, refusal };
+}
+
+/**
+ * The task, as `schtasks /Create /XML` takes it. `/SC ONLOGON` means any user's
+ * logon, which only an administrator may register: an administrator's limited
+ * token got "Access is denied", and an automatic update, which installs from
+ * the watcher's limited token, could never have replaced it. A logon trigger
+ * that names its own user needs no elevation to create, replace, run, end or
+ * delete (measured from a limited token on Windows 11).
+ *
+ * The other settings are what `schtasks` leaves out of its defaults: a laptop's
+ * watcher must start and go on when it runs on battery, and a watcher lives for
+ * as long as the session, past the default 72-hour limit.
+ */
+export function windowsTaskXml({ user, command, args }) {
+  const account = xmlEscape(user);
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>${account}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>${account}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${xmlEscape(command)}</Command>
+      <Arguments>${xmlEscape(args)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+/**
+ * A task registered from an elevated shell belongs to administrators, whatever
+ * its trigger: a limited token may run and end it, but neither replace nor delete
+ * it, and an elevated install leaves it so (all measured). Only a task the
+ * limited token registers itself stays its own, so the way out is to delete the
+ * task once, as an administrator, and to install from the limited shell.
+ */
+export function windowsTaskRefusal(error, taskExisted, taskName) {
+  if (!taskExisted || !/access is denied/i.test(error?.message || '')) return error;
+  return new Error(`The review watcher's scheduled task was registered from an elevated shell, so this limited shell cannot replace it. From an elevated shell run schtasks /Delete /TN ${taskName} /F, then run npx --no-install rove-sentinel install from this shell, not the elevated one: the task is then your own, and no install or update needs elevation.`, { cause: error });
+}
+
+/** The account a task of this user's own logon names. */
+function windowsAccount(environment) {
+  const user = environment.USERNAME || os.userInfo().username;
+  return environment.USERDOMAIN ? `${environment.USERDOMAIN}\\${user}` : user;
+}
+
+// Paths, never credentials: where the tools a review runs keep their settings.
+const WATCHER_TOOL_SETTINGS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLAUDE_CODE_GIT_BASH_PATH'];
+// The wrapper's `set "PATH=..."` is one cmd.exe line, of at most 8191 characters.
+const WATCHER_PATH_MAX_CHARACTERS = 8000;
+
+/**
+ * The installing shell's PATH, for a scheduled watcher. A task starts with the
+ * machine's and the user's stored environment, so tools a shell finds through a
+ * profile or an activation script are missing there: without Git the watcher
+ * stops before it can write down why. A package runner puts the checkout's
+ * `node_modules\.bin` first, and a watcher reviews that checkout, so nothing of
+ * the repository or of any `node_modules` is carried, however it is spelled:
+ * Windows also finds programs through `D:/repo/bin` and `D:\other\..\repo\bin`.
+ * Only an entry with a drive letter can be compared with the checkout: `\repo\bin`
+ * means the current drive, and a network path may be a local folder.
+ * A shell's PATH already holds the stored one, so this replaces it, and the
+ * task's own is not appended: its length is not known here, and a line past
+ * cmd.exe's limit would stop the wrapper before the watcher starts.
+ */
+export function watcherPath(pathValue, repoRoot) {
+  const root = path.win32.resolve(repoRoot).toLowerCase();
+  const seen = new Set();
+  const kept = [];
+  let length = 0;
+  for (const raw of String(pathValue || '').split(';')) {
+    const unquoted = raw.replaceAll('"', '').trim();
+    if (!/^[a-z]:[\\/]/i.test(unquoted) || /[%\r\n]/.test(unquoted)) continue;
+    const entry = path.win32.normalize(unquoted);
+    const folded = entry.toLowerCase().replace(/\\+$/, '');
+    if (seen.has(folded)) continue;
+    if (folded === root || folded.startsWith(`${root}\\`) || /(^|\\)node_modules(\\|$)/.test(folded)) continue;
+    if (length + entry.length + 1 > WATCHER_PATH_MAX_CHARACTERS) break;
+    seen.add(folded);
+    kept.push(entry);
+    length += entry.length + 1;
   }
-  return { taskRun, refusal };
+  return kept.join(';');
 }
 
 function quoteBatch(value) {
@@ -91,6 +188,7 @@ export function buildInstallPlan({
   localAppData = process.env.LOCALAPPDATA,
   autoUpdate = process.env.ROVE_SENTINEL_AUTO_UPDATE,
   updateNotifications = process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS,
+  environment = process.env,
 }) {
   const cliPath = fileURLToPath(new URL('./cli.mjs', import.meta.url));
   const id = hashText(stateRoot.toLowerCase(), 8);
@@ -102,26 +200,35 @@ export function buildInstallPlan({
       ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications],
     ].filter(([, value]) => value !== undefined && value !== '')
       .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('');
-    const wrapper = `@echo off\r\n${stateEnvironment}set "ROVE_REVIEW_ALLOW_API_BILLING="\r\nset "ANTHROPIC_API_KEY="\r\nset "OPENAI_API_KEY="\r\n${[
+    const toolSettings = WATCHER_TOOL_SETTINGS
+      .filter((key) => environment[key] && !/["\r\n]/.test(environment[key]))
+      .map((key) => `set ${quoteBatch(`${key}=${environment[key]}`)}\r\n`).join('');
+    const carriedPath = watcherPath(environment.PATH ?? environment.Path, repoRoot);
+    const toolPath = carriedPath ? `set "PATH=${carriedPath}"\r\n` : '';
+    const startLogPath = path.win32.join(stateRoot, 'watcher-start.log');
+    const wrapper = `@echo off\r\n${stateEnvironment}${toolSettings}${toolPath}set "ROVE_REVIEW_ALLOW_API_BILLING="\r\nset "ANTHROPIC_API_KEY="\r\nset "OPENAI_API_KEY="\r\n${[
       nodePath,
       cliPath,
       'watch',
       '--daemon',
       '--repo',
       repoRoot,
-    ].map(quoteBatch).join(' ')}\r\n`;
-    const { taskRun, refusal } = windowsTaskRun(wrapperPath, systemRoot);
+    ].map(quoteBatch).join(' ')} 2> ${quoteBatch(startLogPath)}\r\n`;
+    const { command, args, refusal } = windowsTaskRun(wrapperPath, systemRoot);
+    const taskXmlPath = path.win32.join(stateRoot, 'watch-task.xml');
     return {
       platform,
       taskName,
       wrapperPath,
       wrapper,
+      taskXmlPath,
+      taskXml: windowsTaskXml({ user: windowsAccount(environment), command, args }),
       // Uninstall and status still need the task name for such a path, so the
       // refusal is carried, and installGate enforces it before any change.
       installRefusal: refusal,
       create: {
         command: 'schtasks.exe',
-        args: ['/Create', '/TN', taskName, '/SC', 'ONLOGON', '/TR', taskRun, '/RL', 'LIMITED', '/F'],
+        args: ['/Create', '/TN', taskName, '/XML', taskXmlPath, '/F'],
       },
       start: { command: 'schtasks.exe', args: ['/Run', '/TN', taskName] },
       stop: { command: 'schtasks.exe', args: ['/End', '/TN', taskName] },
@@ -471,7 +578,7 @@ export async function executeInstallTransaction(
   ]);
   const configuredHooks = !currentHooks;
   let schedulerCreated = false;
-  let schedulerCreateAttempted = false;
+  let schedulerReplaced = false;
   let schedulerLoadedByAttempt = false;
   let schedulerRemovedForReplacement = false;
   let schedulerStoppedForReplacement = false;
@@ -511,9 +618,15 @@ export async function executeInstallTransaction(
     if (plan.platform === 'win32') {
       await mkdir(path.dirname(plan.wrapperPath), { recursive: true });
       await writeFile(plan.wrapperPath, plan.wrapper, { encoding: 'utf8', mode: 0o600 });
+      // `schtasks /XML` takes the encoding its first line declares from the byte order mark.
+      if (plan.taskXmlPath) await writeFile(plan.taskXmlPath, `\ufeff${plan.taskXml}`, { encoding: 'utf16le', mode: 0o600 });
       schedulerCreated = !schedulerWasInstalled;
-      schedulerCreateAttempted = true;
-      await run(plan.create.command, plan.create.args, { timeoutMs: 120_000 });
+      try {
+        await run(plan.create.command, plan.create.args, { timeoutMs: 120_000 });
+      } catch (error) {
+        throw windowsTaskRefusal(error, schedulerWasInstalled, plan.taskName);
+      }
+      schedulerReplaced = schedulerWasInstalled;
       if (start) {
         daemonStartAttempted = true;
         await run(plan.start.command, plan.start.args, { timeoutMs: 120_000 });
@@ -596,9 +709,10 @@ export async function executeInstallTransaction(
     if (
       plan.platform === 'win32' &&
       schedulerWasInstalled &&
-      (schedulerCreateAttempted || schedulerStoppedForReplacement)
+      (schedulerReplaced || schedulerStoppedForReplacement)
     ) {
-      if (schedulerCreateAttempted) {
+      // A refused replacement changed nothing, and would only be refused again.
+      if (schedulerReplaced) {
         await attempt(() => run(plan.create.command, plan.create.args, { timeoutMs: 120_000 }));
       }
       if (previousDaemonStopped) {
@@ -673,6 +787,7 @@ export async function executeUninstall({
       await attempt('scheduler stop', () => run(plan.stop.command, plan.stop.args, { allowFailure: true, timeoutMs: 120_000 }));
       await attempt('scheduler removal', removeScheduler);
       await attempt('wrapper removal', () => removeFile(plan.wrapperPath, { force: true }));
+      if (plan.taskXmlPath) await attempt('task definition removal', () => removeFile(plan.taskXmlPath, { force: true }));
     }
   } else if (plan.platform === 'darwin') {
     await attempt('scheduler removal', removeScheduler);
@@ -697,7 +812,7 @@ export async function executeUninstall({
  * report success while its watcher refused to start, so this reads the watcher's
  * own records.
  */
-export function watcherState({ running, compatible, heartbeat, lock, daemonError, installed, stateError, schedulerError }) {
+export function watcherState({ running, compatible, heartbeat, lock, daemonError, startLog, installed, stateError, schedulerError }) {
   if (running) {
     return compatible
       ? { state: 'running', pid: heartbeat.pid }
@@ -706,7 +821,8 @@ export function watcherState({ running, compatible, heartbeat, lock, daemonError
   if (!installed && !lock && !heartbeat && !stateError) {
     return schedulerError ? { state: 'unknown', reason: schedulerError } : { state: 'not-installed' };
   }
-  const silent = lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running';
+  const silent = startLog ? `it stopped with: ${startLog}`
+    : lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running';
   return {
     state: 'stopped',
     reason: daemonError?.message ?? (stateError ? `the watcher's state is unreadable: ${stateError}` : silent),
@@ -816,6 +932,7 @@ export async function gateStatus(
       heartbeat,
       lock,
       daemonError,
+      startLog: await readWatcherStartLog(context.paths),
       stateError: lockState.error ?? heartbeatState.error,
       schedulerError: scheduler.error,
       // Linux has no supported scheduler, so the hook counts as well.

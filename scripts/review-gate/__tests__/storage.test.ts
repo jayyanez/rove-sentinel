@@ -36,6 +36,8 @@ import {
   recordLineagePass,
   removeAttestation,
   normalizeRepositoryIdentity,
+  clearDaemonError,
+  readWatcherStartLog,
   recoverClaims,
   resumeGate,
   replaceExistingFile,
@@ -261,6 +263,37 @@ describe('shared review local state', () => {
       timeoutMs: 50,
       pollMs: 5,
     })).rejects.toThrow('Installed policy is missing; run npx --no-install rove-sentinel install');
+  });
+
+  it('says what a watcher printed when it stopped before it could write its state', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    await writeFile(paths.watcherStartLog, 'Shared review gate: Could not start git: spawn git ENOENT\r\n');
+
+    await expect(waitForDaemonHeartbeat(paths, 'C:\\repo', {
+      timeoutMs: 20,
+      pollMs: 5,
+    })).rejects.toThrow('It printed: Shared review gate: Could not start git: spawn git ENOENT');
+  });
+
+  it('reads only the end of a long start log', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    await writeFile(paths.watcherStartLog, `${'noise\n'.repeat(1000)}the last line\n`);
+
+    const text = await readWatcherStartLog(paths, 40);
+    expect(text.length).toBeLessThanOrEqual(40);
+    expect(text.endsWith('the last line')).toBe(true);
+  });
+
+  it('reads nothing from a start log that is not there', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    await expect(readWatcherStartLog(paths)).resolves.toBe('');
+  });
+
+  it('does not blame a new start for what an earlier run printed', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    await writeFile(paths.watcherStartLog, 'an earlier run stopped\n');
+    await clearDaemonError(paths);
+    await expect(readWatcherStartLog(paths)).resolves.toBe('');
   });
 
   it('invalidates attestations when any identity field changes', async () => {

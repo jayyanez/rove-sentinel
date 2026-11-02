@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **The Windows watcher needs no administrator.** Its logon task now names its own user.
+  `schtasks /SC ONLOGON` means any user's logon, so `install` failed with `Access is denied`
+  from an administrator's limited token, and an automatic update, which installs from the
+  watcher's limited token, could not replace the task. **A task registered from an elevated
+  shell, by this engine or an earlier one, stays an administrator's,** and a limited shell
+  may neither replace nor delete it. Where the watcher runs limited, delete that task once
+  as an administrator and run `install` from the limited shell, or automatic updates keep
+  failing as they did. The limited shell is told how.
+- **A scheduled watcher finds what the installing shell found.** A task starts with the
+  stored environment, so a watcher whose Git or provider CLI is on `PATH` only through a
+  profile or an activation script stopped at once. `watch.cmd` now uses the shell's `PATH`,
+  without the checkout or any `node_modules`, in place of the stored one, and where the tools keep their
+  settings (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL`,
+  `CLAUDE_CODE_GIT_BASH_PATH`). Run `install` again after moving a tool.
+- **A watcher that stops at once says why.** One that could not start Git had nowhere to
+  write the reason, and `install` reported only a missing heartbeat. Its wrapper now keeps
+  what it printed in `watcher-start.log`, which `install` and `status` quote.
+- **A laptop keeps its watcher.** The task no longer refuses to start on battery or stops
+  when the power goes, and has no time limit.
 - **A running review keeps its checkout.** Cleaning up stale review checkouts read `EPERM`
   as a dead process, so the checkout of a review run by another user or elevation could be
   removed.

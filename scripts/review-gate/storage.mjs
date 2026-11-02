@@ -95,6 +95,7 @@ export function statePaths(root) {
     heartbeat: path.join(root, 'heartbeat.json'),
     stopRequest: path.join(root, 'stop-request.json'),
     daemonError: path.join(root, 'daemon-error.json'),
+    watcherStartLog: path.join(root, 'watcher-start.log'),
     paused: path.join(root, 'paused.json'),
     policy: path.join(root, 'policy.json'),
     watcherOptions: path.join(root, 'watcher-options.json'),
@@ -1398,6 +1399,9 @@ export async function writeHeartbeat(paths, details = {}) {
 
 export async function clearDaemonError(paths) {
   await removeStoredJson(paths.daemonError);
+  // Of an earlier run: a start must not be blamed for it. A wrapper's watcher
+  // holds its own log open here, and that one stays.
+  await rm(paths.watcherStartLog, { force: true }).catch(() => {});
 }
 
 export async function writeDaemonError(paths, error) {
@@ -1408,6 +1412,25 @@ export async function writeDaemonError(paths, error) {
     message,
   });
   return message;
+}
+
+/**
+ * What a scheduled watcher printed as it stopped. One that cannot start Git
+ * cannot learn its repository's state folder, so it has nowhere to write
+ * daemon-error.json, and the scheduler reports success: its wrapper keeps stderr
+ * here, begun anew at every start.
+ */
+export async function readWatcherStartLog(paths, maxBytes = 4096) {
+  const handle = await open(paths.watcherStartLog, 'r').catch(() => null);
+  if (!handle) return '';
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, maxBytes);
+    const { buffer } = await handle.read(Buffer.alloc(length), 0, length, size - length);
+    return buffer.toString('utf8').trim();
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function waitForDaemonHeartbeat(
@@ -1441,7 +1464,8 @@ export async function waitForDaemonHeartbeat(
   if (incompatibleHeartbeat) {
     throw new Error(`The running shared review watcher has policy identity ${incompatibleHeartbeat.gateVersion || 'unknown'}/${incompatibleHeartbeat.charterVersion || 'unknown'}/${incompatibleHeartbeat.policyDigest || 'unknown'}, but this caller requires ${GATE_VERSION}/${CHARTER_VERSION}/${policyDigest || 'any installed digest'}. Run npx --no-install rove-sentinel install from your trusted main checkout.`);
   }
-  throw new Error('The shared review watcher did not produce a fresh matching owner heartbeat.');
+  const startLog = await readWatcherStartLog(paths);
+  throw new Error(`The shared review watcher did not produce a fresh matching owner heartbeat.${startLog ? ` It printed: ${startLog}` : ''}`);
 }
 
 export async function readPause(paths) {
