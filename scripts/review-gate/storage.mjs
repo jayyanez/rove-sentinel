@@ -102,6 +102,7 @@ export function statePaths(root) {
     watcherOptions: path.join(root, 'watcher-options.json'),
     providerHolds: path.join(root, 'provider-holds.json'),
     accountState: path.join(root, 'account-state.json'),
+    watcherAccounts: path.join(root, 'watcher-accounts.json'),
   };
 }
 

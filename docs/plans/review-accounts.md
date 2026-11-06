@@ -115,14 +115,20 @@ the allowance left can replace the rotation inside `rankAccounts`.
    `home` (Codex); a label of 1 to 32 letters, digits, `.`, `_` or `-`,
    unique per provider ignoring case; an absolute folder, two labels never
    naming the same folder. An error names the provider, entry and label,
-   never a folder. The watcher reads the file of its own environment (the
-   variable it was started with, or the default) for each review. `install`
-   (`--accounts` too) checks the prerequisites with the accounts, as `doctor`
-   does, and gives the watcher it installs (the Windows task's wrapper, the
-   macOS LaunchAgent, or the environment of a watcher it starts where there is
-   no scheduler) the file named by the flag or the variable as
-   `ROVE_SENTINEL_ACCOUNTS`, so it reads the same file; the default file
-   needs nothing. That path stays in a local scheduler artifact or process environment.
+   never a folder. `install` (`--accounts` too) checks the prerequisites
+   with the accounts, as `doctor` does. The watcher reads, for each review,
+   the file its installation named: `install` records a file named by the
+   flag or the variable in `watcher-accounts.json` in the state folder (and
+   removes the record when none was named), writes it as
+   `ROVE_SENTINEL_ACCOUNTS` into the Windows task's wrapper (cleared there
+   when none was named) and the macOS LaunchAgent, and every detached start
+   (an install without a scheduler, the push hook, an install's rollback)
+   takes it from that record through one helper, `detachedStartEnvironment`,
+   over whatever the starting shell names. A rollback restores the previous
+   installation's record before it restarts that watcher, so the restored
+   watcher reads the file it read before; with no record, that installation
+   named none and the default is right. The path stays in local state, a
+   scheduler artifact or a process environment.
 3. **The author's account.** The author's provider is the `--author` or the
    branch prefix, as before. The author's account is the `CLAUDE_CONFIG_DIR`
    or `CODEX_HOME` of the process that asks for the review (the shell that
@@ -271,3 +277,6 @@ after a usage limit.
    explicitly named accounts file in its environment; an overriding
    credential refuses only a provider the requirement can use, so a `codex`
    requirement ignores Claude's accounts and token.
+11. The third gate review, with a regression: a rolled-back install restarts
+   the previous watcher with the accounts file that installation recorded
+   (or none), and every detached start takes its file from the record alone.

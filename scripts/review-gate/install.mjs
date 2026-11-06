@@ -253,9 +253,12 @@ export function buildInstallPlan({
     const wrapperPath = path.win32.join(stateRoot, 'watch.cmd');
     const stateEnvironment = [
       ['LOCALAPPDATA', localAppData], ['ROVE_SENTINEL_AUTO_UPDATE', autoUpdate],
-      ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications], [ACCOUNTS_FILE_VARIABLE, accountsFile ?? undefined],
+      ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications],
     ].filter(([, value]) => value !== undefined && value !== '')
-      .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('');
+      .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('')
+      // The accounts file this installation names, or none (the default) over
+      // any value the task inherits: the installation decides.
+      + `set ${quoteBatch(`${ACCOUNTS_FILE_VARIABLE}=${accountsFile ?? ''}`)}\r\n`;
     const toolSettings = WATCHER_TOOL_SETTINGS
       .filter((key) => environment[key] && !/["\r\n]/.test(environment[key]))
       .map((key) => `set ${quoteBatch(`${key}=${environment[key]}`)}\r\n`).join('');
@@ -660,10 +663,11 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, watcherOptionsBefore, artifactBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, artifactBefore, watcherAccountsBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
     snapshotFile(context.paths.watcherOptions),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
+    snapshotFile(context.paths.watcherAccounts),
   ]);
   // Taken as it is cleared: until the watcher stops, it may be counting.
   let githubFailureBefore = null;
@@ -695,6 +699,10 @@ export async function executeInstallTransaction(
     }
 
     await atomicWriteJson(context.paths.policy, policy);
+    // The accounts file this installation names, read by every detached
+    // start of its watcher (`detachedStartEnvironment`); none means the default.
+    if (plan.accountsFile) await atomicWriteJson(context.paths.watcherAccounts, { accountsFile: plan.accountsFile });
+    else await removeStoredJson(context.paths.watcherAccounts);
     // pending while this process lives: the watcher started below honours it
     // at once, and it is gone if this install is killed (readWatcherGithub)
     if (github !== undefined) {
@@ -738,10 +746,9 @@ export async function executeInstallTransaction(
       }
     } else if (start) {
       daemonStartAttempted = true;
-      // A watcher with no scheduler gets an accounts file named at install,
-      // as the Windows task and the macOS LaunchAgent do.
-      await startDetached(context.repoRoot, context.stateRoot, plan.accountsFile
-        ? { environment: { ...process.env, [ACCOUNTS_FILE_VARIABLE]: plan.accountsFile } } : undefined);
+      // Its accounts file is the one just recorded, as the Windows task and
+      // the macOS LaunchAgent carry it.
+      await startDetached(context.repoRoot, context.stateRoot);
     }
     const heartbeat = start ? await waitHeartbeat(context.paths, context.repoRoot, {
       policyDigest: policy.policyDigest,
@@ -802,6 +809,9 @@ export async function executeInstallTransaction(
     }
     await attempt(() => restoreFile(context.paths.policy, policyBefore, { storedJson: true }));
     await attempt(() => restoreFile(context.paths.watcherOptions, watcherOptionsBefore, { storedJson: true }));
+    // Before any restart below: a restored watcher reads the accounts file
+    // its own installation recorded.
+    await attempt(() => restoreFile(context.paths.watcherAccounts, watcherAccountsBefore, { storedJson: true }));
     if (githubFailureBefore) await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 

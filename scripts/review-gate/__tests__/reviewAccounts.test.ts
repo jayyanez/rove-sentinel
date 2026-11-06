@@ -26,7 +26,8 @@ import {
 } from '../install.mjs';
 import { subscriptionEnvironment } from '../process.mjs';
 import { runReviewer } from '../providers.mjs';
-import { ensureState, readAttestation, readReport } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readAttestation, readJson, readReport } from '../storage.mjs';
+import { detachedStartEnvironment, startDaemonDetached } from '../daemon.mjs';
 import { detectSubscriptions, probeAccountSignIns } from '../subscriptions.mjs';
 import { ProviderUsageLimitError, markProviderFailure, readProviderHolds } from '../usageLimits.mjs';
 
@@ -519,7 +520,8 @@ describe('gate review of the review accounts (ce97208)', () => {
       platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe', environment: {}, accountsFile,
     }).wrapper;
     expect(windows('C:\\Users\\me\\accounts.json')).toContain('set "ROVE_SENTINEL_ACCOUNTS=C:\\Users\\me\\accounts.json"');
-    expect(windows()).not.toContain('ROVE_SENTINEL_ACCOUNTS');
+    // Without one, the task clears any inherited value: the installation decides.
+    expect(windows()).toContain('set "ROVE_SENTINEL_ACCOUNTS="');
     const mac = (accountsFile?: string) => buildInstallPlan({
       platform: 'darwin', repoRoot: '/Users/me/project', stateRoot: '/Users/me/state', nodePath: '/usr/local/bin/node',
       home: '/Users/me', uid: 501, environment: {}, accountsFile,
@@ -645,15 +647,17 @@ describe('gate review of the review accounts (638f7be)', () => {
     const file = folder('accounts.json');
     for (const accountsFile of [file, undefined]) {
       const plan = buildInstallPlan({ platform: 'linux', repoRoot: '/home/example/project', stateRoot, accountsFile });
-      const startDetached = vi.fn(async () => {});
+      // What every detached start reads, at the moment it starts.
+      const seen: Array<string | undefined> = [];
+      const startDetached = vi.fn(async (_repoRoot: string, root: string) => {
+        seen.push(detachedStartEnvironment(root, { ROVE_SENTINEL_ACCOUNTS: 'inherited.json' }).ROVE_SENTINEL_ACCOUNTS);
+      });
       await executeInstallTransaction({
         context: { repoRoot: '/home/example/project', stateRoot, paths }, plan, policy: { gateVersion: 'new' }, currentHooks: '.githooks', start: true,
       }, {
         git: vi.fn(async () => ''), startDetached, stop: vi.fn(async () => {}), waitHeartbeat: vi.fn(async () => ({ gateVersion: 'new' })),
       });
-      const options = (startDetached.mock.calls[0] as unknown[])[2] as { environment?: Record<string, string> } | undefined;
-      if (accountsFile) expect(options?.environment?.ROVE_SENTINEL_ACCOUNTS).toBe(file);
-      else expect(options?.environment?.ROVE_SENTINEL_ACCOUNTS).toBeUndefined();
+      expect(seen).toEqual([accountsFile]);
     }
   });
 
@@ -674,5 +678,66 @@ describe('gate review of the review accounts (638f7be)', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+// --- Gate review of c5360a6 ---------------------------------------------------
+
+describe('gate review of the review accounts (c5360a6)', () => {
+  it("restarts a rolled-back watcher with the previous installation's accounts file", async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-accounts-rollback-'));
+    temporaryDirectories.push(stateRoot);
+    const paths = await ensureState(stateRoot);
+    const previous = folder('previous-accounts.json');
+    const next = folder('next-accounts.json');
+    for (const before of [previous, null]) {
+      if (before) await atomicWriteJson(paths.watcherAccounts, { accountsFile: before });
+      else await rm(paths.watcherAccounts, { force: true });
+      const seen: Array<string | null> = [];
+      const startDetached = vi.fn(async (_repoRoot: string, root: string) => {
+        seen.push(detachedStartEnvironment(root, { ROVE_SENTINEL_ACCOUNTS: 'inherited.json' }).ROVE_SENTINEL_ACCOUNTS ?? null);
+        if (seen.length === 1) throw new Error('spawn denied');
+      });
+      const plan = buildInstallPlan({ platform: 'linux', repoRoot: '/home/example/project', stateRoot, accountsFile: next });
+      await expect(executeInstallTransaction({
+        context: { repoRoot: '/home/example/project', stateRoot, paths }, plan, policy: { gateVersion: 'new' },
+        currentHooks: '.githooks', start: true, previousDaemonActive: true,
+      }, {
+        git: vi.fn(async () => ''), startDetached, stop: vi.fn(async () => true), waitHeartbeat: vi.fn(async () => ({ gateVersion: 'new' })),
+      })).rejects.toThrow('spawn denied');
+      // The new watcher was started with this install's file; the restored one
+      // with what the previous installation recorded, or none (the default).
+      expect(seen).toEqual([next, before]);
+      expect(await readJson(paths.watcherAccounts, null)).toEqual(before ? { accountsFile: before } : null);
+    }
+  });
+
+  it('starts every detached watcher with the accounts file its installation recorded, and no other', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-accounts-start-'));
+    temporaryDirectories.push(stateRoot);
+    const paths = await ensureState(stateRoot);
+    const start = async () => {
+      let env: Record<string, string> = {};
+      const child = Object.assign(new (await import('node:events')).EventEmitter(), { pid: 1, unref: vi.fn() });
+      const pending = startDaemonDetached('/home/example/project', stateRoot, {
+        environment: { ROVE_SENTINEL_ACCOUNTS: 'inherited.json', PATH: 'bin', ANTHROPIC_API_KEY: 'x' },
+        spawnProcess: (_command: string, _args: string[], options: { env: Record<string, string> }) => {
+          env = options.env;
+          return child;
+        },
+      });
+      child.emit('spawn');
+      await pending;
+      return env;
+    };
+    await atomicWriteJson(paths.watcherAccounts, { accountsFile: folder('accounts.json') });
+    expect(await start()).toMatchObject({ ROVE_SENTINEL_ACCOUNTS: folder('accounts.json'), PATH: 'bin' });
+    // No record (or an unreadable one): the default file, never an inherited one.
+    await writeFile(paths.watcherAccounts, '{ not json');
+    expect(await start()).not.toHaveProperty('ROVE_SENTINEL_ACCOUNTS');
+    await rm(paths.watcherAccounts, { force: true });
+    const env = await start();
+    expect(env).not.toHaveProperty('ROVE_SENTINEL_ACCOUNTS');
+    expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 });

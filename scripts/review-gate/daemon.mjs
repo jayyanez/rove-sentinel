@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { maybeStartUpdateWorker } from './automatic-updates.mjs';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
 import { createGateContext, runGate } from './gate.mjs';
-import { loadAccounts } from './accounts.mjs';
+import { ACCOUNTS_FILE_VARIABLE, loadAccounts } from './accounts.mjs';
 import { recoverStaleReviewResources } from './git.mjs';
 import { syncPullRequests } from './github.mjs';
 import {
@@ -29,6 +31,7 @@ import {
   removeStoredJson,
   recoverClaims,
   sleep,
+  statePaths,
   writeHeartbeat,
   writeDaemonError,
 } from './storage.mjs';
@@ -109,6 +112,26 @@ export function scrubLongLivedWatcherEnvironment(environment = process.env) {
   return env;
 }
 
+/**
+ * The environment every detached watcher start uses (an install, its
+ * rollback, the hook): the accounts file its installation recorded in
+ * `watcher-accounts.json`, and no other. Without a record, or with one that
+ * cannot be read, the watcher reads the default file, whatever the starting
+ * shell names. Synchronous: the start attaches its listeners at once.
+ */
+export function detachedStartEnvironment(stateRoot, environment = process.env) {
+  const env = { ...environment };
+  delete env[ACCOUNTS_FILE_VARIABLE];
+  if (!stateRoot) return env;
+  try {
+    const record = JSON.parse(readFileSync(statePaths(stateRoot).watcherAccounts, 'utf8'));
+    if (typeof record?.accountsFile === 'string' && path.isAbsolute(record.accountsFile)) env[ACCOUNTS_FILE_VARIABLE] = record.accountsFile;
+  } catch {
+    // No record, or an unreadable one: the default file.
+  }
+  return env;
+}
+
 export async function startDaemonDetached(
   repoRoot,
   stateRoot,
@@ -119,7 +142,7 @@ export async function startDaemonDetached(
   if (stateRoot) args.push('--state-root', stateRoot);
   const child = spawnProcess(process.execPath, args, {
     cwd: repoRoot,
-    env: detachedWatcherEnvironment(environment),
+    env: detachedWatcherEnvironment(detachedStartEnvironment(stateRoot, environment)),
     detached: true,
     shell: false,
     stdio: 'ignore',
