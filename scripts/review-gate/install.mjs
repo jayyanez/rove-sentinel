@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS, TASK_PREFIX } from './constants.mjs';
 import { detectSubscriptions } from './subscriptions.mjs';
+import { readUsageLimits } from './usageLimits.mjs';
 import { modelSettings, validateModelClients } from './modelSettings.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from './context.mjs';
 import { detachedWatcherEnvironment, startDaemonDetached } from './daemon.mjs';
@@ -1007,6 +1008,9 @@ export async function gateStatus(
     stateRoot: context.stateRoot,
     hooksPath,
     providerRequirement: installedPolicy ? installedPolicy.config.providers ?? 'auto' : null,
+    // Live usage-limit records: `auto` leaves these providers out
+    // of new reviews until `retryAfter`; an explicit requirement is refused.
+    providerUsageLimits: await readUsageLimits(context.paths).catch(() => ({})),
     models: installedPolicy ? modelSettings(installedPolicy.config) : null,
     reviewTiming,
     hookInstalled: hooksPathIsOurs(context.repoRoot, hooksPath),

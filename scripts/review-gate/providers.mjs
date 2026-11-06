@@ -11,6 +11,7 @@ import {
   SCOUT_SCHEMA,
 } from './constants.mjs';
 import { processTreeCleanupFailureCode, runProcess, subscriptionEnvironment } from './process.mjs';
+import { usageLimitFromFailure } from './usageLimits.mjs';
 import { shardTimeoutMs, splitShardPatch } from './shards.mjs';
 
 const ROLE_PROMPTS = [
@@ -373,7 +374,11 @@ export function parseClaudeOutput(stdout) {
     return JSON.parse(envelope.result);
   }
   if (envelope.is_error) {
-    throw new Error(`Claude provider returned an error: ${truncate(envelope.result || 'unknown error')}`);
+    // The CLI's own error text, kept apart from the message so a usage
+    // limit is classified from it alone.
+    throw Object.assign(new Error(`Claude provider returned an error: ${truncate(envelope.result || 'unknown error')}`), {
+      providerError: typeof envelope.result === 'string' ? envelope.result : '',
+    });
   }
   if (envelope.terminal_reason && envelope.terminal_reason !== 'completed') {
     throw new Error(`Claude provider did not complete: ${envelope.terminal_reason}.`);
@@ -777,15 +782,21 @@ async function runClaudeJsonOnce({
     // into a successful result would erase the only evidence the cleanup
     // fence (§5) can act on.
     if (processTreeCleanupFailureCode(error)) throw error;
-    return await salvageProviderJson(error);
+    try {
+      return await salvageProviderJson(error);
+    } catch (unsalvaged) {
+      // Only a run that failed and left no answer is read for a usage limit.
+      throw usageLimitFromFailure('claude', unsalvaged) ?? unsalvaged;
+    }
   }
 }
 
 async function runCodexJsonOnce({
   checkout, bundle, schemaPath, outputPath, prompt, profile, timeoutMs, runner,
 }) {
+  let completed = null;
   try {
-    await runner(
+    completed = await runner(
       'codex',
       buildCodexArgs({
         checkout,
@@ -808,7 +819,17 @@ async function runCodexJsonOnce({
     // Same fence rule as the Claude path: an unverified process tree must
     // surface, never be salvaged into a success.
     if (processTreeCleanupFailureCode(error)) throw error;
-    return await salvageProviderJson(error, { filePath: outputPath });
+    try {
+      return await salvageProviderJson(error, { filePath: outputPath });
+    } catch (unsalvaged) {
+      // Only a run that failed and left no answer is read for a usage limit.
+      // One that exited 0 without its answer is read from its standard error
+      // alone: its standard output may be the model's own message.
+      const failure = completed
+        ? { code: 'NON_ZERO_EXIT', result: { ...completed, stdout: '' } }
+        : unsalvaged;
+      throw usageLimitFromFailure('codex', failure) ?? unsalvaged;
+    }
   }
 }
 

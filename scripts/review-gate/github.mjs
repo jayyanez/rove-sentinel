@@ -2,6 +2,7 @@ import { COMMENT_MARKER, LIMITS } from './constants.mjs';
 import { ensureCommitAvailable, inferAuthor, mergeBase, repoSlugFromRemote } from './git.mjs';
 import { applyRecordedDeferrals } from './dispositions.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
+import { formatProviderFallback } from './usageLimits.mjs';
 import {
   attestationIdentity,
   readAttestation,
@@ -104,6 +105,8 @@ function compactOutcomeResult(result) {
     convergence: result.convergence,
     lineage: result.lineage,
     reportId: result.reportId,
+    ...(result.providerSelection ? { providerSelection: result.providerSelection } : {}),
+    ...(result.providerFallback ? { providerFallback: result.providerFallback } : {}),
     deferredCount: advisories.filter((finding) => finding.deferral).length,
     // The stored outcome keeps every finding up to the adjudication bound
     // (compact), not only the comment's row budget: a deferral recorded later
@@ -190,6 +193,7 @@ export function renderGateComment(result) {
     `- Risk: ${result.risk || 'unknown'}`,
     `- Gate: ${identity.gateVersion || 'unknown'} / charter ${identity.charterVersion || 'unknown'}`,
     ...(result.providerSelection?.length ? [`- Selected providers: ${result.providerSelection.join(', ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}`] : []),
+    ...(result.providerFallback?.dropped?.length ? [`- ${githubText(formatProviderFallback(result.providerFallback), 300)}`] : []),
     '',
     githubText(result.summary || 'No summary was produced.', LIMITS.githubSummaryChars),
   ];

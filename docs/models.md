@@ -3,7 +3,9 @@
 From Sentinel 1.11, one authenticated native provider CLI is sufficient. The
 default `auto` mode selects all subscription-authenticated providers available
 at the start of a new review. A selected provider that fails during that review
-is never silently dropped. API keys do not satisfy subscription authentication.
+is never silently dropped; one that reports its subscription's usage limit is
+dropped only explicitly, under `auto`, as [below](#usage-limits-and-fallback).
+API keys do not satisfy subscription authentication.
 
 ## Defaults and customization
 
@@ -140,6 +142,40 @@ and convergence rules. Its report says `single-provider` because separate
 contexts do not provide cross-model diversity. Having both providers available
 keeps Sentinel's existing author/risk routing; some low-risk or author-specific
 plans still use only one provider.
+
+## Usage limits and fallback
+
+A subscription has a usage allowance, and a provider that has used it up
+refuses until it resets, sometimes days later. Sentinel recognizes that
+refusal from the CLI's own error output, only when a provider run failed and
+left no answer: a review that completed is never read for it, whatever its
+text quotes. It records the provider, the reset time the CLI reported and its
+message in the repository's state folder. When no reset time can be read,
+Sentinel tries the provider again after an hour.
+
+| Requirement | A provider has a live usage-limit record | A provider reaches its limit during a review |
+| --- | --- | --- |
+| `auto` | Left out of the review; if none remains, the review fails and names each retry time | The round fails closed and its evidence, kept shard reviews included, is discarded. The review restarts once, from scratch, with the other provider. A second limit fails closed |
+| `both`, `claude`, `codex` | The review is refused, naming the provider and its retry time | The round fails closed, naming the provider and its retry time. Nothing falls back |
+
+The fallback is never silent. Progress says `codex usage limit reached (retry
+after …); restarting this review with claude only.` The report, the
+attestation, the GitHub comment and the text result carry `providerFallback`
+(`dropped`, `reason: "usage-limit"`, `resetAt`, `retryAfter`, `message`, and
+`restarted`) besides the `single-provider` label. A review that left a
+provider out from the start because of its record says the same with
+`restarted: false`. `status` and `doctor` list the live records under
+`providerUsageLimits`.
+
+A fallback PASS is an ordinary `auto` single-provider PASS for its exact
+commit and policy; the policy digest does not change. If a project needs both
+providers on every review, it sets `both`, which never falls back.
+
+`gate --force` ignores the records and tries every provider again, for
+example after an allowance was raised; a limit it meets is recorded again. A
+provider that completes work in a review has its record removed. Which
+provider messages are recognized, and which of them were not yet seen from a
+live CLI, is in the [plan](plans/provider-usage-limit-fallback.md).
 
 ## Client compatibility
 

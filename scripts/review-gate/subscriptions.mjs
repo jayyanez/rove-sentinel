@@ -1,13 +1,43 @@
 import { runProcess, subscriptionEnvironment, processTreeCleanupFailureCode } from './process.mjs';
 import { PROVIDERS, selectProviders } from './modelSettings.mjs';
+import { describeUsageLimit } from './usageLimits.mjs';
 
-/** Probe native subscription authentication without a model call or API billing. */
-export async function detectSubscriptions(repoRoot, { mode = 'auto', run = runProcess, env = process.env } = {}) {
+/**
+ * Why a review cannot start because of providers' usage limits, or null.
+ * `auto` leaves a provider with a live record out, and fails only
+ * when none remains; an explicit requirement never falls back.
+ */
+export function usageLimitRefusal(mode, usageLimits = {}) {
+  const wanted = mode === 'claude' || mode === 'codex' ? [mode] : PROVIDERS;
+  const limited = wanted.filter((provider) => usageLimits[provider]);
+  if (!limited.length) return null;
+  const reasons = limited.map((provider) => describeUsageLimit(provider, usageLimits[provider])).join('; ');
+  if (mode === 'auto') {
+    return limited.length === wanted.length
+      ? `No review provider is available: ${reasons}. Rerun after that time, or with --force to try them again now.`
+      : null;
+  }
+  return `Provider requirement ${mode} cannot be satisfied: ${reasons}. Sentinel does not fall back to another provider under an explicit requirement; rerun after that time, or with --force to try again now.`;
+}
+
+/**
+ * Probe native subscription authentication without a model call or API billing.
+ * `usageLimits` holds the live usage-limit records: under `auto` a
+ * provider that has one is unavailable, and an explicit requirement that
+ * names one is refused with its reset time.
+ */
+export async function detectSubscriptions(repoRoot, { mode = 'auto', run = runProcess, env = process.env, usageLimits = {} } = {}) {
   const safeEnv = subscriptionEnvironment({ ...env, ROVE_REVIEW_ALLOW_API_BILLING: undefined });
   delete safeEnv.ROVE_REVIEW_ALLOW_API_BILLING;
   const wanted = mode === 'claude' || mode === 'codex' ? [mode] : PROVIDERS;
+  const refusal = usageLimitRefusal(mode, usageLimits);
+  if (refusal) throw new Error(refusal);
   const availability = {};
   await Promise.all(wanted.map(async (provider) => {
+    if (usageLimits[provider]) {
+      availability[provider] = { available: false, error: describeUsageLimit(provider, usageLimits[provider]), usageLimit: usageLimits[provider] };
+      return;
+    }
     try {
       const version = await run(provider, ['--version'], { cwd: repoRoot, env: safeEnv, timeoutMs: 30_000, allowFailure: true });
       if (version.code !== 0) throw new Error(`${provider} version check failed.`);

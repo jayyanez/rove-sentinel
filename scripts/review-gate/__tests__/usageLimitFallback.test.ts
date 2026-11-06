@@ -1,0 +1,194 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { reviewPolicySnapshot } from '../context.mjs';
+import { formatGateResult, runGate } from '../gate.mjs';
+import { renderGateComment } from '../github.mjs';
+import { ensureState, readReport } from '../storage.mjs';
+import { ProviderUsageLimitError, readUsageLimits, recordUsageLimits } from '../usageLimits.mjs';
+
+// Real repositories and Git worktrees: Windows needs more than the default.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+function git(cwd: string, ...args: string[]) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+/** A change of two shards: `src/a.ts` and `src/b.ts`, 300 lines each. */
+async function makeRepository() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'sentinel-usage-fallback-'));
+  temporaryDirectories.push(root);
+  await mkdir(path.join(root, 'src'), { recursive: true });
+  git(root, 'init', '-b', 'main');
+  git(root, 'config', 'user.email', 'test@example.com');
+  git(root, 'config', 'user.name', 'Test');
+  git(root, 'remote', 'add', 'origin', 'https://github.com/example-owner/example-repo.git');
+  await writeFile(path.join(root, 'README.md'), '# base\n');
+  git(root, 'add', '.');
+  git(root, 'commit', '-m', 'base');
+  const base = git(root, 'rev-parse', 'HEAD');
+  for (const name of ['a', 'b']) {
+    await writeFile(path.join(root, 'src', `${name}.ts`), Array.from({ length: 300 }, (_, index) => `export const ${name}${index} = ${index};`).join('\n'));
+  }
+  git(root, 'add', '.');
+  git(root, 'commit', '-m', 'two shards');
+  const head = git(root, 'rev-parse', 'HEAD');
+  const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-usage-fallback-state-'));
+  temporaryDirectories.push(stateRoot);
+  return { root, base, head, stateRoot };
+}
+
+function policy(providers?: string) {
+  return reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n', ...(providers ? { config: { providers } } : {}) });
+}
+
+const limit = (provider: 'claude' | 'codex') => new ProviderUsageLimitError(provider, {
+  resetAt: Date.now() + 4 * 24 * 3_600_000,
+  message: "You've hit your usage limit. Upgrade to Pro or try again in 4 days.",
+});
+
+const reviewed = ({ provider, roleIndex }: { provider: string; roleIndex: number }) => ({ provider, roleIndex, summary: 'Reviewed.', candidates: [] });
+
+function worktreeCount(root: string) {
+  return git(root, 'worktree', 'list', '--porcelain').split(/\r?\n/).filter((line) => line.startsWith('worktree ')).length;
+}
+
+describe('a provider that reaches its usage limit during an auto review', () => {
+  it('restarts the review once, from scratch, with the other provider, and records the fallback', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const calls: Array<{ provider: string; shard: number }> = [];
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => {
+      calls.push({ provider, shard: shard.index });
+      if (provider === 'codex') {
+        // Fails after the Claude shard of the same round has completed, so
+        // that round leaves a kept Claude review behind it.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        throw limit('codex');
+      }
+      return reviewed({ provider, roleIndex });
+    });
+    const progress: string[] = [];
+    const options = {
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, progress: (line: string) => progress.push(line),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    };
+    const result = await runGate(options);
+    expect(result.status).toBe('pass');
+    expect(result.providerSelection).toEqual(['claude']);
+    expect(result.modelDiversity).toBe('single-provider');
+    expect(result.providerFallback).toMatchObject({ dropped: ['codex'], reason: 'usage-limit', restarted: true, resetAt: expect.any(String) });
+    expect(progress.some((line) => /codex usage limit reached \(retry after .+\); restarting this review with claude only\./.test(line))).toBe(true);
+    // The first round: Claude on shard 2, Codex on shard 1. The restart
+    // reviews both shards with Claude, the one Claude completed included:
+    // nothing of the discarded round is reused.
+    expect(calls.filter((call) => call.provider === 'codex')).toEqual([{ provider: 'codex', shard: 0 }]);
+    expect(calls.filter((call) => call.provider === 'claude').map((call) => call.shard).sort()).toEqual([0, 1, 1]);
+    expect(result.shards.every((shard: { reused?: boolean; provider: string }) => !shard.reused && shard.provider === 'claude')).toBe(true);
+    // The record stays for status, doctor and the next review.
+    const paths = await ensureState(stateRoot);
+    expect(await readUsageLimits(paths)).toMatchObject({ codex: { message: expect.stringContaining('usage limit') } });
+    // The report and the attestation say so; the PASS is ordinary auto
+    // single-provider evidence for this commit and policy.
+    const report = await readReport(paths, result.reportId);
+    expect(report.providerFallback).toMatchObject({ dropped: ['codex'], restarted: true });
+    expect(formatGateResult(result)).toContain('Provider fallback: codex left out after its usage limit');
+    expect(renderGateComment(result)).toContain('codex left out after its usage limit');
+    expect(await runGate(options)).toMatchObject({ cached: true, providerSelection: ['claude'], providerFallback: { dropped: ['codex'] } });
+    // Both rounds' review checkouts were removed.
+    expect(worktreeCount(root)).toBe(1);
+  });
+
+  it('fails closed when the restart reaches a usage limit too, and records both', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    let restarted = false;
+    const shardReviewer = vi.fn(async ({ provider, roleIndex }) => {
+      if (provider === 'codex' || restarted) throw limit(provider);
+      return reviewed({ provider, roleIndex });
+    });
+    await expect(runGate({
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer,
+      progress: (line: string) => { if (line.includes('restarting this review')) restarted = true; },
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    })).rejects.toThrow(/claude reported its subscription usage limit[\s\S]*claude usage limit reached; retry after [\s\S]*does not restart again/);
+    expect(restarted).toBe(true);
+    expect(Object.keys(await readUsageLimits(await ensureState(stateRoot))).sort()).toEqual(['claude', 'codex']);
+    expect(worktreeCount(root)).toBe(1);
+  });
+
+  it('does not restart when every selected provider reached its limit', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    await expect(runGate({
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer: async ({ provider }) => { throw limit(provider); },
+      progress: (line: string) => progress.push(line),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    })).rejects.toThrow(/No other selected provider remains/);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+  });
+});
+
+describe('usage limits under an explicit provider requirement', () => {
+  it('refuses to start without the required provider and names its reset', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    await recordUsageLimits(await ensureState(stateRoot), [{ provider: 'codex', resetAt: Date.now() + 4 * 24 * 3_600_000, message: 'limit' }]);
+    const shardReviewer = vi.fn(async (args) => reviewed(args));
+    await expect(runGate({
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy('both'),
+      availableProviders: ['claude', 'codex'], shardReviewer,
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    })).rejects.toThrow(/Provider requirement both cannot be satisfied: codex usage limit reached; retry after \d{4}-\d{2}-\d{2}T/);
+    expect(shardReviewer).not.toHaveBeenCalled();
+  });
+
+  it('fails closed mid-review without falling back, and keeps the record', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const shardReviewer = vi.fn(async () => { throw limit('codex'); });
+    await expect(runGate({
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy('codex'),
+      availableProviders: ['claude', 'codex'], shardReviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    })).rejects.toThrow(/explicit provider requirement codex does not fall back[\s\S]*codex usage limit reached; retry after/);
+    expect(shardReviewer.mock.calls.every(([call]) => call.provider === 'codex')).toBe(true);
+    expect(Object.keys(await readUsageLimits(await ensureState(stateRoot)))).toEqual(['codex']);
+    expect(worktreeCount(root)).toBe(1);
+  });
+});
+
+describe('a usage-limit record at the start of an auto review', () => {
+  it('plans without that provider and says so; --force tries it again and a success clears it', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const paths = await ensureState(stateRoot);
+    await recordUsageLimits(paths, [{ provider: 'codex', resetAt: null, message: 'limit' }]);
+    const shardReviewer = vi.fn(async (args) => reviewed(args));
+    const options = {
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    };
+    const first = await runGate(options);
+    expect(first).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], restarted: false } });
+    expect(shardReviewer.mock.calls.every(([call]) => call.provider === 'claude')).toBe(true);
+    expect(formatGateResult(first)).toContain('the review was planned without it');
+    const forced = await runGate({ ...options, force: true });
+    expect(forced).toMatchObject({ status: 'pass', providerSelection: ['claude', 'codex'] });
+    expect(forced.providerFallback).toBeUndefined();
+    expect(await readUsageLimits(paths)).toEqual({});
+  });
+});
