@@ -741,3 +741,51 @@ describe('gate review of the review accounts (c5360a6)', () => {
     expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
   });
 });
+
+// --- Gate review of 3da818a ---------------------------------------------------
+
+describe('gate review of the review accounts (3da818a)', () => {
+  /** The environment a later detached start (the push hook's) gives the watcher. */
+  async function laterDetachedStart(stateRoot: string) {
+    let env: Record<string, string> = {};
+    const child = Object.assign(new (await import('node:events')).EventEmitter(), { pid: 1, unref: vi.fn() });
+    const pending = startDaemonDetached('/home/example/project', stateRoot, {
+      environment: { PATH: 'bin' },
+      spawnProcess: (_command: string, _args: string[], options: { env: Record<string, string> }) => {
+        env = options.env;
+        return child;
+      },
+    });
+    child.emit('spawn');
+    await pending;
+    return env;
+  }
+
+  it.each(['win32', 'darwin'])('a %s install with a named accounts file keeps its record for a later detached start', async (platform) => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), `sentinel-accounts-${platform}-`));
+    temporaryDirectories.push(stateRoot);
+    const paths = await ensureState(stateRoot);
+    const file = folder('accounts.json');
+    const built = platform === 'win32'
+      ? buildInstallPlan({ platform, repoRoot: 'D:\\project', stateRoot, nodePath: 'C:\\node.exe', environment: {}, accountsFile: file })
+      : buildInstallPlan({ platform, repoRoot: '/Users/me/project', stateRoot, nodePath: '/usr/local/bin/node', home: stateRoot, uid: 501, environment: {}, accountsFile: file });
+    expect(built.accountsFile).toBe(file);
+    const plan = platform === 'win32'
+      ? { ...built, wrapperPath: path.join(stateRoot, 'watch.cmd'), taskXmlPath: path.join(stateRoot, 'watch-task.xml') }
+      : built;
+    // The scheduler reports no registration yet; nothing is started.
+    const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: platform === 'win32' ? 'ERROR: The system cannot find the file specified.' : 'Could not find service' }));
+    await executeInstallTransaction({
+      context: { paths, repoRoot: stateRoot, stateRoot }, plan, policy: { policyDigest: 'p' }, currentHooks: '.githooks', start: false,
+    }, { run, git: vi.fn(async () => '') });
+    expect(await readJson(paths.watcherAccounts, null)).toEqual({ accountsFile: file });
+    expect((await laterDetachedStart(stateRoot)).ROVE_SENTINEL_ACCOUNTS).toBe(file);
+  });
+
+  it('every platform plan names its accounts file, or none', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const plan = buildInstallPlan({ platform, repoRoot: '/Users/me/project', stateRoot: '/Users/me/state', nodePath: 'node', home: '/Users/me', uid: 501, environment: {} });
+      expect(plan).toHaveProperty('accountsFile', null);
+    }
+  });
+});

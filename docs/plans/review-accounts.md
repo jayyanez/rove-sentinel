@@ -280,3 +280,7 @@ after a usage limit.
 11. The third gate review, with a regression: a rolled-back install restarts
    the previous watcher with the accounts file that installation recorded
    (or none), and every detached start takes its file from the record alone.
+12. The fourth gate review, with a regression per platform: every platform's
+   install plan carries its accounts file (or null), and one function
+   records it, so a Windows or macOS install with a named file keeps its
+   record and a later detached start (the push hook's) carries that file.

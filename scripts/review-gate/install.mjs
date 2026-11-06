@@ -244,6 +244,8 @@ export function buildInstallPlan({
   environment = process.env,
   realPath,
   // An accounts file named explicitly at install; the default needs none.
+  // Every platform's plan carries it (or null): the install records it from
+  // there for the watcher's detached starts.
   accountsFile = null,
 }) {
   const cliPath = fileURLToPath(new URL('./cli.mjs', import.meta.url));
@@ -277,6 +279,7 @@ export function buildInstallPlan({
     const taskXmlPath = path.win32.join(stateRoot, 'watch-task.xml');
     return {
       platform,
+      accountsFile,
       taskName,
       wrapperPath,
       wrapper,
@@ -325,6 +328,7 @@ ${carried}    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
 `;
     return {
       platform,
+      accountsFile,
       label,
       plistPath,
       plist,
@@ -335,7 +339,7 @@ ${carried}    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
       remove: { command: 'launchctl', args: ['bootout', `gui/${uid}/${label}`] },
     };
   }
-  return { platform, taskName, unsupportedScheduler: true, stateRoot, ...(accountsFile ? { accountsFile } : {}) };
+  return { platform, accountsFile, taskName, unsupportedScheduler: true, stateRoot };
 }
 
 async function currentHooksPath(repoRoot) {
@@ -531,6 +535,17 @@ async function snapshotFile(target) {
   }
 }
 
+/**
+ * The one place the watcher's accounts file is recorded, from the plan of
+ * any platform: read by every detached start of that watcher
+ * (`detachedStartEnvironment`); no file named removes the record, and the
+ * watcher reads the default.
+ */
+export async function recordWatcherAccounts(paths, plan) {
+  if (plan.accountsFile) await atomicWriteJson(paths.watcherAccounts, { accountsFile: plan.accountsFile });
+  else await removeStoredJson(paths.watcherAccounts);
+}
+
 async function restoreFile(target, snapshot, { storedJson = false } = {}) {
   if (storedJson) await removeStoredJson(target);
   if (!snapshot.existed) {
@@ -699,10 +714,7 @@ export async function executeInstallTransaction(
     }
 
     await atomicWriteJson(context.paths.policy, policy);
-    // The accounts file this installation names, read by every detached
-    // start of its watcher (`detachedStartEnvironment`); none means the default.
-    if (plan.accountsFile) await atomicWriteJson(context.paths.watcherAccounts, { accountsFile: plan.accountsFile });
-    else await removeStoredJson(context.paths.watcherAccounts);
+    await recordWatcherAccounts(context.paths, plan);
     // pending while this process lives: the watcher started below honours it
     // at once, and it is gone if this install is killed (readWatcherGithub)
     if (github !== undefined) {
