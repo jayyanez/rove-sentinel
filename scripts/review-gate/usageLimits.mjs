@@ -34,6 +34,24 @@ export function isProviderUsageLimit(error) {
   return error?.code === USAGE_LIMIT_CODE && PROVIDERS.includes(error?.provider);
 }
 
+/**
+ * Mark an error as the provider's own failure: raised by its process once
+ * launched, or by its output. The runners mark these, and only a marked
+ * failure lets `auto` fall back from a provider; a local error before the
+ * launch (writing an artifact, a schema) is the host's, never the
+ * provider's. A process that could not be started, or that a stopping
+ * watcher ended, is not marked.
+ */
+export function markProviderFailure(error) {
+  const marked = error && typeof error === 'object' ? error : new Error(String(error));
+  if (!['SPAWN_ERROR', 'TERMINATED'].includes(marked.code)) marked.providerFailure = true;
+  return marked;
+}
+
+export function isProviderFailure(error) {
+  return error?.providerFailure === true || isProviderUsageLimit(error);
+}
+
 // Each is specific to a subscription's usage or plan limit. A transient
 // rate limit (HTTP 429, "rate limit") is deliberately not among them: it is
 // retried, never recorded.
@@ -317,7 +335,9 @@ export async function recordProviderHolds(paths, hits, { now = Date.now() } = {}
   for (const hit of hits) {
     if (!PROVIDERS.includes(hit?.provider)) continue;
     const record = providerHoldRecord(hit, { now });
-    const held = added[hit.provider];
+    // Weighed against the hold already on disk too: a failure never
+    // replaces a usage limit, whose reset it would lose.
+    const held = added[hit.provider] ?? records[hit.provider];
     const stronger = !held || (record.reason === 'usage-limit' && held.reason !== 'usage-limit')
       || (record.reason === held.reason && Date.parse(record.retryAfter) > Date.parse(held.retryAfter));
     if (stronger) added[hit.provider] = record;

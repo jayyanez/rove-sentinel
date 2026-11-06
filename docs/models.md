@@ -175,7 +175,9 @@ provider: when every provider is held, those held for a failure are tried.
 A review never falls back over a safety stop: a provider process tree whose
 cleanup could not be verified (the watcher pauses on it), the launch fence of
 a stopping watcher, a failed deterministic lane, or an error that is not a
-provider's, such as Git's or the gate's own. A scout or a hypothesis reviewer
+provider's, such as Git's, the gate's own, or a local error before the
+provider was launched (an artifact that could not be written), even when a
+usage limit happened in the same round. A scout or a hypothesis reviewer
 that fails is tolerated as before, and only its usage limit fails the round.
 
 The fallback is never silent. Progress says, for example, `codex failed twice

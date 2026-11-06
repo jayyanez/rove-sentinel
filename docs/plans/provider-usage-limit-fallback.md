@@ -47,7 +47,9 @@ The fallback keeps each of these:
   own selected provider set.
 - **Never over a safety stop.** A process-tree cleanup failure, the launch
   fence, a failed deterministic lane, and an error that is not a provider's
-  (Git, the gate itself) fail closed as before.
+  (Git, the gate itself, a local error before the provider was launched) fail
+  closed as before, even when a usage limit happened in the same round: only
+  the stops that fail a round for its providers alone may fall back.
 
 ## Intended behavior
 
@@ -55,7 +57,15 @@ The fallback keeps each of these:
    because provider work failed after its retry was spent: a shard reviewer,
    a lens reviewer when none completed, or the adjudicator, through any error,
    a timeout, malformed output, or a review still incomplete after its retry.
-   Each failure is attributed to the provider that ran it. A scout or a
+   Each failure is attributed to the provider that ran it, and only a
+   failure the runner marked as the provider's counts: one raised by its
+   process once launched, or by its output (malformed, incomplete, an
+   adjudication batch that does not account for each of its candidates
+   exactly once, which is checked inside the batch's retried task). A local
+   error before the launch, such as an artifact or a schema that could not be
+   written, a process that could not be started, or one a stopping watcher
+   ended, is the host's: it fails closed without a fallback or a hold. The
+   fallback follows only a spent retry, recorded explicitly. A scout or a
    hypothesis reviewer that fails is tolerated as before and triggers
    nothing. A usage limit, in any role, is the exception: it is not retried,
    no further provider work starts in the round, and the round fails at once.
@@ -83,7 +93,9 @@ The fallback keeps each of these:
      back without that provider: a provider whose failure could not be
      fallen back from (no other provider, an explicit requirement) is not
      held, so a passing outage never refuses later reviews.
-   - A usage limit outranks a failure of the same provider. A hold expires by
+   - A usage limit outranks a failure of the same provider, the hold already
+     on disk included: a failure never replaces a usage limit and its reset.
+     A hold expires by
      itself; a provider that completes work in a round has its hold removed.
      A corrupt file holds nothing back.
 4. **Selection.** Under `auto`, a held provider is unavailable, without a

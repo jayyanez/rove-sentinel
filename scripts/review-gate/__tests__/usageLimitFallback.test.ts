@@ -9,14 +9,15 @@ import { reviewPolicySnapshot } from '../context.mjs';
 import { formatGateResult, runGate } from '../gate.mjs';
 import { renderGateComment } from '../github.mjs';
 import { ensureState, readReport } from '../storage.mjs';
-import { ProviderUsageLimitError, readProviderHolds, recordProviderHolds } from '../usageLimits.mjs';
+import { ProviderUsageLimitError, markProviderFailure, readProviderHolds, recordProviderHolds } from '../usageLimits.mjs';
 
 // Real repositories and Git worktrees: Windows needs more than the default.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  // Windows may hold a just-removed worktree's handles for a moment.
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })));
 });
 
 function git(cwd: string, ...args: string[]) {
@@ -245,7 +246,10 @@ describe('any provider failure after its retry, under auto (owner decision)', ()
     scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
     deterministicLanes: async () => ({ lanes: [], findings: [] }),
   };
-  const failing = (bad: string, error = () => new Error('Provider must explicitly report review_complete.')) =>
+  // The runners mark a failure of the provider's process or output; the
+  // seams stand in for them, so they throw marked errors.
+  const providerError = (message: string) => markProviderFailure(new Error(message));
+  const failing = (bad: string, error = () => providerError('Provider must explicitly report review_complete.')) =>
     vi.fn(async ({ provider, roleIndex }) => {
       if (provider === bad) throw error();
       return reviewed({ provider, roleIndex });
@@ -274,7 +278,7 @@ describe('any provider failure after its retry, under auto (owner decision)', ()
 
   it('falls back to Codex when a Claude shard fails twice', async () => {
     const { root, base, head, stateRoot } = await makeRepository();
-    const shardReviewer = failing('claude', () => new Error('claude exceeded its 300000ms time limit'));
+    const shardReviewer = failing('claude', () => providerError('claude exceeded its 300000ms time limit'));
     const result = await runGate({
       ...common, repoRoot: root, stateRoot, base, head, author: 'codex', policy: policy(),
       availableProviders: ['claude', 'codex'], shardReviewer,
@@ -293,7 +297,7 @@ describe('any provider failure after its retry, under auto (owner decision)', ()
       }],
     }));
     const coordinator = vi.fn(async ({ provider, candidates }) => {
-      if (provider === 'codex') throw new Error('Coordinator findings must be an array.');
+      if (provider === 'codex') throw providerError('Coordinator findings must be an array.');
       return {
         summary: 'Dismissed.',
         findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
@@ -315,7 +319,7 @@ describe('any provider failure after its retry, under auto (owner decision)', ()
     const { root, base, head, stateRoot } = await makeRepository();
     let restarted = false;
     const shardReviewer = vi.fn(async ({ provider, roleIndex }) => {
-      if (provider === 'codex' || restarted) throw new Error(`${provider} exited with code 1`);
+      if (provider === 'codex' || restarted) throw providerError(`${provider} exited with code 1`);
       return reviewed({ provider, roleIndex });
     });
     await expect(runGate({
@@ -412,5 +416,73 @@ describe('any provider failure after its retry, under auto (owner decision)', ()
     const third = await run(await commit('d'), vi.fn(async (args) => reviewed(args)), { force: true });
     expect(third).toMatchObject({ status: 'pass', providerSelection: ['claude', 'codex'] });
     expect(await readProviderHolds(paths)).toEqual({});
+  });
+});
+
+describe('what the fallback must not take for a provider failure (gate review of ef07bfa)', () => {
+  const common = {
+    risk: 'high', author: 'claude', policy: policy(), availableProviders: ['claude', 'codex'],
+    scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+  };
+  const dismissing = (candidates: Array<{ id: string; title: string; file: string; line: number }>) => candidates.map((entry) => ({
+    candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+    disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+  }));
+  const withCandidate = vi.fn(async ({ provider, roleIndex, shard }) => ({
+    provider, roleIndex, summary: 'One candidate.',
+    candidates: [{
+      id: `${provider}-${roleIndex}-0`, provider, roleIndex, title: `Defect in ${shard.files[0]}`, priority: 'P2', confidence: 90,
+      category: 'state', file: shard.files[0], line: 1, scenario: 's', evidence: 'e', proposed_test: 't',
+    }],
+  }));
+
+  it('does not restart for a failed deterministic lane, even beside a usage limit', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const deterministicLanes = vi.fn(async () => { throw new Error('gitleaks exited unexpectedly'); });
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line), deterministicLanes,
+      shardReviewer: async ({ provider, roleIndex }) => {
+        if (provider === 'codex') throw limit('codex');
+        return reviewed({ provider, roleIndex });
+      },
+    })).rejects.toThrow(/deterministic lane failed/);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(deterministicLanes).toHaveBeenCalledTimes(1);
+    // The usage limit is still recorded, so status shows it.
+    expect(Object.keys(await readProviderHolds(await ensureState(stateRoot)))).toEqual(['codex']);
+  });
+
+  it('does not charge a provider for an error it did not raise', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    // A local error before the provider was launched (an artifact that could
+    // not be written) carries no provider-failure mark.
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+      shardReviewer: async ({ provider, roleIndex }) => {
+        if (provider === 'codex') throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+        return reviewed({ provider, roleIndex });
+      },
+    })).rejects.toThrow(/failed after retry/);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('gives an adjudication batch that misses a candidate its retry before falling back', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const coordinator = vi.fn(async ({ provider, candidates }) => {
+      const findings = dismissing(candidates);
+      // Codex answers for the first candidate twice and omits the second.
+      return { summary: 'Dismissed.', findings: provider === 'codex' ? [findings[0], findings[0]] : findings };
+    });
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head,
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+      shardReviewer: withCandidate, coordinator,
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
+    expect(coordinator.mock.calls.filter(([call]) => call.provider === 'codex')).toHaveLength(2);
   });
 });

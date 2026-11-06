@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { LIMITS } from '../constants.mjs';
 import { settleReviewersWithRetry } from '../gate.mjs';
-import { runReviewer } from '../providers.mjs';
+import { runCoordinator, runReviewer, runShardReviewer } from '../providers.mjs';
 import { ensureState } from '../storage.mjs';
 import { detectSubscriptions } from '../subscriptions.mjs';
 import {
@@ -15,6 +15,7 @@ import {
   clearProviderHolds,
   describeProviderHold,
   heldProviders,
+  isProviderFailure,
   isProviderUsageLimit,
   parseResetTime,
   providerHoldRecord,
@@ -307,5 +308,47 @@ describe('failure holds', () => {
     }));
     expect((await detectSubscriptions('repo', { run: both, env, exclude: ['codex'] })).selected).toEqual(['claude']);
     expect(both.mock.calls.every(([command]) => command === 'claude')).toBe(true);
+  });
+});
+
+describe('gate review of ef07bfa', () => {
+  it('never lets a failure replace a usage limit already on disk', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    await recordProviderHolds(paths, [{ provider: 'codex', reason: 'usage-limit', resetAt: now + 5 * HOUR, message: 'limit' }], { now });
+    await recordProviderHolds(paths, [{ provider: 'codex', reason: 'provider-failure', message: 'timed out' }], { now: now + 60_000 });
+    expect((await readProviderHolds(paths, { now: now + 60_000 })).codex)
+      .toMatchObject({ reason: 'usage-limit', resetAt: new Date(now + 5 * HOUR).toISOString(), message: 'limit' });
+  });
+
+  it('marks failures of the provider process and output, never a local error before the launch', async () => {
+    const directory = await temporaryDirectory();
+    const bundle = { directory, contextPath: path.join(directory, 'context.md'), reviewerSchemaPath: path.join(directory, 'schema.json') };
+    const caught = async (promise: Promise<unknown>) => promise.then(() => null, (error) => error);
+    // The process failed once launched.
+    const exited = await caught(runReviewer({ provider: 'codex', roleIndex: 0, checkout: directory, bundle, runner: vi.fn(async () => { throw exitFailure('', 'ERROR: stream disconnected'); }) }));
+    expect(isProviderFailure(exited)).toBe(true);
+    // Its output was malformed.
+    const malformed = await caught(runReviewer({ provider: 'claude', roleIndex: 0, checkout: directory, bundle,
+      runner: vi.fn(async () => ({ code: 0, stderr: '', stdout: JSON.stringify({ structured_output: { review_complete: true, effort_request: null, summary: 's', candidates: 'none' } }) })) }));
+    expect(malformed.message).toMatch(/candidates must be an array/);
+    expect(isProviderFailure(malformed)).toBe(true);
+    // It could not be started.
+    const spawn = await caught(runReviewer({ provider: 'claude', roleIndex: 0, checkout: directory, bundle,
+      runner: vi.fn(async () => { throw Object.assign(new Error('Could not start claude: ENOENT'), { code: 'SPAWN_ERROR' }); }) }));
+    expect(isProviderFailure(spawn)).toBe(false);
+    // A shard artifact that could not be written, before any launch.
+    const runner = vi.fn();
+    const artifact = await caught(runShardReviewer({ provider: 'codex', roleIndex: 0, checkout: directory, runner,
+      bundle: { ...bundle, writeArtifact: async () => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }); } },
+      shard: { index: 0, files: ['a.ts'], patch: 'diff --git a/a.ts b/a.ts\n', kind: 'code' } }));
+    expect(artifact.code).toBe('ENOSPC');
+    expect(isProviderFailure(artifact)).toBe(false);
+    // The Codex adjudicator's schema written into a folder that is gone.
+    const schema = await caught(runCoordinator({ provider: 'codex', checkout: directory, runner,
+      bundle: { ...bundle, directory: path.join(directory, 'missing'), writeArtifact: async (name: string) => path.join(directory, name) },
+      candidates: [{ id: 'codex-0-0' }] }));
+    expect(schema.code).toBe('ENOENT');
+    expect(isProviderFailure(schema)).toBe(false);
+    expect(runner).not.toHaveBeenCalled();
   });
 });
