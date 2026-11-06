@@ -1199,10 +1199,19 @@ async function runGateWithLease({
       providerFailures.push({ provider, reason: 'provider-failure', message: shortReason(reason, LIMITS.providerHoldMessageChars), retried });
     }
   };
-  // Set by the throws that fail a round for its providers alone; a safety
-  // stop (a cleanup failure, a lane, the gate) never carries it, so it never
-  // falls back, whatever usage limit the same round met.
-  const fallbackStop = (error) => Object.assign(error, { providerFallbackEligible: true });
+  // The one rule for a fallback: a round's stop may fall back only when
+  // EVERY failure that caused it is a provider's: a usage limit (or work a
+  // usage limit stopped), or a failure the runner marked as the provider's
+  // after its retry was spent. One local, infrastructure or setup error, or
+  // a cleanup failure, among them, and the round fails closed without a
+  // restart. Safety stops (a cleanup failure, a lane, the gate) never pass
+  // through here, so they never fall back. `failures` are settled results
+  // ({ reason, retried }) of every failure that fails the round.
+  const providerAttributed = ({ reason, retried }) => !processTreeCleanupFailureCode(reason)
+    && (stopsOnUsageLimit(reason) || (isProviderFailure(reason) && retried === true));
+  const fallbackStop = (error, failures) => (failures.every(providerAttributed)
+    ? Object.assign(error, { providerFallbackEligible: true })
+    : error);
   // Every provider call of this round goes through one guard: a
   // usage limit is collected, and once one is reported no further provider
   // work starts, since the round can no longer attest. A provider that
@@ -1232,7 +1241,7 @@ async function runGateWithLease({
   hypothesisReviewer = guardUsageLimits(hypothesisReviewer);
   scout = guardUsageLimits(scout);
   coordinator = guardUsageLimits(coordinator);
-  const usageLimitFailure = async (errors, code = null) => {
+  const usageLimitFailure = async (errors, code = null, failures = []) => {
     const providers = [...new Set(usageLimitHits.map((hit) => hit.provider))];
     return fallbackStop(await buildFailClosedError({
       paths: context.paths,
@@ -1245,7 +1254,7 @@ async function runGateWithLease({
       // A process-tree cleanup failure beside the limit keeps its code: the
       // watcher's pause keys on it, and no restart follows it.
       code,
-    }));
+    }), failures);
   };
   const providerExecutions = [];
   const author = inferAuthor(branch, authorOverride);
@@ -1850,11 +1859,17 @@ async function runGateWithLease({
     if (usageLimitHits.length) {
       const adjudicationCleanup = await haltAdjudication();
       const cleanupFailure = reviewerCleanupFailure(settledReviewers);
+      // Every other failure that fails this round on its own counts too: a
+      // failed shard, or every lens reviewer.
+      const lensAllFailed = settledLens.length > 0 && settledLens.every((result) => result.status === 'rejected');
       throw await usageLimitFailure([
         ...reviewerErrors,
         ...(cleanupFailure ? [cleanupFailure.reason?.message || String(cleanupFailure.reason)] : []),
         ...(adjudicationCleanup ? [adjudicationCleanup.message] : []),
-      ], cleanupFailure?.code || adjudicationCleanup?.code || null);
+      ], cleanupFailure?.code || adjudicationCleanup?.code || null, [
+        ...settledShards.filter((result) => result.status === 'rejected'),
+        ...(lensAllFailed ? settledLens : []),
+      ]);
     }
     const lanes = lanesSettled.value || { lanes: [], findings: [] };
     // A shard is the ONLY reviewer of its hunks: a shard that failed after its
@@ -1887,7 +1902,7 @@ async function runGateWithLease({
         extra: {
           shards: shardRecords.map((record, index) => ({ ...record, completed: settledShards[index].status === 'fulfilled' })),
         },
-      }));
+      }), failedShards.map(({ result }) => result));
     }
     if (!reviews.length) {
       const adjudicationCleanup = await haltAdjudication();
@@ -1907,7 +1922,7 @@ async function runGateWithLease({
           .filter((result) => result.status === 'rejected')
           .map((result) => providerTreeCleanupFailureCode(result.reason))
           .find(Boolean) || adjudicationCleanup?.code || null,
-      }));
+      }), settledLens.filter((result) => result.status === 'rejected'));
     }
     // A provider-tree cleanup failure fails the review closed even when
     // sibling reviewers succeeded: attesting or completing normally would
@@ -1964,6 +1979,7 @@ async function runGateWithLease({
     } else if (candidates.length) {
       usedCoordinator = true;
       let adjudicationRetried = false;
+      let adjudicationFailures = [];
       try {
         const sentBatches = await adjudicationStream.finish();
         const startedAt = adjudicationStartedAt ?? Date.now();
@@ -1975,6 +1991,7 @@ async function runGateWithLease({
         const failed = failedBatches.find((result) => providerTreeCleanupFailureCode(result.reason)) || failedBatches[0];
         if (failed) {
           adjudicationRetried = failed.retried === true;
+          adjudicationFailures = failedBatches;
           throw failed.reason;
         }
         // Identity across heads comes from the REVIEWER's title (the one a
@@ -1992,13 +2009,15 @@ async function runGateWithLease({
         assertAdjudicationCoverage(candidates, adjudication);
       } catch (error) {
         failedProvider(plan.coordinator, error, adjudicationRetried);
+        // Every failed batch, or the error raised after them (a coverage or
+        // canonicalization error of the gate's own), decides.
         throw fallbackStop(await buildFailClosedError({
           paths: context.paths,
           baseReport,
           summary: 'The required candidate adjudication failed; the gate failed closed.',
           errors: [`${plan.coordinator} coordinator: ${error?.message || String(error)}`],
           code: providerTreeCleanupFailureCode(error),
-        }));
+        }), adjudicationFailures.length ? adjudicationFailures : [{ reason: error, retried: false }]);
       }
     }
 

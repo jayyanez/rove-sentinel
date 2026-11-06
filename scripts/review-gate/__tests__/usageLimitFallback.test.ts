@@ -486,3 +486,58 @@ describe('what the fallback must not take for a provider failure (gate review of
     expect(coordinator.mock.calls.filter(([call]) => call.provider === 'codex')).toHaveLength(2);
   });
 });
+
+describe('a fallback needs every failure of the round to be a provider\'s (gate review of 3df52d6)', () => {
+  const common = {
+    risk: 'high', author: 'claude', policy: policy(), availableProviders: ['claude', 'codex'],
+    scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+    deterministicLanes: async () => ({ lanes: [], findings: [] }),
+  };
+  const localError = () => Object.assign(new Error('ENOSPC: no space left on device, write shard-2.diff'), { code: 'ENOSPC' });
+  const tagged = (message: string) => markProviderFailure(new Error(message));
+
+  it('does not restart after a usage limit when another shard failed with a local error', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line),
+      shardReviewer: async ({ provider }) => {
+        if (provider === 'codex') {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          throw limit('codex');
+        }
+        throw localError();
+      },
+    })).rejects.toThrow(/usage limit/);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    // The usage limit is still held, so status shows it; nothing else is.
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({ codex: expect.objectContaining({ reason: 'usage-limit' }) });
+  });
+
+  it('does not restart, or hold, a failing provider when another shard failed with a local error', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line),
+      shardReviewer: async ({ provider }) => {
+        throw provider === 'codex' ? tagged('codex exited with code 1') : localError();
+      },
+    })).rejects.toThrow(/failed after retry/);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('still restarts when every failure that fails the round is a provider\'s', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head,
+      // A tolerated scout failure does not fail the round, so it does not count.
+      scout: async () => { throw localError(); },
+      shardReviewer: async ({ provider, roleIndex }) => {
+        if (provider === 'codex') throw tagged('codex exited with code 1');
+        return reviewed({ provider, roleIndex });
+      },
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
+  });
+});

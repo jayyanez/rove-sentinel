@@ -65,7 +65,12 @@ The fallback keeps each of these:
    error before the launch, such as an artifact or a schema that could not be
    written, a process that could not be started, or one a stopping watcher
    ended, is the host's: it fails closed without a fallback or a hold. The
-   fallback follows only a spent retry, recorded explicitly. A scout or a
+   fallback follows only a spent retry, recorded explicitly. The rule is
+   one: a round may fall back only when EVERY failure that fails it is a
+   provider's (a usage limit, work a usage limit stopped, or a marked failure
+   after its retry). One unmarked failure among them, or any safety stop, and
+   the round fails closed without a restart; a usage limit it met is still
+   held, but no failure is. A scout or a
    hypothesis reviewer that fails is tolerated as before and triggers
    nothing. A usage limit, in any role, is the exception: it is not retried,
    no further provider work starts in the round, and the round fails at once.
