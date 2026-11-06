@@ -1,13 +1,47 @@
 import { runProcess, subscriptionEnvironment, processTreeCleanupFailureCode } from './process.mjs';
 import { PROVIDERS, selectProviders } from './modelSettings.mjs';
+import { describeProviderHold, heldProviders } from './usageLimits.mjs';
 
-/** Probe native subscription authentication without a model call or API billing. */
-export async function detectSubscriptions(repoRoot, { mode = 'auto', run = runProcess, env = process.env } = {}) {
+/** The providers a requirement asks for, less any a restart dropped. */
+function wantedProviders(mode, exclude = []) {
+  return mode === 'claude' || mode === 'codex' ? [mode] : PROVIDERS.filter((provider) => !exclude.includes(provider));
+}
+
+/**
+ * Why a review cannot start because of provider holds, or null. `auto`
+ * leaves a held provider out, and fails only when every candidate is held
+ * for its usage limit; an explicit requirement never falls back.
+ */
+export function providerHoldRefusal(mode, holds = {}, candidates = wantedProviders(mode)) {
+  const held = heldProviders(mode, candidates, holds);
+  if (!held.length) return null;
+  const reasons = held.map((provider) => describeProviderHold(provider, holds[provider])).join('; ');
+  if (mode === 'auto') {
+    return held.length === candidates.length
+      ? `No review provider is available: ${reasons}. Rerun after that time, or with --force to try them again now.`
+      : null;
+  }
+  return `Provider requirement ${mode} cannot be satisfied: ${reasons}. Sentinel does not fall back to another provider under an explicit requirement; rerun after that time, or with --force to try again now.`;
+}
+
+/**
+ * Probe native subscription authentication without a model call or API billing.
+ * `holds` are the live provider holds: under `auto` a held provider is
+ * unavailable (a failure hold only while another provider is available),
+ * and an explicit requirement that names a usage-limited one is refused.
+ * `exclude` names providers the restart after a failure dropped.
+ */
+export async function detectSubscriptions(repoRoot, {
+  mode = 'auto', run = runProcess, env = process.env, holds = {}, exclude = [],
+} = {}) {
   const safeEnv = subscriptionEnvironment({ ...env, ROVE_REVIEW_ALLOW_API_BILLING: undefined });
   delete safeEnv.ROVE_REVIEW_ALLOW_API_BILLING;
-  const wanted = mode === 'claude' || mode === 'codex' ? [mode] : PROVIDERS;
+  const wanted = wantedProviders(mode, exclude);
+  const refusal = providerHoldRefusal(mode, holds, wanted);
+  if (refusal) throw new Error(refusal);
+  const held = heldProviders(mode, wanted, holds);
   const availability = {};
-  await Promise.all(wanted.map(async (provider) => {
+  const probe = async (provider) => {
     try {
       const version = await run(provider, ['--version'], { cwd: repoRoot, env: safeEnv, timeoutMs: 30_000, allowFailure: true });
       if (version.code !== 0) throw new Error(`${provider} version check failed.`);
@@ -33,7 +67,15 @@ export async function detectSubscriptions(repoRoot, { mode = 'auto', run = runPr
       if (processTreeCleanupFailureCode(error)) throw error;
       availability[provider] = { available: false, error: error?.message || String(error) };
     }
-  }));
+  };
+  await Promise.all(wanted.filter((provider) => !held.includes(provider)).map(probe));
+  // A failure hold never costs the review its last provider.
+  if (mode === 'auto' && !wanted.some((provider) => availability[provider]?.available)) {
+    await Promise.all(held.filter((provider) => holds[provider]?.reason === 'provider-failure').map(probe));
+  }
+  for (const provider of held) {
+    availability[provider] ??= { available: false, error: describeProviderHold(provider, holds[provider]), hold: holds[provider] };
+  }
   let selected;
   try { selected = selectProviders(mode, wanted.filter((provider) => availability[provider]?.available)); }
   catch (error) {

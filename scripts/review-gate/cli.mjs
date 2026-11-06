@@ -12,6 +12,7 @@ import { detectLintTools } from './toolLanes.mjs';
 import { firstUseToolsNotice, formatToolsNotice, installPlan, installTools, missingTools } from './tools.mjs';
 import { readReviewPolicy, loadInstalledReviewPolicy, policyForLocalCheck } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
+import { describeProviderHold, readProviderHolds } from './usageLimits.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
@@ -263,6 +264,11 @@ async function main() {
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
     result.watcher = watcher;
     result.scheduler = scheduler;
+    // Live usage-limit records; the probe above does not apply them.
+    result.providerHolds = await readProviderHolds(context.paths).catch(() => ({}));
+    for (const [provider, record] of Object.entries(result.providerHolds)) {
+      process.stderr.write(`${describeProviderHold(provider, record)}.\n`);
+    }
     print(result, true);
     return;
   }

@@ -1,6 +1,6 @@
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 
-// What this engine version accepts and where it stops (1.16.1), from the
+// What this engine version accepts and where it stops (1.17.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -76,6 +76,11 @@ export function sentinelLimits() {
         id: 'rerun',
         limit: `${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours`,
         text: `A round that failed closed keeps its completed shard reviews for ${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours for the exact head; a rerun reviews only the rest.`,
+      },
+      {
+        id: 'provider-fallback',
+        limit: '1 restart per review',
+        text: `Under providers: auto, a review whose provider work fails after its retry (any cause), or reports its usage limit (no retry), restarts once from scratch without that provider, and says so; a second failure fails closed. The provider is then held out of auto reviews for ${minutes(LIMITS.providerHoldReprobeMs)} after a failure, or until the reset it reported after a usage limit (${minutes(LIMITS.providerHoldReprobeMs)} when none could be read, at most ${Math.round(LIMITS.providerHoldMaxMs / 86_400_000)} days), or until it completes work. Under both, claude or codex nothing falls back, and a usage limit refuses the review until its reset. gate --force tries every provider; status lists the holds.`,
       },
     ],
     superseded: [

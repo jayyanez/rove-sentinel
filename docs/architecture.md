@@ -108,6 +108,13 @@ keeps up to 40 of them, highest confidence first, as evidence for recall
 analysis only, and the `ledger` command marks an external finding in a file
 that holds one as `below-floor` rather than unseen.
 
+A provider whose work fails the round after its retry, or that reports its
+subscription's usage limit, fails the round closed. Under `auto` the review
+then restarts once, from scratch and under the same lease, without that
+provider, holds it out of later `auto` reviews for a while, and records the
+fallback; an explicit requirement never falls back, and neither does a
+safety stop. See [models](models.md#provider-failures-usage-limits-and-fallback).
+
 Author-family routing normally puts the other provider in the lead. Human
 changes use risk-based routing. The inherited `grok/` author label prefers
 Claude; there is no Grok provider. A single authenticated provider preserves role
@@ -191,6 +198,7 @@ are not evidence of live platform qualification.
 | `gate`, `risk`, `shards`, `convergence`, `dispositions` | Review planning and final decisions |
 | `context`, `refmap`, `git` | Committed inputs, isolated checkout and bounded context |
 | `providers`, `process`, `detach`, `cleanup` | CLI adapters and subprocess lifecycle |
+| `subscriptions`, `usageLimits` | Provider availability, usage-limit detection and provider holds for the `auto` fallback |
 | `lint`, `guiEvidence`, `evidenceSlug` | Deterministic and optional visual-evidence checks |
 | `daemon`, `prepush`, `github` | Queue, push enforcement and eligible PR comments |
 | `storage`, `ledger`, `constants` | Records, external-review comparison and protocol limits |

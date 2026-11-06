@@ -3,7 +3,10 @@
 From Sentinel 1.11, one authenticated native provider CLI is sufficient. The
 default `auto` mode selects all subscription-authenticated providers available
 at the start of a new review. A selected provider that fails during that review
-is never silently dropped. API keys do not satisfy subscription authentication.
+is never silently dropped; under `auto`, one that fails after its retry, or
+reports its subscription's usage limit, is dropped explicitly, once, as
+[below](#provider-failures-usage-limits-and-fallback).
+API keys do not satisfy subscription authentication.
 
 ## Defaults and customization
 
@@ -140,6 +143,61 @@ and convergence rules. Its report says `single-provider` because separate
 contexts do not provide cross-model diversity. Having both providers available
 keeps Sentinel's existing author/risk routing; some low-risk or author-specific
 plans still use only one provider.
+
+## Provider failures, usage limits and fallback
+
+Under `auto`, a review falls back to the other provider when one provider's
+work fails the round, whatever the cause: a shard or lens reviewer, or the
+adjudicator, that still fails after its one retry, through an error, a
+timeout, malformed output or a review it still reports incomplete. The same
+holds for Claude and Codex. A provider that reports its subscription's usage
+limit is not retried, since it would refuse again: the review falls back at
+once. Sentinel recognizes a usage limit from the CLI's own error output, only
+when a provider run failed and left no answer, and reads the reset time it
+reports; a review that completed is never read for it, whatever its text
+quotes.
+
+The round that failed ends with its own report, and its evidence, kept shard
+reviews included, is discarded. The review then restarts once, from scratch,
+with the providers that remain. If none remains, or the restart fails as
+well, the review fails closed. The provider it fell back from is held out of
+later `auto` reviews: until the reset its CLI reported for a usage limit (an
+hour when none could be read, at most eight days), and for an hour after a
+failure. A hold expires by itself, and a provider that completes work in a
+review has its hold removed. A failure hold never leaves a review without a
+provider: when every provider is held, those held for a failure are tried.
+
+| Requirement | A provider is held | A provider's work fails the round |
+| --- | --- | --- |
+| `auto` | Left out of the review; if every provider is held for its usage limit, the review fails and names each retry time | The review restarts once without it, and holds it. A second failure fails closed |
+| `both`, `claude`, `codex` | A usage limit refuses the review, naming the provider and its retry time; a failure hold is not read | The round fails closed. Nothing falls back, and only a usage limit is held |
+
+A review never falls back over a safety stop: a provider process tree whose
+cleanup could not be verified (the watcher pauses on it), the launch fence of
+a stopping watcher, a failed deterministic lane, or an error that is not a
+provider's, such as Git's, the gate's own, or a local error before the
+provider was launched (an artifact that could not be written), even when a
+usage limit happened in the same round. A scout or a hypothesis reviewer
+that fails is tolerated as before, and only its usage limit fails the round.
+
+The fallback is never silent. Progress says, for example, `codex failed twice
+(…); restarting this review with claude only.` or `codex usage limit reached
+(retry after …); restarting this review with claude only.` The report, the
+attestation, the GitHub comment and the text result carry `providerFallback`
+(`dropped`, `reason` (`"usage-limit"` or `"provider-failure"`), `resetAt`,
+`retryAfter`, `message` and `restarted`) besides the `single-provider` label.
+A review that left a provider out from the start because of its hold says the
+same with `restarted: false`. `status` and `doctor` list the live holds, of
+both kinds, under `providerHolds`.
+
+A fallback PASS is an ordinary `auto` single-provider PASS for its exact
+commit and policy; the policy digest does not change. If a project needs both
+providers on every review, it sets `both`, which never falls back.
+
+`gate --force` ignores the holds and tries every provider again, for example
+after an allowance was raised. Which provider messages are recognized as a
+usage limit, and which of them were not yet seen from a live CLI, is in the
+[plan](plans/provider-usage-limit-fallback.md).
 
 ## Client compatibility
 

@@ -100,6 +100,7 @@ export function statePaths(root) {
     paused: path.join(root, 'paused.json'),
     policy: path.join(root, 'policy.json'),
     watcherOptions: path.join(root, 'watcher-options.json'),
+    providerHolds: path.join(root, 'provider-holds.json'),
   };
 }
 

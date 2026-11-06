@@ -46,8 +46,21 @@ import {
   providerCleanupFailureLatched,
   resetProviderCleanupLatch,
 } from './process.mjs';
-import { detectSubscriptions } from './subscriptions.mjs';
-import { modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
+import { detectSubscriptions, providerHoldRefusal } from './subscriptions.mjs';
+import { PROVIDERS, modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
+import {
+  USAGE_LIMIT_HALT_CODE,
+  clearProviderHolds,
+  describeProviderHold,
+  isProviderFailure,
+  isProviderUsageLimit,
+  markProviderFailure,
+  formatProviderFallback,
+  heldProviders,
+  readProviderHolds,
+  recordProviderHolds,
+  providerHoldRecord,
+} from './usageLimits.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
 import {
   metadataOnlySections, partitionShards, renameMapFor, renamedPaths, shardCountFor, shardPartShards, splitPatchByFile,
@@ -89,6 +102,8 @@ import {
 } from './storage.mjs';
 
 export const providerTreeCleanupFailureCode = processTreeCleanupFailureCode;
+// An adjudication batch not run because its round had already stopped.
+const ADJUDICATION_SKIPPED = 'ADJUDICATION_SKIPPED';
 
 export function describeReviewerFailures(settled, reviewers) {
   return settled.flatMap((result, roleIndex) => result.status === 'rejected'
@@ -105,6 +120,14 @@ export function launchFenceReason(kind) {
   if (detail) return `${kind} launch skipped: a provider cleanup failure is active (${detail}).`;
   if (newProcessLaunchesBlocked()) return `${kind} launch skipped: the watcher is stopping and new process launches are blocked.`;
   return `${kind} launch skipped: a process-launch fence or provider cleanup failure is active.`;
+}
+
+/**
+ * A provider that reported its usage limit, or work not started because one
+ * did, is not retried: the same subscription would refuse again.
+ */
+export function stopsOnUsageLimit(error) {
+  return isProviderUsageLimit(error) || error?.code === USAGE_LIMIT_HALT_CODE;
 }
 
 /**
@@ -133,7 +156,7 @@ export async function runProviderWithOneRetry(task) {
     if (processTreeCleanupFailureCode(first)) {
       return { status: 'rejected', reason: first, retried: false };
     }
-    if (fenced()) return { status: 'rejected', reason: first, retried: false };
+    if (fenced() || stopsOnUsageLimit(first)) return { status: 'rejected', reason: first, retried: false };
     try {
       return { status: 'fulfilled', value: await task(), retried: true };
     } catch (second) {
@@ -243,7 +266,7 @@ export async function settleReviewersWithRetry(tasks, {
       // raised the launch fence — while this task was in flight: re-check
       // before the retry, or the retry itself launches forbidden provider
       // work.
-      if (halted || newProcessLaunchesBlocked() || providerCleanupFailureLatched()) {
+      if (halted || newProcessLaunchesBlocked() || providerCleanupFailureLatched() || stopsOnUsageLimit(first)) {
         return { status: 'rejected', reason: first, retried: false };
       }
       if (!shouldRetry(first, index)) {
@@ -311,9 +334,12 @@ export async function settleShardWave(shards, runShard, {
       const cleanup = failed.find(({ result }) => processTreeCleanupFailureCode(result.reason));
       if (cleanup) return { status: 'rejected', reason: cleanup.result.reason, retried: true, delivery };
       const message = (reason) => reason?.message || String(reason);
+      const combined = new Error(`${message(whole.reason)} The retry, one part per reviewer, then failed in ${failed.length} of ${settledParts.length} part(s): ${failed.map(({ result, partIndex }) => `part ${partIndex + 1}: ${message(result.reason)}`).join(' | ')}`);
+      // The provider's failure only when every attempt failed as the provider's.
+      if (isProviderFailure(whole.reason) && failed.every(({ result }) => isProviderFailure(result.reason))) markProviderFailure(combined);
       return {
         status: 'rejected',
-        reason: new Error(`${message(whole.reason)} The retry, one part per reviewer, then failed in ${failed.length} of ${settledParts.length} part(s): ${failed.map(({ result, partIndex }) => `part ${partIndex + 1}: ${message(result.reason)}`).join(' | ')}`),
+        reason: combined,
         retried: true,
         delivery,
       };
@@ -939,8 +965,83 @@ export function priorBlockingFromReviews(reviews, deferrals) {
 export async function runGate(options = {}) {
   const context = await createGateContext(options.repoRoot || process.cwd(), { stateRoot: options.stateRoot });
   const release = await acquireReviewLease(context.paths);
-  try { return await runGateWithLease(options); }
+  try { return await runGateWithProviderFallback(context.paths, options); }
   finally { await release(); }
+}
+
+/** A short, single-line account of why a provider failed. */
+function shortReason(reason, max = 160) {
+  const text = String(reason?.message || reason || 'unknown error').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * The one restart after a provider failed (owner's decision), under the
+ * lease the caller holds. Under `providers: "auto"`, a round that failed
+ * closed because a provider's work failed after its retry (any cause), or
+ * because a provider reported its usage limit (no retry), was failed closed
+ * with its own report. The review then starts again ONCE, from scratch (no
+ * kept shard review), with the providers that remain; the dropped provider
+ * is held out of later `auto` reviews for a while, and the report and the
+ * attestation say which provider was dropped and why. It never restarts
+ * under an explicit requirement, after a process-tree cleanup failure or
+ * with the launch fence up, for an error that is not a provider's (Git, a
+ * deterministic lane, the gate itself), when no provider remains, or twice.
+ */
+async function runGateWithProviderFallback(paths, options) {
+  try {
+    return await runGateWithLease(options);
+  } catch (error) {
+    const failures = Array.isArray(error?.providerFailures) ? error.providerFailures : [];
+    if (!failures.length || error.providerMode !== 'auto') throw error;
+    if (processTreeCleanupFailureCode(error) || providerCleanupFailureLatched() || newProcessLaunchesBlocked()) throw error;
+    const dropped = [...new Set(failures.map((failure) => failure.provider))];
+    const remaining = (error.providerSelection ?? []).filter((provider) => !dropped.includes(provider));
+    if (!remaining.length) {
+      error.message = `${error.message} No other selected provider remains, so the review cannot restart.`;
+      throw error;
+    }
+    // A usage limit outranks a failure of the same provider: it has a reset.
+    const failureOf = (provider) => failures.find((failure) => failure.provider === provider && failure.reason === 'usage-limit')
+      ?? failures.find((failure) => failure.provider === provider);
+    const recorded = error.providerHoldRecords ?? {};
+    const holds = Object.fromEntries(dropped.map((provider) => [provider, recorded[provider] ?? providerHoldRecord(failureOf(provider))]));
+    // A usage limit was recorded with the round; a failure is recorded only
+    // now, when the review falls back without it.
+    const failed = dropped.filter((provider) => holds[provider].reason === 'provider-failure');
+    if (failed.length) {
+      const written = await recordProviderHolds(paths, failed.map((provider) => failureOf(provider))).catch(() => null);
+      for (const provider of failed) if (written?.[provider]) holds[provider] = written[provider];
+    }
+    // Nothing of the discarded round is kept for a later review either.
+    if (error.reviewIdentity) await removeShardCheckpoint(paths, error.reviewIdentity).catch(() => {});
+    const first = dropped[0];
+    const hold = holds[first];
+    const why = dropped.map((provider) => (holds[provider].reason === 'usage-limit'
+      ? `${provider} usage limit reached (retry after ${holds[provider].retryAfter})`
+      : `${provider} failed${failureOf(provider).retried ? ' twice' : ''} (${shortReason(failureOf(provider).message)})`)).join('; ');
+    (options.progress ?? (() => {}))(`${why}; restarting this review with ${remaining.join(' and ')} only.`);
+    try {
+      return await runGateWithLease({
+        ...options,
+        providerFallback: {
+          dropped,
+          reason: hold.reason,
+          resetAt: hold.resetAt,
+          retryAfter: hold.retryAfter,
+          message: hold.message,
+          // Only the providers this round dropped, never a snapshot of
+          // every live hold taken before the round cleared its successes.
+          limits: holds,
+        },
+      });
+    } catch (second) {
+      if (Array.isArray(second?.providerFailures) && second.providerFailures.length) {
+        second.message = `${second.message} The review had already restarted once without ${dropped.join(' and ')}; it does not restart again.`;
+      }
+      throw second;
+    }
+  }
 }
 
 async function runGateWithLease({
@@ -968,6 +1069,9 @@ async function runGateWithLease({
   // Test seam: reviewers read the context and their shard from files instead
   // of receiving them in the prompt.
   inlineMaterial = true,
+  // Set only by the restart after a usage limit: the providers it
+  // dropped, their records and why. It is evidence, not a request.
+  providerFallback = null,
 } = {}) {
   const context = await createGateContext(repoRootInput, { stateRoot });
   // Reviews are serialized (one per daemon, or one foreground run); the
@@ -1043,11 +1147,137 @@ async function runGateWithLease({
     changedLines: stats.changedLines,
     override: riskOverride,
   });
+  const providerMode = reviewPolicy.config.providers ?? 'auto';
+  // A held provider (its usage limit, or a failure the review fell back
+  // from) is left out under `auto` until its hold expires; a usage limit
+  // refuses an explicit requirement. `--force` tries every provider again;
+  // the restart keeps out the providers it dropped.
+  const usageLimits = risk.level === 'skip' || dryRun ? {} : {
+    // On the restart the disk is read after the first round cleared the
+    // providers that worked; under --force it is not read at all, and only
+    // the providers that hit their limit in that round stay out.
+    ...(force ? {} : await readProviderHolds(context.paths)),
+    ...(providerFallback?.limits ?? {}),
+  };
+  const dropped = providerFallback?.dropped ?? [];
   let subscriptions;
-  const selectedProviders = risk.level === 'skip' ? [] : dryRun || availableProviders !== undefined || reviewer !== runReviewer
-    ? selectProviders(reviewPolicy.config.providers ?? 'auto', availableProviders ?? ['claude', 'codex'])
-    : (subscriptions = await detectSubscriptions(context.repoRoot, { mode: reviewPolicy.config.providers ?? 'auto' })).selected;
+  let selectedProviders;
+  if (risk.level === 'skip') {
+    selectedProviders = [];
+  } else if (dryRun || availableProviders !== undefined || reviewer !== runReviewer) {
+    const candidates = (availableProviders ?? PROVIDERS).filter((provider) => !dropped.includes(provider));
+    const refusal = providerHoldRefusal(providerMode, usageLimits, providerMode === 'auto' ? candidates : undefined);
+    if (refusal) throw new Error(refusal);
+    const held = heldProviders(providerMode, candidates, usageLimits);
+    selectedProviders = selectProviders(providerMode, candidates.filter((provider) => !held.includes(provider)));
+  } else {
+    subscriptions = await detectSubscriptions(context.repoRoot, { mode: providerMode, holds: usageLimits, exclude: dropped });
+    selectedProviders = subscriptions.selected;
+  }
   if (subscriptions) validateModelClients(reviewPolicy.config, subscriptions);
+  // Nothing about the provider set is silent: a provider `auto` left out
+  // for a hold, at the start or by the restart, is named in the report and
+  // the attestation with the reason and its retry time.
+  const limitedOut = providerMode === 'auto' && risk.level !== 'skip'
+    ? PROVIDERS.filter((provider) => usageLimits[provider] && !selectedProviders.includes(provider)
+      && (availableProviders === undefined || availableProviders.includes(provider)))
+    : [];
+  const providerFallbackEvidence = providerFallback
+    ? { ...fallbackEvidence(providerFallback), restarted: true }
+    : limitedOut.length
+      ? { ...fallbackEvidence({ dropped: limitedOut, ...usageLimits[limitedOut[0]] }), restarted: false }
+      : null;
+  // Provider work that failed the round after its retry, by provider: under
+  // `auto` the review falls back without that provider (owner's decision).
+  const providerFailures = [];
+  const failedProvider = (provider, reason, retried) => {
+    // Only the provider's own failure (its process once launched, or its
+    // output, as the runner marked it) after its retry was spent. A usage
+    // limit is collected by the guard; work it stopped, a launch refusal, a
+    // cleanup failure and a local error before the launch are not this
+    // provider's failure.
+    if (retried === true && PROVIDERS.includes(provider) && isProviderFailure(reason)
+      && !processTreeCleanupFailureCode(reason) && !stopsOnUsageLimit(reason)) {
+      providerFailures.push({ provider, reason: 'provider-failure', message: shortReason(reason, LIMITS.providerHoldMessageChars), retried });
+    }
+  };
+  // The one rule for a fallback: a round's stop may fall back only when
+  // EVERY failure that caused it is a provider's: a usage limit (or work a
+  // usage limit stopped), or a failure the runner marked as the provider's
+  // after its retry was spent. One local, infrastructure or setup error, or
+  // a cleanup failure, among them, and the round fails closed without a
+  // restart. Safety stops (a cleanup failure, a lane, the gate) never pass
+  // through here, so they never fall back. `failures` are settled results
+  // ({ reason, retried }) of every failure that fails the round.
+  const providerAttributed = ({ reason, retried }) => !processTreeCleanupFailureCode(reason)
+    && (stopsOnUsageLimit(reason) || (isProviderFailure(reason) && retried === true));
+  // The authority is the round's veto (deny by default): set by the guard
+  // below for ANY call of a stage that can fail the round that threw
+  // anything but the provider's own marked failure or usage limit, on any
+  // attempt, whatever later replaced that error. The per-stop list is
+  // checked as well.
+  let roundVeto = null;
+  const fallbackStop = (error, failures) => (!roundVeto && failures.every(providerAttributed)
+    ? Object.assign(error, { providerFallbackEligible: true })
+    : error);
+  // Every provider call of this round goes through one guard: a
+  // usage limit is collected, and once one is reported no further provider
+  // work starts, since the round can no longer attest. A provider that
+  // completes work has its usage-limit record cleared when the round ends.
+  const usageLimitHits = [];
+  const succeededProviders = new Set();
+  //
+  // The guard is also the fallback's choke point. A stage whose failure fails
+  // the round (`vetoes`: a shard, a lens reviewer, the adjudicator) sets the
+  // round's veto when a call throws anything but the provider's marked
+  // failure or its usage limit: a local or setup error, a cleanup failure, a
+  // process a stopping watcher ended. Its halt below, and a skip the gate
+  // raises for a batch of a stopped round, never call the seam, so they
+  // neither set nor clear it. A tolerated stage (the scout, a hypothesis)
+  // never vetoes.
+  const guardUsageLimits = (seam, { vetoes }) => async (args) => {
+    if (usageLimitHits.length) {
+      const halt = new Error(`Provider work not started: ${usageLimitHits[0].provider} reported its usage limit in this round.`);
+      halt.code = USAGE_LIMIT_HALT_CODE;
+      throw halt;
+    }
+    if (vetoes && (newProcessLaunchesBlocked() || providerCleanupFailureLatched())) {
+      roundVeto ??= 'a process-launch fence or a provider cleanup failure was active';
+    }
+    try {
+      const value = await seam(args);
+      if (PROVIDERS.includes(args?.provider)) succeededProviders.add(args.provider);
+      return value;
+    } catch (error) {
+      if (isProviderUsageLimit(error)) {
+        if (!usageLimitHits.length) progress(`${error.provider} reported its usage limit; no further provider work starts in this round.`);
+        usageLimitHits.push({ provider: error.provider, resetAt: error.resetAt, message: error.limitMessage });
+      } else if (vetoes && (processTreeCleanupFailureCode(error) || !isProviderFailure(error))) {
+        roundVeto ??= shortReason(error);
+      }
+      throw error;
+    }
+  };
+  reviewer = guardUsageLimits(reviewer, { vetoes: true });
+  shardReviewer = guardUsageLimits(shardReviewer, { vetoes: true });
+  coordinator = guardUsageLimits(coordinator, { vetoes: true });
+  hypothesisReviewer = guardUsageLimits(hypothesisReviewer, { vetoes: false });
+  scout = guardUsageLimits(scout, { vetoes: false });
+  const usageLimitFailure = async (errors, code = null, failures = []) => {
+    const providers = [...new Set(usageLimitHits.map((hit) => hit.provider))];
+    return fallbackStop(await buildFailClosedError({
+      paths: context.paths,
+      baseReport,
+      summary: `${providers.join(' and ')} reported ${providers.length > 1 ? 'their' : 'its'} subscription usage limit during the review; this round's evidence was discarded and the gate failed closed${providerMode === 'auto' ? '' : `. The explicit provider requirement ${providerMode} does not fall back to another provider`}.`,
+      errors: [
+        ...usageLimitHits.map((hit) => `${hit.provider}: ${hit.message}${hit.resetAt ? ` (resets ${new Date(hit.resetAt).toISOString()})` : ''}`),
+        ...errors,
+      ],
+      // A process-tree cleanup failure beside the limit keeps its code: the
+      // watcher's pause keys on it, and no restart follows it.
+      code,
+    }), failures);
+  };
   const providerExecutions = [];
   const author = inferAuthor(branch, authorOverride);
   const lineage = convergenceLineage(identity, branch);
@@ -1178,6 +1408,7 @@ async function runGateWithLease({
     modelDiversity: selectedProviders.length > 1 ? 'multiple-providers' : selectedProviders.length === 1 ? 'single-provider' : 'no-model-review',
     modelSettings: modelSettings(reviewPolicy.config),
     providerExecutions,
+    ...(providerFallbackEvidence ? { providerFallback: providerFallbackEvidence } : {}),
   };
 
   if (dryRun) {
@@ -1355,7 +1586,8 @@ async function runGateWithLease({
     const assignments = shards.map((shard, index) => shardAssignmentDigest({
       shard, provider: shardProviders[index], round, followUpBaseSha, priorBlocking: priorBlockingList, patchDigest, branch, author, risk: risk.level,
     }));
-    const checkpoint = force ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
+    // The restart after a usage limit starts from scratch, as --force does.
+    const checkpoint = force || providerFallback ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
     const keptShards = shards.map((_, index) => keptShardReview(checkpoint?.shards[assignments[index]], shardProviders[index], index));
     const keptCount = keptShards.filter(Boolean).length;
     for (const kept of keptShards) {
@@ -1461,7 +1693,8 @@ async function runGateWithLease({
       // that will fail closed launches no further adjudicator.
       dispatch: (batch, batchIndex) => pool.run(() => runProviderWithOneRetry(() => {
         if (adjudicationHalted || adjudicationStream.halted) {
-          throw new Error('Adjudication skipped: the round failed closed.');
+          // Not a failure of the batch: the round had already stopped.
+          throw Object.assign(new Error('Adjudication skipped: the round failed closed.'), { code: ADJUDICATION_SKIPPED });
         }
         return coordinator({
           provider: plan.coordinator,
@@ -1469,6 +1702,15 @@ async function runGateWithLease({
           bundle,
           candidates: batch,
           batchIndex,
+        }).then((value) => {
+          // A batch that does not account for each of its candidates exactly
+          // once is malformed output: it gets the batch's one retry.
+          try {
+            assertAdjudicationCoverage(batch, value);
+          } catch (error) {
+            throw markProviderFailure(error);
+          }
+          return value;
         });
       })),
       onDispatch: (batch) => {
@@ -1476,18 +1718,25 @@ async function runGateWithLease({
         progress(`Adjudicating ${batch.length} candidate finding(s) in a fresh ${plan.coordinator} batch.`);
       },
     });
-    // Stop adjudicating and wait for the batches already running. A batch
-    // that left an unverified process tree is returned: its classification
-    // must reach the fail-closed error, which the watcher's pause keys on.
+    // Stop adjudicating and wait for the batches already running. Returns a
+    // batch that left an unverified process tree as `cleanup` (its
+    // classification must reach the fail-closed error, which the watcher's
+    // pause keys on), and every batch that failed as `failures`, which the
+    // fallback's eligibility weighs with the round's other failures. A batch
+    // skipped because the round had stopped is not a failure.
     const haltAdjudication = async () => {
       adjudicationHalted = true;
       adjudicationStream.stop();
       const sent = await adjudicationStream.drain();
-      const failed = sent.map(({ settled }) => settled)
-        .find((settled) => settled?.status === 'rejected' && processTreeCleanupFailureCode(settled.reason));
-      return failed
-        ? { code: processTreeCleanupFailureCode(failed.reason), message: `${plan.coordinator} coordinator: ${failed.reason?.message || String(failed.reason)}` }
-        : null;
+      const failures = sent.map(({ settled }) => settled)
+        .filter((settled) => settled?.status === 'rejected' && settled.reason?.code !== ADJUDICATION_SKIPPED);
+      const failed = failures.find((settled) => processTreeCleanupFailureCode(settled.reason));
+      return {
+        cleanup: failed
+          ? { code: processTreeCleanupFailureCode(failed.reason), message: `${plan.coordinator} coordinator: ${failed.reason?.message || String(failed.reason)}` }
+          : null,
+        failures,
+      };
     };
     // A failed shard fails the round closed; a failed hypothesis or lens does
     // not, unless it left an unverified process tree.
@@ -1555,7 +1804,7 @@ async function runGateWithLease({
           // The shard reviews that completed beside the scout are kept too.
           await keepCompletedShards(await shardPromise);
           await lanesPromise;
-          const adjudicationCleanup = await haltAdjudication();
+          const { cleanup: adjudicationCleanup } = await haltAdjudication();
           throw await buildFailClosedError({
             paths: context.paths,
             baseReport,
@@ -1620,7 +1869,7 @@ async function runGateWithLease({
     const reviews = settledReviewers.filter((result) => result.status === 'fulfilled').map((result) => result.value);
     const lanesSettled = await lanesPromise;
     if (lanesSettled.status === 'rejected') {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup } = await haltAdjudication();
       // Whichever wave produced a cleanup classification, it must reach the
       // fail-closed error: the watcher's mandatory pause keys on it.
       const laneCode = processTreeCleanupFailureCode(lanesSettled.reason) || reviewerCleanupFailure(settledReviewers)?.code || adjudicationCleanup?.code || null;
@@ -1634,6 +1883,25 @@ async function runGateWithLease({
         code: laneCode,
       });
     }
+    // A usage limit anywhere in the round (a shard, the scout, a hypothesis,
+    // a lens or an adjudication batch) leaves it without the provider set it
+    // was planned for: it fails closed, and under `auto` the review restarts.
+    if (usageLimitHits.length) {
+      const { cleanup: adjudicationCleanup, failures: drainedBatches } = await haltAdjudication();
+      const cleanupFailure = reviewerCleanupFailure(settledReviewers);
+      // Every other failure that fails this round on its own counts too: a
+      // failed shard, or every lens reviewer.
+      const lensAllFailed = settledLens.length > 0 && settledLens.every((result) => result.status === 'rejected');
+      throw await usageLimitFailure([
+        ...reviewerErrors,
+        ...(cleanupFailure ? [cleanupFailure.reason?.message || String(cleanupFailure.reason)] : []),
+        ...(adjudicationCleanup ? [adjudicationCleanup.message] : []),
+      ], cleanupFailure?.code || adjudicationCleanup?.code || null, [
+        ...settledShards.filter((result) => result.status === 'rejected'),
+        ...(lensAllFailed ? settledLens : []),
+        ...drainedBatches,
+      ]);
+    }
     const lanes = lanesSettled.value || { lanes: [], findings: [] };
     // A shard is the ONLY reviewer of its hunks: a shard that failed after its
     // retry leaves them unreviewed, and a PASS over unreviewed hunks is the
@@ -1644,8 +1912,9 @@ async function runGateWithLease({
       .map((result, index) => ({ result, shard: shards[index] }))
       .filter(({ result }) => result.status !== 'fulfilled');
     if (failedShards.length) {
-      const adjudicationCleanup = await haltAdjudication();
-      throw await buildFailClosedError({
+      const { cleanup: adjudicationCleanup, failures: drainedBatches } = await haltAdjudication();
+      for (const { result, shard } of failedShards) failedProvider(shardProviders[shard.index], result.reason, result.retried);
+      throw fallbackStop(await buildFailClosedError({
         paths: context.paths,
         baseReport,
         summary: shardFailureSummary({
@@ -1664,15 +1933,18 @@ async function runGateWithLease({
         extra: {
           shards: shardRecords.map((record, index) => ({ ...record, completed: settledShards[index].status === 'fulfilled' })),
         },
-      });
+      }), [...failedShards.map(({ result }) => result), ...drainedBatches]);
     }
     if (!reviews.length) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup, failures: drainedBatches } = await haltAdjudication();
+      settledLens.forEach((result, roleIndex) => {
+        if (result.status === 'rejected') failedProvider(plan.reviewers[roleIndex], result.reason, result.retried);
+      });
       const messages = [
         ...(reviewerErrors.length ? reviewerErrors : ['every required reviewer failed']),
         ...(adjudicationCleanup ? [adjudicationCleanup.message] : []),
       ];
-      throw await buildFailClosedError({
+      throw fallbackStop(await buildFailClosedError({
         paths: context.paths,
         baseReport,
         summary: 'Every required review provider failed; the gate failed closed.',
@@ -1681,7 +1953,7 @@ async function runGateWithLease({
           .filter((result) => result.status === 'rejected')
           .map((result) => providerTreeCleanupFailureCode(result.reason))
           .find(Boolean) || adjudicationCleanup?.code || null,
-      });
+      }), [...settledLens.filter((result) => result.status === 'rejected'), ...drainedBatches]);
     }
     // A provider-tree cleanup failure fails the review closed even when
     // sibling reviewers succeeded: attesting or completing normally would
@@ -1689,7 +1961,7 @@ async function runGateWithLease({
     // watcher (§5 safety fence).
     const partialCleanupFailure = reviewerCleanupFailure(settledReviewers);
     if (partialCleanupFailure) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup } = await haltAdjudication();
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
@@ -1702,7 +1974,7 @@ async function runGateWithLease({
     const streamed = await adjudicationStream.candidates();
     const candidates = streamed.candidates;
     if (streamed.overflow) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup } = await haltAdjudication();
       // The kept reviews are what exceeded the bound: reusing them would
       // fail every rerun the same way, so the rerun reviews afresh.
       await removeShardCheckpoint(context.paths, identity).catch(() => {});
@@ -1737,6 +2009,8 @@ async function runGateWithLease({
       };
     } else if (candidates.length) {
       usedCoordinator = true;
+      let adjudicationRetried = false;
+      let adjudicationFailures = [];
       try {
         const sentBatches = await adjudicationStream.finish();
         const startedAt = adjudicationStartedAt ?? Date.now();
@@ -1746,7 +2020,11 @@ async function runGateWithLease({
         // win: it is the classification the watcher's mandatory pause keys on.
         const failedBatches = settledBatches.filter((result) => result.status !== 'fulfilled');
         const failed = failedBatches.find((result) => providerTreeCleanupFailureCode(result.reason)) || failedBatches[0];
-        if (failed) throw failed.reason;
+        if (failed) {
+          adjudicationRetried = failed.retried === true;
+          adjudicationFailures = failedBatches.filter((result) => result.reason?.code !== ADJUDICATION_SKIPPED);
+          throw failed.reason;
+        }
         // Identity across heads comes from the REVIEWER's title (the one a
         // follow-up reviewer is told to reuse verbatim); the adjudicator keeps
         // its recalibrated priority, file and line.
@@ -1761,16 +2039,20 @@ async function runGateWithLease({
         };
         assertAdjudicationCoverage(candidates, adjudication);
       } catch (error) {
-        throw await buildFailClosedError({
+        failedProvider(plan.coordinator, error, adjudicationRetried);
+        // Every failed batch, or the error raised after them (a coverage or
+        // canonicalization error of the gate's own), decides.
+        throw fallbackStop(await buildFailClosedError({
           paths: context.paths,
           baseReport,
           summary: 'The required candidate adjudication failed; the gate failed closed.',
           errors: [`${plan.coordinator} coordinator: ${error?.message || String(error)}`],
           code: providerTreeCleanupFailureCode(error),
-        });
+        }), adjudicationFailures.length ? adjudicationFailures : [{ reason: error, retried: false }]);
       }
     }
 
+    if (usageLimitHits.length) throw await usageLimitFailure([]);
     // A prior blocker keeps its identity through a rename of its file: the
     // key convergence compares against is the one a reviewer produces at the
     // new path with the unchanged title.
@@ -1976,6 +2258,7 @@ async function runGateWithLease({
       providers: [...new Set([...plan.reviewers, ...(usedCoordinator ? [plan.coordinator] : [])])],
       providerExecutions,
       modelDiversity: baseReport.modelDiversity,
+      ...(baseReport.providerFallback ? { providerFallback: baseReport.providerFallback } : {}),
       reportId: report.id,
       providerSelection: selectedProviders,
       modelSettings: modelSettings(reviewPolicy.config),
@@ -1994,8 +2277,38 @@ async function runGateWithLease({
     return completedResult;
   } catch (error) {
     operationError = error;
+    if (usageLimitHits.length && error && typeof error === 'object') {
+      // What the restart needs, and the record `status` and `doctor` show
+      // under any provider requirement. Under `auto` the checkpoint of a
+      // round that mixed providers is not kept: the restart starts afresh.
+      error.providerMode = providerMode;
+      error.providerSelection = selectedProviders;
+      try {
+        const recorded = await recordProviderHolds(context.paths, usageLimitHits);
+        error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, recorded[hit.provider]]));
+      } catch (recordError) {
+        error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, providerHoldRecord(hit)]));
+        error.message = `${error.message} The usage-limit record could not be written: ${recordError?.message || String(recordError)}`;
+      }
+      const limited = [...new Set(usageLimitHits.map((hit) => hit.provider))];
+      error.message = `${error.message} ${limited.map((provider) => describeProviderHold(provider, error.providerHoldRecords[provider] ?? providerHoldRecord(usageLimitHits.find((hit) => hit.provider === provider)))).join('; ')}.`;
+      if (providerMode === 'auto') await removeShardCheckpoint(context.paths, identity).catch(() => {});
+    }
+    if ((usageLimitHits.length || providerFailures.length) && error?.providerFallbackEligible === true && !roundVeto) {
+      // Every provider whose work failed this round, a usage limit first:
+      // what the restart under `auto` needs, and nothing else.
+      error.providerFailures = [
+        ...usageLimitHits.map((hit) => ({ ...hit, reason: 'usage-limit', retried: false })),
+        ...providerFailures,
+      ];
+      error.providerMode = providerMode;
+      error.providerSelection = selectedProviders;
+      error.reviewIdentity = identity;
+    }
     throw error;
   } finally {
+    const cleared = [...succeededProviders].filter((provider) => !usageLimitHits.some((hit) => hit.provider === provider));
+    if (cleared.length) await clearProviderHolds(context.paths, cleared).catch(() => {});
     const cleanupErrors = [];
     for (const cleanup of [bundle?.cleanup, worktree.cleanup]) {
       if (!cleanup) continue;
@@ -2028,6 +2341,11 @@ function formatLocation(finding) {
   return `${finding.file}${finding.line ? `:${finding.line}` : ''}`;
 }
 
+/** The fallback as reports and attestations record it. */
+function fallbackEvidence({ dropped, reason, resetAt, retryAfter, message }) {
+  return { dropped, reason, resetAt, retryAfter, message };
+}
+
 export function formatGateResult(result) {
   const head = result.identity?.headSha?.slice(0, 12) || 'unknown';
   if (result.status === 'planned') {
@@ -2048,7 +2366,7 @@ export function formatGateResult(result) {
     : '';
   const stages = formatStages(result.stages);
   const selection = result.providerSelection?.length ? `Providers: ${result.providerSelection.join(' + ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}` : '';
-  const trailer = [selection, stages, ...dismissedLines].filter(Boolean).join('\n');
+  const trailer = [selection, formatProviderFallback(result.providerFallback), stages, ...dismissedLines].filter(Boolean).join('\n');
   if (result.status === 'pass') {
     const cache = result.cached ? ' (cached exact-SHA attestation)' : '';
     const advisories = (result.findings || []).filter((finding) => finding.disposition === 'advisory');
