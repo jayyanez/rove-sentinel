@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS, TASK_PREFIX } from './constants.mjs';
-import { detectSubscriptions, probeAccountSignIns } from './subscriptions.mjs';
+import { detectSubscriptions, probeAccountSignIns, settleEvery } from './subscriptions.mjs';
 import { ACCOUNTS_FILE_VARIABLE, loadAccounts, readAccountState } from './accounts.mjs';
 import { readProviderHolds } from './usageLimits.mjs';
 import { modelSettings, validateModelClients } from './modelSettings.mjs';
@@ -332,7 +332,7 @@ ${carried}    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
       remove: { command: 'launchctl', args: ['bootout', `gui/${uid}/${label}`] },
     };
   }
-  return { platform, taskName, unsupportedScheduler: true, stateRoot };
+  return { platform, taskName, unsupportedScheduler: true, stateRoot, ...(accountsFile ? { accountsFile } : {}) };
 }
 
 async function currentHooksPath(repoRoot) {
@@ -361,7 +361,9 @@ export async function verifyPrerequisites(
     }
     return (result.stdout || result.stderr).split(/\r?\n/).find(Boolean) || 'available';
   };
-  const [subscriptions, git, gh, accountSignIns] = await Promise.all([
+  // Every probe is awaited before one's failure is raised: a process-tree
+  // cleanup failure never leaves a sibling probe running unseen.
+  const [subscriptions, git, gh, accountSignIns] = await settleEvery([
     detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env, ...(accounts ? { accounts } : {}) }),
     probe('Git version check', 'git', ['--version']),
     probe('GitHub CLI authentication check', 'gh', ['auth', 'status']),
@@ -736,7 +738,10 @@ export async function executeInstallTransaction(
       }
     } else if (start) {
       daemonStartAttempted = true;
-      await startDetached(context.repoRoot, context.stateRoot);
+      // A watcher with no scheduler gets an accounts file named at install,
+      // as the Windows task and the macOS LaunchAgent do.
+      await startDetached(context.repoRoot, context.stateRoot, plan.accountsFile
+        ? { environment: { ...process.env, [ACCOUNTS_FILE_VARIABLE]: plan.accountsFile } } : undefined);
     }
     const heartbeat = start ? await waitHeartbeat(context.paths, context.repoRoot, {
       policyDigest: policy.policyDigest,
@@ -946,7 +951,7 @@ export async function accountsStatus(context, { accountsFile, run = runProcess, 
     return { error: error?.message || String(error) };
   }
   if (!accounts) return null;
-  const [signIns, state] = await Promise.all([
+  const [signIns, state] = await settleEvery([
     probeAccountSignIns(context.repoRoot, accounts, { run, env: detachedWatcherEnvironment({ ...process.env }) }),
     readAccountState(context.paths).catch(() => ({ holds: {}, lastUsed: {} })),
   ]);

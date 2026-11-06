@@ -1237,7 +1237,10 @@ async function runGateWithLease({
     ? PROVIDERS.filter((provider) => accounts[provider]?.length) : [];
   // An inherited credential that overrides the account folder would make a
   // recorded label name the wrong account: refused before any provider work.
-  for (const provider of accountProviders) {
+  // Only a provider the requirement lets this review use: a codex
+  // requirement never runs Claude, whatever its accounts or token.
+  const usableProviders = providerMode === 'claude' || providerMode === 'codex' ? [providerMode] : PROVIDERS;
+  for (const provider of accountProviders.filter((candidate) => usableProviders.includes(candidate))) {
     const refusal = accountOverrideRefusal(provider, process.env);
     if (refusal) throw new Error(refusal);
   }

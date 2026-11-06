@@ -53,7 +53,7 @@ async function authError(provider, { run, repoRoot, env }) {
  * raised only once its siblings have finished, never while they still run
  * (and that failure before any other rejection).
  */
-async function settleEvery(promises) {
+export async function settleEvery(promises) {
   const results = await Promise.allSettled(promises);
   const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
   if (failures.length) throw failures.find((failure) => processTreeCleanupFailureCode(failure)) ?? failures[0];

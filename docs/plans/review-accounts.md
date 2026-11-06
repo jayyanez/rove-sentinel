@@ -118,10 +118,11 @@ the allowance left can replace the rotation inside `rankAccounts`.
    never a folder. The watcher reads the file of its own environment (the
    variable it was started with, or the default) for each review. `install`
    (`--accounts` too) checks the prerequisites with the accounts, as `doctor`
-   does, and gives the scheduled watcher (the Windows task's wrapper, the
-   macOS LaunchAgent) the file named by the flag or the variable as
+   does, and gives the watcher it installs (the Windows task's wrapper, the
+   macOS LaunchAgent, or the environment of a watcher it starts where there is
+   no scheduler) the file named by the flag or the variable as
    `ROVE_SENTINEL_ACCOUNTS`, so it reads the same file; the default file
-   needs nothing. That path stays in a local scheduler artifact.
+   needs nothing. That path stays in a local scheduler artifact or process environment.
 3. **The author's account.** The author's provider is the `--author` or the
    branch prefix, as before. The author's account is the `CLAUDE_CONFIG_DIR`
    or `CODEX_HOME` of the process that asks for the review (the shell that
@@ -264,3 +265,9 @@ after a usage limit.
    credential variable refuses a review with accounts, and changes nothing
    without them; `doctor` lists the accounts of a provider the requirement
    leaves out.
+10. The second gate review, each with a regression: `doctor` and `install`
+   await every prerequisite probe (provider, account, Git, GitHub) before a
+   cleanup failure is raised; a watcher started without a scheduler gets an
+   explicitly named accounts file in its environment; an overriding
+   credential refuses only a provider the requirement can use, so a `codex`
+   requirement ignores Claude's accounts and token.

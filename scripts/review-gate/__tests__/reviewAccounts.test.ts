@@ -21,7 +21,9 @@ import {
 import { reviewPolicySnapshot } from '../context.mjs';
 import { formatGateResult, runGate } from '../gate.mjs';
 import { renderGateComment } from '../github.mjs';
-import { accountsStatus, buildInstallPlan, explicitAccountsFile, installPrerequisites, verifyPrerequisites } from '../install.mjs';
+import {
+  accountsStatus, buildInstallPlan, executeInstallTransaction, explicitAccountsFile, installPrerequisites, verifyPrerequisites,
+} from '../install.mjs';
 import { subscriptionEnvironment } from '../process.mjs';
 import { runReviewer } from '../providers.mjs';
 import { ensureState, readAttestation, readReport } from '../storage.mjs';
@@ -612,5 +614,65 @@ describe('gate review of the review accounts (ce97208)', () => {
     expect(result.accounts).toEqual({ claude: [{ label: 'team', signedIn: true }], codex: [{ label: 'main', signedIn: true }] });
     expect(result.providers.selected).toEqual(['claude']);
     expect(await verifyPrerequisites('repo', { run, env: {}, config: { providers: 'claude' } })).not.toHaveProperty('accounts');
+  });
+});
+
+// --- Gate review of 638f7be ---------------------------------------------------
+
+describe('gate review of the review accounts (638f7be)', () => {
+  it('doctor and install wait for every prerequisite probe before a cleanup failure', async () => {
+    const cleanup = Object.assign(new Error('unverified process tree'), { code: 'PROCESS_TREE_CLEANUP_FAILED' });
+    for (const accounts of [null, configured(['team'], ['main'])]) {
+      const settled: string[] = [];
+      const run = vi.fn(async (command: string, args: string[]) => {
+        if (args[0] === '--version' && command !== 'git') return { code: 0, stdout: `${command} 1.0`, stderr: '' };
+        if (command === 'claude') throw cleanup;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        settled.push(command);
+        if (command === 'git' || command === 'gh') return { code: 0, stdout: `${command} ok`, stderr: '' };
+        return { code: 0, stdout: 'Logged in using ChatGPT', stderr: '' };
+      });
+      await expect(verifyPrerequisites('repo', { run, env: {}, config: { providers: 'claude' }, ...(accounts ? { accounts } : {}) })).rejects.toBe(cleanup);
+      // git and gh, and the codex account probe when accounts are configured.
+      expect(settled.sort()).toEqual(accounts ? ['codex', 'gh', 'git'] : ['gh', 'git']);
+    }
+  });
+
+  it('gives a detached watcher an explicitly named accounts file, and nothing otherwise', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-accounts-detached-'));
+    temporaryDirectories.push(stateRoot);
+    const paths = await ensureState(stateRoot);
+    const file = folder('accounts.json');
+    for (const accountsFile of [file, undefined]) {
+      const plan = buildInstallPlan({ platform: 'linux', repoRoot: '/home/example/project', stateRoot, accountsFile });
+      const startDetached = vi.fn(async () => {});
+      await executeInstallTransaction({
+        context: { repoRoot: '/home/example/project', stateRoot, paths }, plan, policy: { gateVersion: 'new' }, currentHooks: '.githooks', start: true,
+      }, {
+        git: vi.fn(async () => ''), startDetached, stop: vi.fn(async () => {}), waitHeartbeat: vi.fn(async () => ({ gateVersion: 'new' })),
+      });
+      const options = (startDetached.mock.calls[0] as unknown[])[2] as { environment?: Record<string, string> } | undefined;
+      if (accountsFile) expect(options?.environment?.ROVE_SENTINEL_ACCOUNTS).toBe(file);
+      else expect(options?.environment?.ROVE_SENTINEL_ACCOUNTS).toBeUndefined();
+    }
+  });
+
+  it('refuses an overriding credential only for a provider the requirement can use', async () => {
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'secret');
+    vi.stubEnv('CODEX_ACCESS_TOKEN', 'secret');
+    try {
+      const accounts = configured(['team'], ['main']);
+      const codexOnly = await review({ policy: policy('codex'), accounts, shardReviewer: async (call: Call) => reviewed(call) });
+      await expect(codexOnly.run()).rejects.toThrow(/CODEX_ACCESS_TOKEN is set/);
+      vi.stubEnv('CODEX_ACCESS_TOKEN', '');
+      // Claude accounts and its token do not matter to a codex-only review.
+      const passing = await review({ policy: policy('codex'), accounts, shardReviewer: async (call: Call) => reviewed(call) });
+      expect(await passing.run()).toMatchObject({ status: 'pass', providerSelection: ['codex'], accounts: { codex: { label: 'main' } } });
+      // Under auto both providers can review: the Claude token refuses it.
+      const auto = await review({ accounts, shardReviewer: async (call: Call) => reviewed(call) });
+      await expect(auto.run()).rejects.toThrow(/CLAUDE_CODE_OAUTH_TOKEN is set/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

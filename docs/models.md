@@ -229,7 +229,7 @@ digest. Sentinel reads it from `--accounts <file>` (`gate`, `status`,
 `%LOCALAPPDATA%\Rove\shared-review-gate\` on Windows,
 `~/Library/Application Support/Rove/shared-review-gate/` on macOS. The
 watcher reads the one of its own environment for each review; `install`
-gives the scheduled watcher the file named by `--accounts` or
+gives the watcher it installs or starts the file named by `--accounts` or
 `ROVE_SENTINEL_ACCOUNTS`, and the default needs nothing. Unknown keys,
 an unknown provider, more than 8 accounts of a provider, a label other than
 1 to 32 letters, digits, `.`, `_` or `-`, a label used twice for one provider,
