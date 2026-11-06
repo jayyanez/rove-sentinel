@@ -410,6 +410,34 @@ export function normalizeScoutResult(value) {
   return { summary: assertString(value.summary, 'summary'), hypotheses };
 }
 
+/**
+ * Whether salvaged output is a provider's answer: every role answers with an
+ * explicit review_complete. A Codex error event on standard output parses as
+ * JSON too, and is a failure, not an answer.
+ */
+function isProviderAnswer(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && typeof value.review_complete === 'boolean';
+}
+
+/**
+ * Salvage after a failed run (the cleanup fence already checked): an answer
+ * is returned; anything else is read for a usage limit first, so an error
+ * event that parsed as JSON cannot hide one.
+ */
+async function salvageOrUsageLimit(provider, error, failure, options) {
+  let salvaged;
+  try {
+    salvaged = await salvageProviderJson(error, options);
+  } catch (unsalvaged) {
+    // Only a run that failed and left no answer is read for a usage limit.
+    throw usageLimitFromFailure(provider, failure ?? unsalvaged) ?? unsalvaged;
+  }
+  if (isProviderAnswer(salvaged)) return salvaged;
+  const limit = usageLimitFromFailure(provider, failure ?? error);
+  if (limit) throw limit;
+  return salvaged;
+}
+
 export async function salvageProviderJson(error, { filePath } = {}) {
   const stdout = error?.result?.stdout;
   if (typeof stdout === 'string' && stdout.trim()) {
@@ -782,12 +810,7 @@ async function runClaudeJsonOnce({
     // into a successful result would erase the only evidence the cleanup
     // fence (§5) can act on.
     if (processTreeCleanupFailureCode(error)) throw error;
-    try {
-      return await salvageProviderJson(error);
-    } catch (unsalvaged) {
-      // Only a run that failed and left no answer is read for a usage limit.
-      throw usageLimitFromFailure('claude', unsalvaged) ?? unsalvaged;
-    }
+    return await salvageOrUsageLimit('claude', error, null);
   }
 }
 
@@ -819,17 +842,10 @@ async function runCodexJsonOnce({
     // Same fence rule as the Claude path: an unverified process tree must
     // surface, never be salvaged into a success.
     if (processTreeCleanupFailureCode(error)) throw error;
-    try {
-      return await salvageProviderJson(error, { filePath: outputPath });
-    } catch (unsalvaged) {
-      // Only a run that failed and left no answer is read for a usage limit.
-      // One that exited 0 without its answer is read from its standard error
-      // alone: its standard output may be the model's own message.
-      const failure = completed
-        ? { code: 'NON_ZERO_EXIT', result: { ...completed, stdout: '' } }
-        : unsalvaged;
-      throw usageLimitFromFailure('codex', failure) ?? unsalvaged;
-    }
+    // One that exited 0 without its answer is read from its standard error
+    // alone: its standard output may be the model's own message.
+    const failure = completed ? { code: 'NON_ZERO_EXIT', result: { ...completed, stdout: '' } } : null;
+    return await salvageOrUsageLimit('codex', error, failure, { filePath: outputPath });
   }
 }
 

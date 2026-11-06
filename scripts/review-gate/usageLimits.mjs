@@ -158,7 +158,7 @@ function parseResetCandidate(text, now) {
     // "resets Nov 9 at 10am (America/Los_Angeles)", "resets Nov 9, 10am".
     const dated = text.match(new RegExp(String.raw`\b(?:resets?|try again)\s+(?:on\s+)?(${MONTHS.join('|')})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?${CLOCK}${ZONE}`, 'i'));
     if (dated) {
-      const timeZone = dated[7];
+      const timeZone = dated[6];
       const month = MONTHS.indexOf(dated[1].toLowerCase()) + 1;
       const hour = hour24(dated[3], dated[5]);
       const day = Number(dated[2]);

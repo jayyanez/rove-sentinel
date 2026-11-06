@@ -32,7 +32,9 @@ changes is that `auto` may leave a provider out explicitly, and say so.
    an output overflow or a launch failure is not read. A completed review is
    never read, so a diff or a summary quoting these phrases cannot trigger
    it, and structured output salvaged from a non-zero exit is a completed
-   review. A usage limit is not retried.
+   review when it carries `review_complete`; anything else salvaged, such as
+   a Codex error event that parses as JSON, is read for a usage limit first.
+   A usage limit is not retried.
 2. **A durable record.** The state folder of the repository keeps
    `provider-usage-limits.json`: per provider `since`, `resetAt` (or null),
    `retryAfter` and the message, written atomically, at most one record per
@@ -59,11 +61,16 @@ changes is that `auto` may leave a provider out explicitly, and say so.
    limit is recorded under every requirement. Under `auto`, the round's shard
    checkpoint is removed, and `runGate` starts the review again ONCE, from
    scratch, under the review lease it already holds, with the remaining
-   providers; the restart reads no checkpoint either, as `--force` does. The
+   providers; the restart reads no checkpoint either, as `--force` does. It
+   keeps out only the providers that hit their limit in the failed round,
+   and, without `--force`, the records still live once that round cleared
+   the providers that worked. The
    restart plans as any single-provider review does (`reviewPlan`'s
    `sameFamilyPlan`). It does not restart after a process-tree cleanup
    failure, with the launch fence up, or when no selected provider remains; a
-   second limit fails closed. Each attempt cleans up its own review checkout
+   second limit fails closed. A process-tree cleanup failure in the same
+   round keeps its code on the error, so the watcher still pauses on it.
+   Each attempt cleans up its own review checkout
    and context bundle before the next one starts; the cleanup latch is reset
    only by an attempt that starts with it clear.
 5. **Nothing silent.** Progress says

@@ -128,6 +128,52 @@ describe('a provider that reaches its usage limit during an auto review', () => 
     expect(worktreeCount(root)).toBe(1);
   });
 
+  it('keeps a process-tree cleanup failure beside the limit, and does not restart', async () => {
+    // Gate review of c21404b: the usage-limit error dropped the cleanup code
+    // the watcher pauses on, and the review restarted over the tree.
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const shardReviewer = vi.fn(async ({ provider }) => {
+      if (provider === 'codex') {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        throw limit('codex');
+      }
+      throw Object.assign(new Error('claude tree could not be verified'), { code: 'PROCESS_TREE_CLEANUP_FAILED' });
+    });
+    await expect(runGate({
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, progress: (line: string) => progress.push(line),
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    })).rejects.toMatchObject({ code: 'PROCESS_TREE_CLEANUP_FAILED' });
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(shardReviewer.mock.calls.filter(([call]) => call.provider === 'claude')).toHaveLength(1);
+  });
+
+  it('restarts after --force without the stale record of a provider that worked', async () => {
+    // Gate review of c21404b: the restart carried every live record, taken
+    // before the round cleared the provider that had just worked, so a forced
+    // review that met a limit had no provider left to restart with.
+    const { root, base, head, stateRoot } = await makeRepository();
+    const paths = await ensureState(stateRoot);
+    await recordUsageLimits(paths, [{ provider: 'claude', resetAt: Date.now() + 4 * 24 * 3_600_000, message: 'stale' }]);
+    const shardReviewer = vi.fn(async ({ provider, roleIndex }) => {
+      if (provider === 'codex') {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        throw limit('codex');
+      }
+      return reviewed({ provider, roleIndex });
+    });
+    const result = await runGate({
+      repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(), force: true,
+      availableProviders: ['claude', 'codex'], shardReviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], restarted: true } });
+    expect(Object.keys(await readUsageLimits(paths))).toEqual(['codex']);
+  });
+
   it('does not restart when every selected provider reached its limit', async () => {
     const { root, base, head, stateRoot } = await makeRepository();
     const progress: string[] = [];

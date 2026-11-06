@@ -83,6 +83,14 @@ describe('reset times', () => {
     expect(parseResetTime('or try again at 3:05 PM.', { now })).toBe(local);
   });
 
+  it('reads a dated reset in the zone it names, never the host zone, and refuses an unknown zone', () => {
+    // Gate review of c21404b: the zone was read from the wrong group, so the
+    // host's zone was used and any zone name was accepted.
+    expect(parseResetTime('resets Nov 9 at 10am (Asia/Tokyo)', { now })).toBe(Date.UTC(2026, 10, 9, 1, 0));
+    expect(parseResetTime('resets Nov 9, 10am (UTC)', { now })).toBe(Date.UTC(2026, 10, 9, 10, 0));
+    expect(parseResetTime('resets Nov 9 at 10am (Mars/Olympus_Mons)', { now })).toBeNull();
+  });
+
   it('gives null for what cannot be read or is past, and holds a far reset to the bound', () => {
     expect(parseResetTime('resets 1am (Mars/Olympus_Mons)', { now })).toBeNull();
     expect(parseResetTime('Claude AI usage limit reached|1000000000', { now })).toBeNull();
@@ -171,6 +179,17 @@ describe('provider runners', () => {
     });
     await expect(runReviewer({ provider: 'codex', roleIndex: 0, checkout: directory, bundle, runner: completed }))
       .resolves.toMatchObject({ summary: "Mentions: You've hit your usage limit" });
+  });
+
+  it('classifies a Codex error event on standard output instead of salvaging it as an answer', async () => {
+    // Gate review of c21404b: the event parsed as JSON and was returned as the
+    // reviewer's answer, so the run failed for a missing review_complete.
+    const directory = await temporaryDirectory();
+    const bundle = { directory, contextPath: path.join(directory, 'context.md'), reviewerSchemaPath: path.join(directory, 'schema.json') };
+    const event = JSON.stringify({ type: 'error', message: "You've hit your usage limit. Try again in 3 hours.", code: 'usage_limit_reached' });
+    const runner = vi.fn(async () => { throw exitFailure(event, ''); });
+    await expect(runReviewer({ provider: 'codex', roleIndex: 0, checkout: directory, bundle, runner }))
+      .rejects.toMatchObject({ code: 'PROVIDER_USAGE_LIMIT', provider: 'codex' });
   });
 
   it('does not retry a reviewer that reported its usage limit', async () => {

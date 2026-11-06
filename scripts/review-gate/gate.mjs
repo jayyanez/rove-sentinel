@@ -998,7 +998,10 @@ async function runGateWithUsageLimitFallback(options) {
           resetAt: record.resetAt,
           retryAfter: record.retryAfter,
           message: record.message,
-          limits: { [first]: record, ...records },
+          // Only the providers this round dropped, never a snapshot of
+          // every live record taken before the round cleared its successes.
+          limits: Object.fromEntries(dropped.map((provider) => [provider,
+            records[provider] ?? usageLimitRecord(hits.find((hit) => hit.provider === provider))])),
         },
       });
     } catch (second) {
@@ -1118,7 +1121,10 @@ async function runGateWithLease({
   // its record expires, and refuses an explicit requirement.
   // `--force` tries it again; the restart keeps out the provider it dropped.
   const usageLimits = risk.level === 'skip' || dryRun ? {} : {
-    ...(force && !providerFallback ? {} : await readUsageLimits(context.paths)),
+    // On the restart the disk is read after the first round cleared the
+    // providers that worked; under --force it is not read at all, and only
+    // the providers that hit their limit in that round stay out.
+    ...(force ? {} : await readUsageLimits(context.paths)),
     ...(providerFallback?.limits ?? {}),
   };
   let subscriptions;
@@ -1175,7 +1181,7 @@ async function runGateWithLease({
   hypothesisReviewer = guardUsageLimits(hypothesisReviewer);
   scout = guardUsageLimits(scout);
   coordinator = guardUsageLimits(coordinator);
-  const usageLimitFailure = async (errors) => {
+  const usageLimitFailure = async (errors, code = null) => {
     const providers = [...new Set(usageLimitHits.map((hit) => hit.provider))];
     return await buildFailClosedError({
       paths: context.paths,
@@ -1185,6 +1191,9 @@ async function runGateWithLease({
         ...usageLimitHits.map((hit) => `${hit.provider}: ${hit.message}${hit.resetAt ? ` (resets ${new Date(hit.resetAt).toISOString()})` : ''}`),
         ...errors,
       ],
+      // A process-tree cleanup failure beside the limit keeps its code: the
+      // watcher's pause keys on it, and no restart follows it.
+      code,
     });
   };
   const providerExecutions = [];
@@ -1780,10 +1789,12 @@ async function runGateWithLease({
     // was planned for: it fails closed, and under `auto` the review restarts.
     if (usageLimitHits.length) {
       const adjudicationCleanup = await haltAdjudication();
+      const cleanupFailure = reviewerCleanupFailure(settledReviewers);
       throw await usageLimitFailure([
         ...reviewerErrors,
+        ...(cleanupFailure ? [cleanupFailure.reason?.message || String(cleanupFailure.reason)] : []),
         ...(adjudicationCleanup ? [adjudicationCleanup.message] : []),
-      ]);
+      ], cleanupFailure?.code || adjudicationCleanup?.code || null);
     }
     const lanes = lanesSettled.value || { lanes: [], findings: [] };
     // A shard is the ONLY reviewer of its hunks: a shard that failed after its
@@ -2155,7 +2166,8 @@ async function runGateWithLease({
       error.providerMode = providerMode;
       error.providerSelection = selectedProviders;
       try {
-        error.usageLimitRecords = await recordUsageLimits(context.paths, usageLimitHits);
+        const recorded = await recordUsageLimits(context.paths, usageLimitHits);
+        error.usageLimitRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, recorded[hit.provider]]));
       } catch (recordError) {
         error.usageLimitRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, usageLimitRecord(hit)]));
         error.message = `${error.message} The usage-limit record could not be written: ${recordError?.message || String(recordError)}`;
