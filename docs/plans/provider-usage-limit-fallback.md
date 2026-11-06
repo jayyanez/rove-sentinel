@@ -73,7 +73,14 @@ The fallback keeps each of these:
    held, but no failure is. The failures weighed are every failed shard,
    every lens reviewer when none completed, and every adjudication batch
    already sent, drained before the round stops (a batch skipped because the
-   round had stopped is not a failure). A scout or a
+   round had stopped is not a failure). The authority, deny by default, is
+   a round veto set at the one place every provider call passes, the guard
+   around each seam, retries included: any call of a stage that can fail the
+   round (a shard, a lens reviewer, the adjudicator) that throws anything but
+   the provider's marked failure or its usage limit, on any attempt, vetoes
+   the fallback, however a later attempt or a skip replaced that error. The
+   guard's own halt and the skip of a stopped round's batch never call the
+   seam, so they neither set nor clear it. A scout or a
    hypothesis reviewer that fails is tolerated as before and triggers
    nothing. A usage limit, in any role, is the exception: it is not retried,
    no further provider work starts in the round, and the round fails at once.

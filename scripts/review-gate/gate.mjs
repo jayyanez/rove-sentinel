@@ -1211,7 +1211,13 @@ async function runGateWithLease({
   // ({ reason, retried }) of every failure that fails the round.
   const providerAttributed = ({ reason, retried }) => !processTreeCleanupFailureCode(reason)
     && (stopsOnUsageLimit(reason) || (isProviderFailure(reason) && retried === true));
-  const fallbackStop = (error, failures) => (failures.every(providerAttributed)
+  // The authority is the round's veto (deny by default): set by the guard
+  // below for ANY call of a stage that can fail the round that threw
+  // anything but the provider's own marked failure or usage limit, on any
+  // attempt, whatever later replaced that error. The per-stop list is
+  // checked as well.
+  let roundVeto = null;
+  const fallbackStop = (error, failures) => (!roundVeto && failures.every(providerAttributed)
     ? Object.assign(error, { providerFallbackEligible: true })
     : error);
   // Every provider call of this round goes through one guard: a
@@ -1220,11 +1226,23 @@ async function runGateWithLease({
   // completes work has its usage-limit record cleared when the round ends.
   const usageLimitHits = [];
   const succeededProviders = new Set();
-  const guardUsageLimits = (seam) => async (args) => {
+  //
+  // The guard is also the fallback's choke point. A stage whose failure fails
+  // the round (`vetoes`: a shard, a lens reviewer, the adjudicator) sets the
+  // round's veto when a call throws anything but the provider's marked
+  // failure or its usage limit: a local or setup error, a cleanup failure, a
+  // process a stopping watcher ended. Its halt below, and a skip the gate
+  // raises for a batch of a stopped round, never call the seam, so they
+  // neither set nor clear it. A tolerated stage (the scout, a hypothesis)
+  // never vetoes.
+  const guardUsageLimits = (seam, { vetoes }) => async (args) => {
     if (usageLimitHits.length) {
       const halt = new Error(`Provider work not started: ${usageLimitHits[0].provider} reported its usage limit in this round.`);
       halt.code = USAGE_LIMIT_HALT_CODE;
       throw halt;
+    }
+    if (vetoes && (newProcessLaunchesBlocked() || providerCleanupFailureLatched())) {
+      roundVeto ??= 'a process-launch fence or a provider cleanup failure was active';
     }
     try {
       const value = await seam(args);
@@ -1234,15 +1252,17 @@ async function runGateWithLease({
       if (isProviderUsageLimit(error)) {
         if (!usageLimitHits.length) progress(`${error.provider} reported its usage limit; no further provider work starts in this round.`);
         usageLimitHits.push({ provider: error.provider, resetAt: error.resetAt, message: error.limitMessage });
+      } else if (vetoes && (processTreeCleanupFailureCode(error) || !isProviderFailure(error))) {
+        roundVeto ??= shortReason(error);
       }
       throw error;
     }
   };
-  reviewer = guardUsageLimits(reviewer);
-  shardReviewer = guardUsageLimits(shardReviewer);
-  hypothesisReviewer = guardUsageLimits(hypothesisReviewer);
-  scout = guardUsageLimits(scout);
-  coordinator = guardUsageLimits(coordinator);
+  reviewer = guardUsageLimits(reviewer, { vetoes: true });
+  shardReviewer = guardUsageLimits(shardReviewer, { vetoes: true });
+  coordinator = guardUsageLimits(coordinator, { vetoes: true });
+  hypothesisReviewer = guardUsageLimits(hypothesisReviewer, { vetoes: false });
+  scout = guardUsageLimits(scout, { vetoes: false });
   const usageLimitFailure = async (errors, code = null, failures = []) => {
     const providers = [...new Set(usageLimitHits.map((hit) => hit.provider))];
     return fallbackStop(await buildFailClosedError({
@@ -2274,7 +2294,7 @@ async function runGateWithLease({
       error.message = `${error.message} ${limited.map((provider) => describeProviderHold(provider, error.providerHoldRecords[provider] ?? providerHoldRecord(usageLimitHits.find((hit) => hit.provider === provider)))).join('; ')}.`;
       if (providerMode === 'auto') await removeShardCheckpoint(context.paths, identity).catch(() => {});
     }
-    if ((usageLimitHits.length || providerFailures.length) && error?.providerFallbackEligible === true) {
+    if ((usageLimitHits.length || providerFailures.length) && error?.providerFallbackEligible === true && !roundVeto) {
       // Every provider whose work failed this round, a usage limit first:
       // what the restart under `auto` needs, and nothing else.
       error.providerFailures = [

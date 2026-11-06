@@ -614,3 +614,107 @@ describe('an adjudication batch already sent counts toward the fallback (gate re
     expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
   });
 });
+
+describe('the round veto: any unmarked failure of a stage that fails the round (gate review of 460635e)', () => {
+  const common = {
+    risk: 'high', author: 'claude', policy: policy(), availableProviders: ['claude', 'codex'],
+    scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+    deterministicLanes: async () => ({ lanes: [], findings: [] }),
+  };
+  const tagged = (message: string) => markProviderFailure(new Error(message));
+  const localError = () => Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+  const fiveCandidates = ({ provider, roleIndex, shard }: { provider: string; roleIndex: number; shard: { files: string[] } }) => ({
+    provider, roleIndex, summary: 'Five candidates.',
+    candidates: Array.from({ length: 5 }, (_, index) => ({
+      id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Defect ${index}`, priority: 'P2', confidence: 90,
+      category: 'state', file: shard.files[0], line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+    })),
+  });
+  const dismissed = (candidates: Array<{ id: string; title: string; file: string; line: number }>) => ({
+    summary: 'Dismissed.',
+    findings: candidates.map((entry) => ({
+      candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+      disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+    })),
+  });
+
+  it('does not restart when an active batch failed unmarked and its retry was then skipped', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    let codexShardCalls = 0;
+    let shardFailed: () => void = () => {};
+    const shardDone = new Promise<void>((resolve) => { shardFailed = resolve; });
+    const shardReviewer = vi.fn(async (args) => {
+      if (args.provider !== 'codex') return fiveCandidates(args);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      codexShardCalls += 1;
+      if (codexShardCalls === 2) setTimeout(shardFailed, 0);
+      throw tagged('codex exited with code 1');
+    });
+    // The Codex batch is running when the Codex shard fails and the stream
+    // stops; it then fails with a local error, and its retry is skipped
+    // because the round has stopped.
+    const coordinator = vi.fn(async () => {
+      await shardDone;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      throw localError();
+    });
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, shardReviewer, coordinator,
+      progress: (line: string) => progress.push(line),
+    })).rejects.toThrow(/failed after retry/);
+    expect(coordinator).toHaveBeenCalledTimes(1);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('does not restart when a first attempt failed unmarked, though its retry failed as the provider’s', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    let codexCalls = 0;
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line),
+      shardReviewer: async ({ provider, roleIndex }) => {
+        if (provider !== 'codex') return reviewed({ provider, roleIndex });
+        codexCalls += 1;
+        throw codexCalls === 1 ? localError() : tagged('codex exited with code 1');
+      },
+    })).rejects.toThrow(/failed after retry/);
+    expect(codexCalls).toBe(2);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('is not set by an unmarked failure of the scout or a hypothesis', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head,
+      scout: async () => ({ summary: 'One', hypotheses: [{ title: 'A', file: 'src/a.ts', line: 1, lens: 'l', claim: 'c', why: 'w' }] }),
+      hypothesisReviewer: async () => { throw localError(); },
+      shardReviewer: async ({ provider, roleIndex }) => {
+        if (provider === 'codex') throw tagged('codex exited with code 1');
+        return reviewed({ provider, roleIndex });
+      },
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
+  });
+
+  it('lets a round whose every failure is the provider’s restart', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const coordinator = vi.fn(async ({ provider, candidates }) => {
+      if (provider === 'codex') throw tagged('codex returned malformed output');
+      return dismissed(candidates);
+    });
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head, coordinator,
+      shardReviewer: async (args) => {
+        if (args.provider === 'codex') {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          throw tagged('codex exited with code 1');
+        }
+        return fiveCandidates(args);
+      },
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
+  });
+});
