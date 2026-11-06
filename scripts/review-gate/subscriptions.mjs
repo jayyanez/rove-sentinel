@@ -1,7 +1,7 @@
 import { runProcess, subscriptionEnvironment, processTreeCleanupFailureCode } from './process.mjs';
 import { PROVIDERS, selectProviders } from './modelSettings.mjs';
 import { describeProviderHold, heldProviders } from './usageLimits.mjs';
-import { ACCOUNT_VARIABLES } from './accounts.mjs';
+import { ACCOUNT_VARIABLES, accountOverrideRefusal } from './accounts.mjs';
 
 /** The providers a requirement asks for, less any a restart dropped. */
 function wantedProviders(mode, exclude = []) {
@@ -49,15 +49,30 @@ async function authError(provider, { run, repoRoot, env }) {
 }
 
 /**
+ * Wait for EVERY probe, then fail: a probe's process-tree cleanup failure is
+ * raised only once its siblings have finished, never while they still run
+ * (and that failure before any other rejection).
+ */
+async function settleEvery(promises) {
+  const results = await Promise.allSettled(promises);
+  const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+  if (failures.length) throw failures.find((failure) => processTreeCleanupFailureCode(failure)) ?? failures[0];
+  return results.map((result) => result.value);
+}
+
+/**
  * Each configured account's sign-in, by provider and label, probed with only
  * that account's variable set: `{ claude: [{ label, signedIn, error? }] }`.
  */
 export async function probeAccountSignIns(repoRoot, accounts, { run = runProcess, env = process.env } = {}) {
   const safeEnv = subscriptionEnvironment(env);
   const result = {};
-  await Promise.all(Object.entries(accounts ?? {}).map(async ([provider, list]) => {
-    result[provider] = await Promise.all(list.map(async (account) => {
-      let error;
+  await settleEvery(Object.entries(accounts ?? {}).map(async ([provider, list]) => {
+    result[provider] = await settleEvery(list.map(async (account) => {
+      // A credential variable that overrides the folder would report another
+      // login: the account is not counted as signed in.
+      let error = accountOverrideRefusal(provider, safeEnv);
+      if (error) return { label: account.label, signedIn: false, error };
       try {
         error = await authError(provider, { run, repoRoot, env: { ...safeEnv, [ACCOUNT_VARIABLES[provider]]: account.folder } });
       } catch (failure) {
@@ -115,10 +130,10 @@ export async function detectSubscriptions(repoRoot, {
       availability[provider] = { available: false, error: error?.message || String(error) };
     }
   };
-  await Promise.all(wanted.filter((provider) => !held.includes(provider)).map(probe));
+  await settleEvery(wanted.filter((provider) => !held.includes(provider)).map(probe));
   // A failure hold never costs the review its last provider.
   if (mode === 'auto' && !wanted.some((provider) => availability[provider]?.available)) {
-    await Promise.all(held.filter((provider) => holds[provider]?.reason === 'provider-failure').map(probe));
+    await settleEvery(held.filter((provider) => holds[provider]?.reason === 'provider-failure').map(probe));
   }
   for (const provider of held) {
     availability[provider] ??= { available: false, error: describeProviderHold(provider, holds[provider]), hold: holds[provider] };

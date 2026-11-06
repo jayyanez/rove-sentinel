@@ -14,7 +14,11 @@
   provider's next account, under any requirement, before the provider is dropped under
   `auto`. When no other account is usable the author's own is used, and the evidence says
   so. Reports, attestations, comments and text results carry `accounts` and
-  `accountFallbacks` by label; `status` and `doctor` list each account's sign-in and hold.
+  `accountFallbacks` by label; `status` and `doctor` list each account's sign-in and hold,
+  and `install` checks them too and gives the scheduled watcher a named accounts file. A
+  credential variable that overrides an account folder (`CLAUDE_CODE_OAUTH_TOKEN`,
+  `CODEX_ACCESS_TOKEN`, …) refuses such a review. Every restart, an account's or the
+  provider fallback's, reviews the commits the first round resolved, even if `HEAD` moved.
   With no accounts file, reviews are unchanged. See the
   [plan](docs/plans/review-accounts.md).
 

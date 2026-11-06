@@ -31,8 +31,9 @@ allowance. Nothing was run against an account.
   credentials live (a file under that folder, or the macOS keychain) is the
   CLI's business; Sentinel never reads them. The same page notes that
   `CLAUDE_CODE_OAUTH_TOKEN` "takes precedence over keychain-stored
-  credentials": an inherited token overrides the account folder (see
-  [security](#security)).
+  credentials": an inherited token overrides the account folder, and so
+  does `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`, documented beside it as another
+  alternative to `/login` (see [security](#security)).
 - **Codex: `CODEX_HOME`, verified.** Its documentation
   ([advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced),
   formerly `developers.openai.com/codex/config-advanced`) says "Codex stores
@@ -47,6 +48,12 @@ allowance. Nothing was run against an account.
   `$CODEX_HOME/auth.json`, or in the keyring under a key computed from the
   canonical `CODEX_HOME` path, so each home is its own login either way.
   `codex --help` and `codex login --help` do not mention the variable.
+  Codex's `load_auth` (`codex-rs/login/src/auth/manager.rs`) reads
+  `CODEX_API_KEY` (where the API-key variable is enabled, as in `codex exec`)
+  and `CODEX_ACCESS_TOKEN` before the login stored under `CODEX_HOME`. Its
+  [authentication page](https://learn.chatgpt.com/docs/auth) shows
+  `CODEX_ACCESS_TOKEN` only as the input of `codex login --with-access-token`
+  and does not document that precedence; the source does.
 
 ### Whether either CLI exposes the remaining allowance
 
@@ -109,7 +116,12 @@ the allowance left can replace the rotation inside `rankAccounts`.
    unique per provider ignoring case; an absolute folder, two labels never
    naming the same folder. An error names the provider, entry and label,
    never a folder. The watcher reads the file of its own environment (the
-   variable it was started with, or the default) for each review.
+   variable it was started with, or the default) for each review. `install`
+   (`--accounts` too) checks the prerequisites with the accounts, as `doctor`
+   does, and gives the scheduled watcher (the Windows task's wrapper, the
+   macOS LaunchAgent) the file named by the flag or the variable as
+   `ROVE_SENTINEL_ACCOUNTS`, so it reads the same file; the default file
+   needs nothing. That path stays in a local scheduler artifact.
 3. **The author's account.** The author's provider is the `--author` or the
    branch prefix, as before. The author's account is the `CLAUDE_CONFIG_DIR`
    or `CODEX_HOME` of the process that asks for the review (the shell that
@@ -153,7 +165,10 @@ the allowance left can replace the rotation inside `rankAccounts`.
      provider is allowed, and recorded;
    - otherwise the provider is dropped as in the fallback plan: under `auto`
      only, once, and only while another provider remains.
-   A round that needs to drop a provider it may not drop fails closed. Safety
+   Every restart reviews the base, head and branch the first round resolved,
+   never what `HEAD` or the base names by then; this holds for the fallback
+   plan's provider restart too. A round that needs to drop a provider it may
+   not drop fails closed. Safety
    stops (a process-tree cleanup failure, the launch fence, a lane, an error
    that is not a provider's, the round's veto) never restart.
 7. **Evidence.** Every report, attestation, GitHub summary and comment, and
@@ -170,9 +185,13 @@ the allowance left can replace the rotation inside `rankAccounts`.
 8. **Status and doctor.** `status` lists `accounts`: each label, whether it is
    signed in (probed with that account's folder only), its live hold and its
    last review; an unreadable accounts file is reported as `accounts.error`.
-   `doctor` probes every configured account, lists the sign-ins under
-   `providers.accounts`, prints the account holds and returns them as
-   `accountHolds`.
+   `doctor` and `install` probe every configured account, those of a
+   provider the requirement leaves out included, and list the sign-ins under
+   `accounts` (the required providers' also under `providers.accounts`);
+   `doctor` prints the account holds and returns them as `accountHolds`.
+   The probes of every account and provider are all awaited before a
+   process-tree cleanup failure among them is raised. An unreadable account
+   state reads as empty.
 
 ## Bounds
 
@@ -190,9 +209,13 @@ after a usage limit.
 - Each reviewer process gets the subscription environment of today with one
   change: its provider's variable (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`) set to
   the chosen account's folder. No other authentication variable is touched;
-  inherited API keys are still removed. An inherited `CLAUDE_CODE_OAUTH_TOKEN`
-  would still take precedence over the folder, as Claude Code documents:
-  don't export one in the shell that runs the watcher or the gate.
+  inherited API keys are still removed.
+- A credential variable that overrides the folder would make a recorded label
+  name the wrong account. With accounts configured for a provider, its
+  variables (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`;
+  `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`) refuse the review before any provider
+  work, naming the variable and never its value, and an account probed with
+  one set does not count as signed in. Without accounts nothing changes.
 - Sentinel never opens, copies or logs anything inside an account folder. It
   runs the CLI's own `auth status` / `login status` with the folder set, as
   the subscription probe always did.
@@ -232,3 +255,12 @@ after a usage limit.
 8. `pnpm verify` passes. Live acceptance is still owed: two signed-in accounts
    of each CLI, a review that switches between them, and `status` and `doctor`
    listing them.
+9. The first commit's gate review, each with a regression: a corrupt account
+   state reads as empty, under `--force` too; `install` verifies with the
+   accounts file and gives the scheduled watcher a file named explicitly, and
+   nothing for the default one; every account probe is awaited before a
+   cleanup failure is raised; a provider restart and an account restart review
+   the commit the first round resolved after `HEAD` moved; an overriding
+   credential variable refuses a review with accounts, and changes nothing
+   without them; `doctor` lists the accounts of a provider the requirement
+   leaves out.

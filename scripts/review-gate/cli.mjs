@@ -394,7 +394,7 @@ async function main() {
     // An engine update installs with --preserve-policy, and keeps the choice.
     const github = options['preserve-policy'] ? undefined : options.github !== false;
     const result = await installGate({ repoRoot, dryRun: options['dry-run'], start: options.start !== false, github,
-      preservePolicy: Boolean(options['preserve-policy']) });
+      preservePolicy: Boolean(options['preserve-policy']), accountsFile: options.accounts });
     if (!options['dry-run'] && !options['preserve-policy']) await configureAutomaticUpdates(await createGateContext(repoRoot), process.env.ROVE_SENTINEL_AUTO_UPDATE !== '0', { onlyIfMissing: true });
     if (!options['dry-run']) {
       const notice = formatToolsNotice(await missingTools({ config: await installedConfig(repoRoot) }));

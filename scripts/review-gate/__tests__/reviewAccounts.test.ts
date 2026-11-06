@@ -21,11 +21,11 @@ import {
 import { reviewPolicySnapshot } from '../context.mjs';
 import { formatGateResult, runGate } from '../gate.mjs';
 import { renderGateComment } from '../github.mjs';
-import { accountsStatus } from '../install.mjs';
+import { accountsStatus, buildInstallPlan, explicitAccountsFile, installPrerequisites, verifyPrerequisites } from '../install.mjs';
 import { subscriptionEnvironment } from '../process.mjs';
 import { runReviewer } from '../providers.mjs';
 import { ensureState, readAttestation, readReport } from '../storage.mjs';
-import { detectSubscriptions } from '../subscriptions.mjs';
+import { detectSubscriptions, probeAccountSignIns } from '../subscriptions.mjs';
 import { ProviderUsageLimitError, markProviderFailure, readProviderHolds } from '../usageLimits.mjs';
 
 // Real repositories and Git worktrees: Windows needs more than the default.
@@ -309,7 +309,7 @@ async function review(options: Record<string, unknown>) {
       return shardReviewer(call);
     },
   });
-  return { run, progress, calls, stateRoot, paths: await ensureState(stateRoot) };
+  return { run, progress, calls, stateRoot, root, head, paths: await ensureState(stateRoot) };
 }
 
 async function exists(target: string) {
@@ -482,3 +482,135 @@ describe('a review with accounts', () => {
 function unescaped(markdown: string) {
   return markdown.split(String.fromCharCode(92)).join('');
 }
+
+// --- Gate review of ce97208 ---------------------------------------------------
+
+describe('gate review of the review accounts (ce97208)', () => {
+  it('reads a corrupt account state as empty, and a review goes on, under --force too', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-accounts-corrupt-'));
+    temporaryDirectories.push(stateRoot);
+    const paths = await ensureState(stateRoot);
+    await writeFile(paths.accountState, '{ not json');
+    expect(await readAccountState(paths)).toEqual({ holds: { claude: {}, codex: {} }, lastUsed: { claude: {}, codex: {} } });
+    for (const force of [false, true]) {
+      const { run, paths: reviewPaths } = await review({ policy: policy('claude'), accounts: configured(['team']), force, shardReviewer: async (call: Call) => reviewed(call) });
+      await writeFile(reviewPaths.accountState, '{ not json');
+      expect((await run()).accounts).toEqual({ claude: { label: 'team', authorOwn: null } });
+    }
+  });
+
+  it('install verifies the prerequisites with the accounts file, as doctor does', async () => {
+    const accounts = configured(['team']);
+    const load = vi.fn(async () => accounts);
+    const verify = vi.fn(async () => ({ verified: true }));
+    const env = { ROVE_SENTINEL_ACCOUNTS: folder('accounts.json') };
+    expect(await installPrerequisites('repo', { config: { providers: 'claude' }, accountsFile: undefined, env, load, verify })).toEqual({ verified: true });
+    expect(load).toHaveBeenCalledWith({ file: undefined, env });
+    expect(verify).toHaveBeenCalledWith('repo', { config: { providers: 'claude' }, accounts });
+  });
+
+  it('carries an explicitly named accounts file into the scheduled watcher, and only then', () => {
+    expect(explicitAccountsFile({ env: {} })).toBeNull();
+    expect(explicitAccountsFile({ env: { ROVE_SENTINEL_ACCOUNTS: 'accounts.json' } })).toBe(path.resolve('accounts.json'));
+    expect(explicitAccountsFile({ file: 'mine.json', env: { ROVE_SENTINEL_ACCOUNTS: 'other.json' } })).toBe(path.resolve('mine.json'));
+    const windows = (accountsFile?: string) => buildInstallPlan({
+      platform: 'win32', repoRoot: 'D:\\project', stateRoot: 'C:\\state', nodePath: 'C:\\node.exe', environment: {}, accountsFile,
+    }).wrapper;
+    expect(windows('C:\\Users\\me\\accounts.json')).toContain('set "ROVE_SENTINEL_ACCOUNTS=C:\\Users\\me\\accounts.json"');
+    expect(windows()).not.toContain('ROVE_SENTINEL_ACCOUNTS');
+    const mac = (accountsFile?: string) => buildInstallPlan({
+      platform: 'darwin', repoRoot: '/Users/me/project', stateRoot: '/Users/me/state', nodePath: '/usr/local/bin/node',
+      home: '/Users/me', uid: 501, environment: {}, accountsFile,
+    }).plist;
+    expect(mac('/Users/me/accounts & more.json')).toContain('<key>ROVE_SENTINEL_ACCOUNTS</key><string>/Users/me/accounts &amp; more.json</string>');
+    expect(mac()).not.toContain('ROVE_SENTINEL_ACCOUNTS');
+  });
+
+  it('waits for every account probe before it reports a cleanup failure', async () => {
+    const accounts = configured(['personal', 'team'], ['main']);
+    const cleanup = Object.assign(new Error('unverified process tree'), { code: 'PROCESS_TREE_CLEANUP_FAILED' });
+    const settled: string[] = [];
+    const run = vi.fn(async (command: string, args: string[], options: { env: Record<string, string> }) => {
+      if (args[0] === '--version') return { code: 0, stdout: '1.0', stderr: '' };
+      if (command === 'claude' && options.env.CLAUDE_CONFIG_DIR === folder('claude-personal')) throw cleanup;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      settled.push(command === 'claude' ? options.env.CLAUDE_CONFIG_DIR : options.env.CODEX_HOME);
+      return { code: 0, stdout: command === 'claude' ? JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }) : 'Logged in using ChatGPT', stderr: '' };
+    });
+    await expect(probeAccountSignIns('repo', accounts, { run, env: {} })).rejects.toBe(cleanup);
+    expect(settled.sort()).toEqual([folder('claude-team'), folder('codex-main')].sort());
+    settled.length = 0;
+    await expect(detectSubscriptions('repo', { run, env: {}, accounts })).rejects.toBe(cleanup);
+    expect(settled.sort()).toEqual([folder('claude-team'), folder('codex-main')].sort());
+  });
+
+  it('pins the reviewed commit for every restart: a provider restart and an account restart', async () => {
+    for (const accounts of [null, configured([], ['main', 'spare'])]) {
+      const state = { root: '', moved: false };
+      const { run, head, root } = await review({
+        head: 'HEAD', accounts,
+        shardReviewer: async (call: Call) => {
+          if (call.provider === 'codex' && (!accounts || accountOf(call) === 'main')) {
+            // The checkout moves on while the first round runs.
+            if (!state.moved) {
+              git(state.root, 'commit', '--allow-empty', '-m', 'later');
+              state.moved = true;
+            }
+            throw limit('codex');
+          }
+          return reviewed(call);
+        },
+      });
+      state.root = root;
+      const result = await run();
+      expect(state.moved).toBe(true);
+      expect(result.status).toBe('pass');
+      expect(result.identity.headSha).toBe(head);
+      expect(result.lineage.branch).toBe('main');
+      expect(accounts ? result.accountFallbacks : result.providerFallback).toBeTruthy();
+    }
+  });
+
+  it('refuses an inherited token that would override a configured account, and only then', async () => {
+    expect(() => providerEnvironment('claude', configured(['team']).claude[0], { CLAUDE_CODE_OAUTH_TOKEN: 'secret' }))
+      .toThrow(/CLAUDE_CODE_OAUTH_TOKEN is set.*unset it/);
+    expect(() => providerEnvironment('codex', configured([], ['main']).codex[0], { CODEX_ACCESS_TOKEN: 'secret' }))
+      .toThrow(/CODEX_ACCESS_TOKEN is set/);
+    expect(() => providerEnvironment('codex', configured([], ['main']).codex[0], { CODEX_API_KEY: 'secret' }))
+      .toThrow(/CODEX_API_KEY is set/);
+    expect(providerEnvironment('claude', null, { CLAUDE_CODE_OAUTH_TOKEN: 'secret' }).CLAUDE_CODE_OAUTH_TOKEN).toBe('secret');
+    vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'secret');
+    try {
+      const withAccounts = await review({ policy: policy('claude'), accounts: configured(['team']), shardReviewer: async (call: Call) => reviewed(call) });
+      let error: Error | undefined;
+      try {
+        await withAccounts.run();
+      } catch (caught) {
+        error = caught as Error;
+      }
+      expect(error?.message).toMatch(/CLAUDE_CODE_OAUTH_TOKEN is set.*unset it/);
+      expect(error?.message).not.toContain('secret');
+      expect(withAccounts.calls).toEqual([]);
+      // Without accounts nothing changes, and codex accounts are not affected.
+      const without = await review({ policy: policy('claude'), shardReviewer: async (call: Call) => reviewed(call) });
+      expect((await without.run()).status).toBe('pass');
+      const codexOnly = await review({ policy: policy('codex'), accounts: configured([], ['main']), shardReviewer: async (call: Call) => reviewed(call) });
+      expect((await codexOnly.run()).status).toBe('pass');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('doctor probes every configured account, not only those of the required providers', async () => {
+    const accounts = configured(['team'], ['main']);
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (args[0] === '--version') return { code: 0, stdout: `${command} 1.0`, stderr: '' };
+      if (command === 'git' || command === 'gh') return { code: 0, stdout: `${command} ok`, stderr: '' };
+      return { code: 0, stdout: command === 'claude' ? JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }) : 'Logged in using ChatGPT', stderr: '' };
+    });
+    const result = await verifyPrerequisites('repo', { run, env: {}, config: { providers: 'claude' }, accounts });
+    expect(result.accounts).toEqual({ claude: [{ label: 'team', signedIn: true }], codex: [{ label: 'main', signedIn: true }] });
+    expect(result.providers.selected).toEqual(['claude']);
+    expect(await verifyPrerequisites('repo', { run, env: {}, config: { providers: 'claude' } })).not.toHaveProperty('accounts');
+  });
+});

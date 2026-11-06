@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS, TASK_PREFIX } from './constants.mjs';
 import { detectSubscriptions, probeAccountSignIns } from './subscriptions.mjs';
-import { loadAccounts, readAccountState } from './accounts.mjs';
+import { ACCOUNTS_FILE_VARIABLE, loadAccounts, readAccountState } from './accounts.mjs';
 import { readProviderHolds } from './usageLimits.mjs';
 import { modelSettings, validateModelClients } from './modelSettings.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from './context.mjs';
@@ -243,6 +243,8 @@ export function buildInstallPlan({
   updateNotifications = process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS,
   environment = process.env,
   realPath,
+  // An accounts file named explicitly at install; the default needs none.
+  accountsFile = null,
 }) {
   const cliPath = fileURLToPath(new URL('./cli.mjs', import.meta.url));
   const id = hashText(stateRoot.toLowerCase(), 8);
@@ -251,7 +253,7 @@ export function buildInstallPlan({
     const wrapperPath = path.win32.join(stateRoot, 'watch.cmd');
     const stateEnvironment = [
       ['LOCALAPPDATA', localAppData], ['ROVE_SENTINEL_AUTO_UPDATE', autoUpdate],
-      ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications],
+      ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications], [ACCOUNTS_FILE_VARIABLE, accountsFile ?? undefined],
     ].filter(([, value]) => value !== undefined && value !== '')
       .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('');
     const toolSettings = WATCHER_TOOL_SETTINGS
@@ -297,6 +299,7 @@ export function buildInstallPlan({
       ['PATH', launchAgentPath(environment.PATH, repoRoot, realPath ? { realPath } : {})],
       ...WATCHER_TOOL_SETTINGS.filter((key) => environment[key] && !CONTROL_CHARACTERS.test(environment[key]))
         .map((key) => [key, environment[key]]),
+      ...(accountsFile ? [[ACCOUNTS_FILE_VARIABLE, accountsFile]] : []),
     ].map(([key, value]) => `    <key>${key}</key><string>${xmlEscape(value)}</string>\n`).join('');
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -358,16 +361,38 @@ export async function verifyPrerequisites(
     }
     return (result.stdout || result.stderr).split(/\r?\n/).find(Boolean) || 'available';
   };
-  const [subscriptions, git, gh] = await Promise.all([
+  const [subscriptions, git, gh, accountSignIns] = await Promise.all([
     detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env, ...(accounts ? { accounts } : {}) }),
     probe('Git version check', 'git', ['--version']),
     probe('GitHub CLI authentication check', 'gh', ['auth', 'status']),
+    // Every configured account, by label, the providers the requirement
+    // leaves out included: the file is the user's, not the policy's.
+    accounts ? probeAccountSignIns(repoRoot, accounts, { run, env }) : null,
   ]);
   validateModelClients(config, subscriptions);
   return {
     ...Object.fromEntries(subscriptions.selected.map((provider) => [provider, subscriptions.availability[provider].version])),
     git, gh, providers: subscriptions, models: modelSettings(config),
+    ...(accountSignIns ? { accounts: accountSignIns } : {}),
   };
+}
+
+/**
+ * The accounts file a user named explicitly (`--accounts`, else
+ * ROVE_SENTINEL_ACCOUNTS), resolved, or null for the default place. An
+ * installed watcher is given this path so it reads the same file.
+ */
+export function explicitAccountsFile({ file, env = process.env } = {}) {
+  const named = file || env[ACCOUNTS_FILE_VARIABLE];
+  return named ? path.resolve(named) : null;
+}
+
+/** Install checks the prerequisites with the user's accounts, as doctor does. */
+export async function installPrerequisites(repoRoot, {
+  config, accountsFile, env = process.env, load = loadAccounts, verify = verifyPrerequisites,
+} = {}) {
+  const accounts = await load({ file: accountsFile, env });
+  return await verify(repoRoot, { config, accounts });
 }
 
 export function heartbeatIsHealthy(
@@ -529,7 +554,9 @@ function hooksPathIsOurs(repoRoot, value) {
   return path.resolve(repoRoot, value) === path.join(repoRoot, '.githooks');
 }
 
-export async function installGate({ repoRoot = process.cwd(), dryRun = false, start = true, github, preservePolicy = false } = {}) {
+export async function installGate({
+  repoRoot = process.cwd(), dryRun = false, start = true, github, preservePolicy = false, accountsFile,
+} = {}) {
   const context = await createGateContext(repoRoot);
   const previousDaemonActive = await assertNoOtherCheckoutDaemon(context);
   const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
@@ -543,12 +570,13 @@ export async function installGate({ repoRoot = process.cwd(), dryRun = false, st
     platform: process.platform,
     repoRoot: context.repoRoot,
     stateRoot: context.stateRoot,
+    accountsFile: explicitAccountsFile({ file: accountsFile }),
   });
   if (plan.installRefusal) throw new Error(plan.installRefusal);
   const policy = preservePolicy
     ? await policyForEngineUpgrade(context.paths)
     : reviewPolicySnapshot(await readReviewPolicy(context.repoRoot));
-  const prerequisites = await verifyPrerequisites(context.repoRoot, { config: policy.config });
+  const prerequisites = await installPrerequisites(context.repoRoot, { config: policy.config, accountsFile });
   if (dryRun) return { dryRun: true, hooksPath: '.githooks', prerequisites, plan };
 
   return await executeInstallTransaction({

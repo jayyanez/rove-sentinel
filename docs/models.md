@@ -224,11 +224,13 @@ each with a label of your own:
 
 The file is machine-local and never part of a repository or its policy
 digest. Sentinel reads it from `--accounts <file>` (`gate`, `status`,
-`doctor`), else the file `ROVE_SENTINEL_ACCOUNTS` names, else
+`doctor`, `install`), else the file `ROVE_SENTINEL_ACCOUNTS` names, else
 `accounts.json` beside its per-repository state:
 `%LOCALAPPDATA%\Rove\shared-review-gate\` on Windows,
 `~/Library/Application Support/Rove/shared-review-gate/` on macOS. The
-watcher reads the one of its own environment for each review. Unknown keys,
+watcher reads the one of its own environment for each review; `install`
+gives the scheduled watcher the file named by `--accounts` or
+`ROVE_SENTINEL_ACCOUNTS`, and the default needs nothing. Unknown keys,
 an unknown provider, more than 8 accounts of a provider, a label other than
 1 to 32 letters, digits, `.`, `_` or `-`, a label used twice for one provider,
 a relative folder and one folder under two labels are refused.
@@ -256,14 +258,24 @@ under the login Sentinel inherits, exactly as before. With accounts:
   provider dropped, under `auto` only, as above. A review restarts at most
   once per account that fails, plus once for the provider.
 - **Each reviewer process** gets only its account's variable set; no other
-  authentication variable changes, and no credential is read.
+  authentication variable changes, and no credential is read. A credential
+  variable that would override the account folder (`CLAUDE_CODE_OAUTH_TOKEN`
+  or `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` for Claude, `CODEX_ACCESS_TOKEN` or
+  `CODEX_API_KEY` for Codex) refuses a review that would use that provider's
+  accounts, naming the variable: unset it where Sentinel runs. Without
+  accounts these variables change nothing.
+- **Restarts review the same commits.** A restart, for an account or a
+  provider, reviews the base, head and branch the first round resolved, even
+  if `HEAD` has moved since.
 - **Evidence by label.** Reports, attestations, comments and text results
   carry `accounts` (the label per provider, and `authorOwn` for the author's
   provider: `true`, `false`, or `null` when the review's requester is not
   known, as for a pull request found on GitHub) and `accountFallbacks`; each
   provider execution names its `account`. Folders never appear.
 - `status` lists each account by label, signed in or not, with its hold and
-  last review; `doctor` probes each one and prints the holds. `gate --force`
+  last review; `doctor` and `install` probe every configured account, those
+  of a provider the requirement leaves out included, list them under
+  `accounts`, and `doctor` prints the holds. `gate --force`
   ignores account holds as it does provider holds. `doctor --test-models`
   still calls the models under the inherited login only.
 

@@ -165,11 +165,39 @@ export function checkedRequesterAccounts(value) {
   return value;
 }
 
+// Credentials a CLI takes from its environment in preference to the login
+// in its account folder: Claude Code documents that CLAUDE_CODE_OAUTH_TOKEN
+// "takes precedence over keychain-stored credentials" (its refresh token
+// is the same kind); Codex's `load_auth` reads CODEX_API_KEY and
+// CODEX_ACCESS_TOKEN before the login stored under CODEX_HOME. With one
+// inherited, a review would run under that credential, not the account
+// whose label it records.
+export const ACCOUNT_OVERRIDES = Object.freeze({
+  claude: Object.freeze(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN']),
+  codex: Object.freeze(['CODEX_ACCESS_TOKEN', 'CODEX_API_KEY']),
+});
+
+/**
+ * Why a provider's review accounts cannot be used in `env`, or null: a
+ * credential variable that overrides the account folder is set. It names
+ * the variable, never its value.
+ */
+export function accountOverrideRefusal(provider, env = process.env) {
+  const set = (ACCOUNT_OVERRIDES[provider] ?? []).filter((name) => typeof env[name] === 'string' && env[name].trim());
+  if (!set.length) return null;
+  return `${set.join(' and ')} ${set.length > 1 ? 'are' : 'is'} set, and ${provider} would use ${set.length > 1 ? 'them' : 'it'} instead of the review account Sentinel chose, so the account its evidence names would be wrong: unset ${set.length > 1 ? 'them' : 'it'} where Sentinel runs (the shell, or the watcher's environment), or remove the ${provider} accounts from the accounts file.`;
+}
+
 /**
  * A reviewer process's environment: the subscription environment with only
  * its account's variable set. Without an account it is today's environment.
+ * With one, a credential variable that would override it is refused.
  */
 export function providerEnvironment(provider, account = null, source = process.env) {
+  if (account?.folder) {
+    const refusal = accountOverrideRefusal(provider, source);
+    if (refusal) throw new Error(refusal);
+  }
   const env = subscriptionEnvironment(source);
   if (account?.folder && ACCOUNT_VARIABLES[provider]) env[ACCOUNT_VARIABLES[provider]] = account.folder;
   return env;
@@ -182,8 +210,12 @@ export function providerEnvironment(provider, account = null, source = process.e
 // as a provider hold) and when the account last reviewed. Keyed by label,
 // never by folder.
 
+/** No hold and no last use, with a map for every provider. */
 function emptyState() {
-  return { holds: {}, lastUsed: {} };
+  return {
+    holds: Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, {}])),
+    lastUsed: Object.fromEntries(ACCOUNT_PROVIDERS.map((provider) => [provider, {}])),
+  };
 }
 
 async function readRawState(paths) {

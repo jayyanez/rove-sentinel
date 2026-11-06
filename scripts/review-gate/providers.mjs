@@ -801,6 +801,9 @@ ${inlineBlock(inline, candidatesPath.split(/[\\/]/).pop(), candidatesText)}` : '
 async function runClaudeJsonOnce({
   checkout, bundle, schema, prompt, profile, timeoutMs, runner,
 }) {
+  // Only this provider's review account, when one was chosen. A refusal
+  // (an overriding credential variable) is the host's, never the provider's.
+  const env = providerEnvironment('claude', bundle.accounts?.claude);
   try {
     const result = await runner(
       'claude',
@@ -814,8 +817,7 @@ async function runClaudeJsonOnce({
       }),
       {
         cwd: bundle.directory,
-        // Only this provider's review account, when one was chosen.
-        env: providerEnvironment('claude', bundle.accounts?.claude),
+        env,
         timeoutMs,
         input: prompt,
       },
@@ -838,6 +840,8 @@ async function runClaudeJsonOnce({
 async function runCodexJsonOnce({
   checkout, bundle, schemaPath, outputPath, prompt, profile, timeoutMs, runner,
 }) {
+  // As for Claude: the account's environment, refused outside the provider's run.
+  const env = providerEnvironment('codex', bundle.accounts?.codex);
   let completed = null;
   try {
     completed = await runner(
@@ -853,8 +857,7 @@ async function runCodexJsonOnce({
       }),
       {
         cwd: bundle.directory,
-        // Only this provider's review account, when one was chosen.
-        env: providerEnvironment('codex', bundle.accounts?.codex),
+        env,
         timeoutMs,
         input: prompt,
       },

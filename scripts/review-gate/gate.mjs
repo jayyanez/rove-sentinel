@@ -64,6 +64,7 @@ import {
 import { classifyRisk, reviewPlan } from './risk.mjs';
 import {
   accountHoldOf,
+  accountOverrideRefusal,
   accountsProviderHold,
   checkedRequesterAccounts,
   clearAccountHolds,
@@ -1015,10 +1016,13 @@ async function runGateWithProviderFallback(paths, options) {
   let providerFallback = null;
   const excluded = {};
   const switches = [];
+  // Set by the first round that fails: the commits and branch it resolved.
+  let target = null;
   for (let round = 0; ; round += 1) {
     try {
       return await runGateWithLease({
         ...options,
+        ...(target ? { base: target.base, head: target.head, branch: target.branch } : {}),
         providerFallback,
         accountFallback: switches.length || Object.keys(excluded).length
           ? { excluded: { ...excluded }, switches: [...switches] } : null,
@@ -1030,6 +1034,9 @@ async function runGateWithProviderFallback(paths, options) {
       // A guard past the structural bound above; never reached by design.
       if (round > LIMITS.maxAccountsPerProvider * PROVIDERS.length + 1) throw error;
       const failed = [...new Set(failures.map((failure) => failure.provider))];
+      // Without the target it reviewed, no restart could be the same review.
+      if (!error.reviewTarget?.head) throw error;
+      target ??= error.reviewTarget;
       const chosen = error.accountSelection ?? {};
       // The round that just failed chose the account an earlier switch went to.
       for (const entry of switches) if (entry.to === undefined && chosen[entry.provider]) entry.to = chosen[entry.provider];
@@ -1228,6 +1235,12 @@ async function runGateWithLease({
   // provider without accounts, and a review with none, are as before.
   const accountProviders = accounts && risk.level !== 'skip' && !dryRun
     ? PROVIDERS.filter((provider) => accounts[provider]?.length) : [];
+  // An inherited credential that overrides the account folder would make a
+  // recorded label name the wrong account: refused before any provider work.
+  for (const provider of accountProviders) {
+    const refusal = accountOverrideRefusal(provider, process.env);
+    if (refusal) throw new Error(refusal);
+  }
   const authorAccounts = checkedRequesterAccounts(requesterAccounts);
   const accountState = accountProviders.length ? await readAccountState(context.paths) : { holds: {}, lastUsed: {} };
   const accountHolds = (provider) => (force ? {} : accountState.holds[provider] ?? {});
@@ -2453,6 +2466,9 @@ async function runGateWithLease({
       error.providerMode = providerMode;
       error.providerSelection = selectedProviders;
       error.reviewIdentity = identity;
+      // The exact commits and branch this round reviewed: every restart
+      // reviews them again, never what HEAD or the base names by then.
+      error.reviewTarget = { base: baseSha, head: headSha, branch };
       // Labels only: the account each provider used, and the others usable.
       error.accountSelection = Object.fromEntries(Object.entries(accountSelection).map(([provider, account]) => [provider, account.label]));
       error.accountAlternatives = accountAlternatives;
