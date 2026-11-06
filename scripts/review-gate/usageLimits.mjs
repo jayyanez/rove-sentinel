@@ -54,7 +54,7 @@ const sanitize = (text) => String(text)
   .replace(/[\u0000-\u001f\u007f]+/g, ' ')
   .replace(/\s+/g, ' ')
   .trim()
-  .slice(0, LIMITS.usageLimitMessageChars);
+  .slice(0, LIMITS.providerHoldMessageChars);
 
 /**
  * The usage-limit signature in a provider's error text, or null. `text` must
@@ -131,7 +131,7 @@ function hour24(hour, meridiem) {
 export function parseResetTime(text, { now = Date.now() } = {}) {
   const value = parseResetCandidate(String(text ?? ''), now);
   if (value === null || !Number.isFinite(value) || value <= now) return null;
-  return Math.min(value, now + LIMITS.usageLimitMaxHoldMs);
+  return Math.min(value, now + LIMITS.providerHoldMaxMs);
 }
 
 function parseResetCandidate(text, now) {
@@ -258,10 +258,19 @@ function codexErrorLines(text) {
   return lines;
 }
 
-// --- The local record --------------------------------------------------
+// --- Provider holds ------------------------------------------------------
+//
+// A hold keeps a provider out of `providers: "auto"` reviews for a while:
+// `usage-limit` until the reset its CLI reported (or the re-probe window),
+// `provider-failure` for the re-probe window after it failed a review twice
+// and the review fell back to the other provider. A hold expires by itself,
+// and a provider that completes work has its hold removed.
+
+export const HOLD_REASONS = Object.freeze(['usage-limit', 'provider-failure']);
 
 function validRecord(value) {
   return Boolean(value && typeof value === 'object' &&
+    (value.reason === undefined || HOLD_REASONS.includes(value.reason)) &&
     typeof value.since === 'string' && Number.isFinite(Date.parse(value.since)) &&
     typeof value.retryAfter === 'string' && Number.isFinite(Date.parse(value.retryAfter)) &&
     (value.resetAt === null || (typeof value.resetAt === 'string' && Number.isFinite(Date.parse(value.resetAt)))) &&
@@ -271,64 +280,89 @@ function validRecord(value) {
 async function readRaw(paths) {
   let value;
   try {
-    value = await readJson(paths.providerUsageLimits, null);
+    value = await readJson(paths.providerHolds, null);
   } catch {
     // A corrupt record cannot hold a provider back.
     return {};
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(PROVIDERS.filter((provider) => validRecord(value[provider])).map((provider) => [provider, value[provider]]));
+  return Object.fromEntries(PROVIDERS.filter((provider) => validRecord(value[provider]))
+    .map((provider) => [provider, { reason: 'usage-limit', ...value[provider] }]));
 }
 
-/** Live usage-limit records by provider; expired records are not returned. */
-export async function readUsageLimits(paths, { now = Date.now() } = {}) {
+/** Live holds by provider; expired holds are not returned. */
+export async function readProviderHolds(paths, { now = Date.now() } = {}) {
   const raw = await readRaw(paths);
   return Object.fromEntries(Object.entries(raw).filter(([, record]) => Date.parse(record.retryAfter) > now));
 }
 
-/** One record for a provider that hit its limit at `now`. */
-export function usageLimitRecord({ resetAt = null, message = 'usage limit reached' } = {}, { now = Date.now() } = {}) {
-  const reset = Number.isFinite(resetAt) && resetAt > now ? Math.min(resetAt, now + LIMITS.usageLimitMaxHoldMs) : null;
+/** One hold for a provider that hit its limit, or failed, at `now`. */
+export function providerHoldRecord({ reason = 'usage-limit', resetAt = null, message } = {}, { now = Date.now() } = {}) {
+  const limit = reason === 'usage-limit';
+  // Only a usage limit has a reset time; a failure is re-probed.
+  const reset = limit && Number.isFinite(resetAt) && resetAt > now ? Math.min(resetAt, now + LIMITS.providerHoldMaxMs) : null;
   return {
+    reason: limit ? 'usage-limit' : 'provider-failure',
     since: new Date(now).toISOString(),
     resetAt: reset === null ? null : new Date(reset).toISOString(),
-    retryAfter: new Date(reset ?? now + LIMITS.usageLimitReprobeMs).toISOString(),
-    message: sanitize(message) || 'usage limit reached',
+    retryAfter: new Date(reset ?? now + LIMITS.providerHoldReprobeMs).toISOString(),
+    message: sanitize(message ?? '') || (limit ? 'usage limit reached' : 'provider failed'),
   };
 }
 
-/** Record the providers that hit their limit; other live records are kept. */
-export async function recordUsageLimits(paths, hits, { now = Date.now() } = {}) {
-  const records = await readUsageLimits(paths, { now });
+/** Record holds; other live holds are kept. A usage limit outranks a failure. */
+export async function recordProviderHolds(paths, hits, { now = Date.now() } = {}) {
+  const records = await readProviderHolds(paths, { now });
   const added = {};
   for (const hit of hits) {
     if (!PROVIDERS.includes(hit?.provider)) continue;
-    const record = usageLimitRecord(hit, { now });
-    // Several roles of one provider can report it: keep the latest reset.
-    if (!added[hit.provider] || Date.parse(record.retryAfter) > Date.parse(added[hit.provider].retryAfter)) added[hit.provider] = record;
+    const record = providerHoldRecord(hit, { now });
+    const held = added[hit.provider];
+    const stronger = !held || (record.reason === 'usage-limit' && held.reason !== 'usage-limit')
+      || (record.reason === held.reason && Date.parse(record.retryAfter) > Date.parse(held.retryAfter));
+    if (stronger) added[hit.provider] = record;
   }
   if (!Object.keys(added).length) return records;
   const next = { ...records, ...added };
-  await atomicWriteJson(paths.providerUsageLimits, next);
+  await atomicWriteJson(paths.providerHolds, next);
   return next;
 }
 
-/** A provider that just completed work has its record removed. */
-export async function clearUsageLimits(paths, providers) {
+/** A provider that just completed work has its hold removed. */
+export async function clearProviderHolds(paths, providers) {
   const raw = await readRaw(paths);
   const remaining = Object.fromEntries(Object.entries(raw).filter(([provider]) => !providers.includes(provider)));
   if (Object.keys(remaining).length === Object.keys(raw).length) return;
-  if (Object.keys(remaining).length) await atomicWriteJson(paths.providerUsageLimits, remaining);
-  else await removeStoredJson(paths.providerUsageLimits);
+  if (Object.keys(remaining).length) await atomicWriteJson(paths.providerHolds, remaining);
+  else await removeStoredJson(paths.providerHolds);
 }
 
 /** "codex usage limit reached; retry after 2026-11-10T15:00:00.000Z" */
-export function describeUsageLimit(provider, record) {
+export function describeProviderHold(provider, record) {
+  if (record.reason === 'provider-failure') {
+    return `${provider} failed a recent review and is held back; retry after ${record.retryAfter}`;
+  }
   return `${provider} usage limit reached; retry after ${record.retryAfter}${record.resetAt ? '' : ' (no readable reset time was reported; Sentinel tries it again then)'}`;
 }
 
-/** One line naming the provider a review left out for its usage limit. */
+/**
+ * The providers of `candidates` a hold keeps out of a review. Under `auto` a
+ * usage limit always does; a failure hold only while another candidate is
+ * free, so a past failure never leaves a review with no provider. An
+ * explicit requirement is refused by a usage limit only: failure holds are
+ * written under `auto` and are never a reason to refuse a required provider.
+ */
+export function heldProviders(mode, candidates, holds = {}) {
+  const limited = candidates.filter((provider) => holds[provider] && holds[provider].reason !== 'provider-failure');
+  if (mode !== 'auto') return limited;
+  const failed = candidates.filter((provider) => holds[provider]?.reason === 'provider-failure');
+  const free = candidates.filter((provider) => !holds[provider]);
+  return free.length ? [...limited, ...failed] : limited;
+}
+
+/** One line naming the provider a review left out, and why. */
 export function formatProviderFallback(fallback) {
   if (!fallback?.dropped?.length) return '';
-  return `Provider fallback: ${fallback.dropped.join(' and ')} left out after its usage limit (retry after ${fallback.retryAfter ?? fallback.resetAt ?? 'unknown'}); ${fallback.restarted ? 'the review restarted from scratch without it' : 'the review was planned without it'}.`;
+  const why = fallback.reason === 'provider-failure' ? 'it failed and its retry failed' : 'its usage limit';
+  return `Provider fallback: ${fallback.dropped.join(' and ')} left out after ${why} (retry after ${fallback.retryAfter ?? fallback.resetAt ?? 'unknown'}); ${fallback.restarted ? 'the review restarted from scratch without it' : 'the review was planned without it'}.`;
 }

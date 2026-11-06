@@ -46,17 +46,18 @@ import {
   providerCleanupFailureLatched,
   resetProviderCleanupLatch,
 } from './process.mjs';
-import { detectSubscriptions, usageLimitRefusal } from './subscriptions.mjs';
+import { detectSubscriptions, providerHoldRefusal } from './subscriptions.mjs';
 import { PROVIDERS, modelSettings, selectProviders, validateModelClients } from './modelSettings.mjs';
 import {
   USAGE_LIMIT_HALT_CODE,
-  clearUsageLimits,
-  describeUsageLimit,
+  clearProviderHolds,
+  describeProviderHold,
   isProviderUsageLimit,
   formatProviderFallback,
-  readUsageLimits,
-  recordUsageLimits,
-  usageLimitRecord,
+  heldProviders,
+  readProviderHolds,
+  recordProviderHolds,
+  providerHoldRecord,
 } from './usageLimits.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
 import {
@@ -957,55 +958,78 @@ export function priorBlockingFromReviews(reviews, deferrals) {
 export async function runGate(options = {}) {
   const context = await createGateContext(options.repoRoot || process.cwd(), { stateRoot: options.stateRoot });
   const release = await acquireReviewLease(context.paths);
-  try { return await runGateWithUsageLimitFallback(options); }
+  try { return await runGateWithProviderFallback(context.paths, options); }
   finally { await release(); }
 }
 
+/** A short, single-line account of why a provider failed. */
+function shortReason(reason, max = 160) {
+  const text = String(reason?.message || reason || 'unknown error').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 /**
- * The one restart after a usage limit, under the lease the caller
- * holds. Under `providers: "auto"`, a round in which a selected provider
- * reported its subscription's usage limit was failed closed and its evidence
- * discarded (its checkpoint too); the review then starts again ONCE, from
- * scratch, with the providers that remain, and its report and attestation
- * say which provider was dropped and why. An explicit requirement never
- * falls back, a second limit fails closed, and nothing restarts over a
- * process tree whose cleanup could not be verified.
+ * The one restart after a provider failed (owner's decision), under the
+ * lease the caller holds. Under `providers: "auto"`, a round that failed
+ * closed because a provider's work failed after its retry (any cause), or
+ * because a provider reported its usage limit (no retry), was failed closed
+ * with its own report. The review then starts again ONCE, from scratch (no
+ * kept shard review), with the providers that remain; the dropped provider
+ * is held out of later `auto` reviews for a while, and the report and the
+ * attestation say which provider was dropped and why. It never restarts
+ * under an explicit requirement, after a process-tree cleanup failure or
+ * with the launch fence up, for an error that is not a provider's (Git, a
+ * deterministic lane, the gate itself), when no provider remains, or twice.
  */
-async function runGateWithUsageLimitFallback(options) {
+async function runGateWithProviderFallback(paths, options) {
   try {
     return await runGateWithLease(options);
   } catch (error) {
-    const hits = Array.isArray(error?.usageLimits) ? error.usageLimits : [];
-    if (!hits.length || error.providerMode !== 'auto') throw error;
+    const failures = Array.isArray(error?.providerFailures) ? error.providerFailures : [];
+    if (!failures.length || error.providerMode !== 'auto') throw error;
     if (processTreeCleanupFailureCode(error) || providerCleanupFailureLatched() || newProcessLaunchesBlocked()) throw error;
-    const dropped = [...new Set(hits.map((hit) => hit.provider))];
+    const dropped = [...new Set(failures.map((failure) => failure.provider))];
     const remaining = (error.providerSelection ?? []).filter((provider) => !dropped.includes(provider));
-    const records = error.usageLimitRecords ?? {};
     if (!remaining.length) {
-      const resets = dropped.map((provider) => `${provider}: retry after ${records[provider]?.retryAfter ?? 'unknown'}`).join('; ');
-      error.message = `${error.message} No other selected provider remains, so the review cannot restart (${resets}).`;
+      error.message = `${error.message} No other selected provider remains, so the review cannot restart.`;
       throw error;
     }
+    // A usage limit outranks a failure of the same provider: it has a reset.
+    const failureOf = (provider) => failures.find((failure) => failure.provider === provider && failure.reason === 'usage-limit')
+      ?? failures.find((failure) => failure.provider === provider);
+    const recorded = error.providerHoldRecords ?? {};
+    const holds = Object.fromEntries(dropped.map((provider) => [provider, recorded[provider] ?? providerHoldRecord(failureOf(provider))]));
+    // A usage limit was recorded with the round; a failure is recorded only
+    // now, when the review falls back without it.
+    const failed = dropped.filter((provider) => holds[provider].reason === 'provider-failure');
+    if (failed.length) {
+      const written = await recordProviderHolds(paths, failed.map((provider) => failureOf(provider))).catch(() => null);
+      for (const provider of failed) if (written?.[provider]) holds[provider] = written[provider];
+    }
+    // Nothing of the discarded round is kept for a later review either.
+    if (error.reviewIdentity) await removeShardCheckpoint(paths, error.reviewIdentity).catch(() => {});
     const first = dropped[0];
-    const record = records[first] ?? usageLimitRecord(hits.find((hit) => hit.provider === first));
-    (options.progress ?? (() => {}))(`${dropped.join(' and ')} usage limit reached (retry after ${record.retryAfter}); restarting this review with ${remaining.join(' and ')} only.`);
+    const hold = holds[first];
+    const why = dropped.map((provider) => (holds[provider].reason === 'usage-limit'
+      ? `${provider} usage limit reached (retry after ${holds[provider].retryAfter})`
+      : `${provider} failed${failureOf(provider).retried ? ' twice' : ''} (${shortReason(failureOf(provider).message)})`)).join('; ');
+    (options.progress ?? (() => {}))(`${why}; restarting this review with ${remaining.join(' and ')} only.`);
     try {
       return await runGateWithLease({
         ...options,
         providerFallback: {
           dropped,
-          reason: 'usage-limit',
-          resetAt: record.resetAt,
-          retryAfter: record.retryAfter,
-          message: record.message,
+          reason: hold.reason,
+          resetAt: hold.resetAt,
+          retryAfter: hold.retryAfter,
+          message: hold.message,
           // Only the providers this round dropped, never a snapshot of
-          // every live record taken before the round cleared its successes.
-          limits: Object.fromEntries(dropped.map((provider) => [provider,
-            records[provider] ?? usageLimitRecord(hits.find((hit) => hit.provider === provider))])),
+          // every live hold taken before the round cleared its successes.
+          limits: holds,
         },
       });
     } catch (second) {
-      if (Array.isArray(second?.usageLimits) && second.usageLimits.length) {
+      if (Array.isArray(second?.providerFailures) && second.providerFailures.length) {
         second.message = `${second.message} The review had already restarted once without ${dropped.join(' and ')}; it does not restart again.`;
       }
       throw second;
@@ -1117,32 +1141,36 @@ async function runGateWithLease({
     override: riskOverride,
   });
   const providerMode = reviewPolicy.config.providers ?? 'auto';
-  // A provider that reported its usage limit is left out under `auto` until
-  // its record expires, and refuses an explicit requirement.
-  // `--force` tries it again; the restart keeps out the provider it dropped.
+  // A held provider (its usage limit, or a failure the review fell back
+  // from) is left out under `auto` until its hold expires; a usage limit
+  // refuses an explicit requirement. `--force` tries every provider again;
+  // the restart keeps out the providers it dropped.
   const usageLimits = risk.level === 'skip' || dryRun ? {} : {
     // On the restart the disk is read after the first round cleared the
     // providers that worked; under --force it is not read at all, and only
     // the providers that hit their limit in that round stay out.
-    ...(force ? {} : await readUsageLimits(context.paths)),
+    ...(force ? {} : await readProviderHolds(context.paths)),
     ...(providerFallback?.limits ?? {}),
   };
+  const dropped = providerFallback?.dropped ?? [];
   let subscriptions;
   let selectedProviders;
   if (risk.level === 'skip') {
     selectedProviders = [];
   } else if (dryRun || availableProviders !== undefined || reviewer !== runReviewer) {
-    const refusal = usageLimitRefusal(providerMode, usageLimits);
+    const candidates = (availableProviders ?? PROVIDERS).filter((provider) => !dropped.includes(provider));
+    const refusal = providerHoldRefusal(providerMode, usageLimits, providerMode === 'auto' ? candidates : undefined);
     if (refusal) throw new Error(refusal);
-    selectedProviders = selectProviders(providerMode, (availableProviders ?? PROVIDERS).filter((provider) => !usageLimits[provider]));
+    const held = heldProviders(providerMode, candidates, usageLimits);
+    selectedProviders = selectProviders(providerMode, candidates.filter((provider) => !held.includes(provider)));
   } else {
-    subscriptions = await detectSubscriptions(context.repoRoot, { mode: providerMode, usageLimits });
+    subscriptions = await detectSubscriptions(context.repoRoot, { mode: providerMode, holds: usageLimits, exclude: dropped });
     selectedProviders = subscriptions.selected;
   }
   if (subscriptions) validateModelClients(reviewPolicy.config, subscriptions);
-  // Nothing about the provider set is silent: a provider `auto`
-  // left out for its usage limit, at the start or by the restart, is named
-  // in the report and the attestation with its retry time.
+  // Nothing about the provider set is silent: a provider `auto` left out
+  // for a hold, at the start or by the restart, is named in the report and
+  // the attestation with the reason and its retry time.
   const limitedOut = providerMode === 'auto' && risk.level !== 'skip'
     ? PROVIDERS.filter((provider) => usageLimits[provider] && !selectedProviders.includes(provider)
       && (availableProviders === undefined || availableProviders.includes(provider)))
@@ -1150,8 +1178,18 @@ async function runGateWithLease({
   const providerFallbackEvidence = providerFallback
     ? { ...fallbackEvidence(providerFallback), restarted: true }
     : limitedOut.length
-      ? { ...fallbackEvidence({ dropped: limitedOut, reason: 'usage-limit', ...usageLimits[limitedOut[0]] }), restarted: false }
+      ? { ...fallbackEvidence({ dropped: limitedOut, ...usageLimits[limitedOut[0]] }), restarted: false }
       : null;
+  // Provider work that failed the round after its retry, by provider: under
+  // `auto` the review falls back without that provider (owner's decision).
+  const providerFailures = [];
+  const failedProvider = (provider, reason, retried = true) => {
+    // A usage limit is collected by the guard; work it stopped, a launch
+    // refusal and a cleanup failure are not this provider's failure.
+    if (PROVIDERS.includes(provider) && reason && !processTreeCleanupFailureCode(reason) && !stopsOnUsageLimit(reason)) {
+      providerFailures.push({ provider, reason: 'provider-failure', message: shortReason(reason, LIMITS.providerHoldMessageChars), retried });
+    }
+  };
   // Every provider call of this round goes through one guard: a
   // usage limit is collected, and once one is reported no further provider
   // work starts, since the round can no longer attest. A provider that
@@ -1807,6 +1845,7 @@ async function runGateWithLease({
       .filter(({ result }) => result.status !== 'fulfilled');
     if (failedShards.length) {
       const adjudicationCleanup = await haltAdjudication();
+      for (const { result, shard } of failedShards) failedProvider(shardProviders[shard.index], result.reason, result.retried);
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
@@ -1830,6 +1869,9 @@ async function runGateWithLease({
     }
     if (!reviews.length) {
       const adjudicationCleanup = await haltAdjudication();
+      settledLens.forEach((result, roleIndex) => {
+        if (result.status === 'rejected') failedProvider(plan.reviewers[roleIndex], result.reason, result.retried);
+      });
       const messages = [
         ...(reviewerErrors.length ? reviewerErrors : ['every required reviewer failed']),
         ...(adjudicationCleanup ? [adjudicationCleanup.message] : []),
@@ -1923,6 +1965,7 @@ async function runGateWithLease({
         };
         assertAdjudicationCoverage(candidates, adjudication);
       } catch (error) {
+        failedProvider(plan.coordinator, error);
         throw await buildFailClosedError({
           paths: context.paths,
           baseReport,
@@ -2162,24 +2205,34 @@ async function runGateWithLease({
       // What the restart needs, and the record `status` and `doctor` show
       // under any provider requirement. Under `auto` the checkpoint of a
       // round that mixed providers is not kept: the restart starts afresh.
-      error.usageLimits = usageLimitHits;
       error.providerMode = providerMode;
       error.providerSelection = selectedProviders;
       try {
-        const recorded = await recordUsageLimits(context.paths, usageLimitHits);
-        error.usageLimitRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, recorded[hit.provider]]));
+        const recorded = await recordProviderHolds(context.paths, usageLimitHits);
+        error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, recorded[hit.provider]]));
       } catch (recordError) {
-        error.usageLimitRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, usageLimitRecord(hit)]));
+        error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, providerHoldRecord(hit)]));
         error.message = `${error.message} The usage-limit record could not be written: ${recordError?.message || String(recordError)}`;
       }
       const limited = [...new Set(usageLimitHits.map((hit) => hit.provider))];
-      error.message = `${error.message} ${limited.map((provider) => describeUsageLimit(provider, error.usageLimitRecords[provider] ?? usageLimitRecord(usageLimitHits.find((hit) => hit.provider === provider)))).join('; ')}.`;
+      error.message = `${error.message} ${limited.map((provider) => describeProviderHold(provider, error.providerHoldRecords[provider] ?? providerHoldRecord(usageLimitHits.find((hit) => hit.provider === provider)))).join('; ')}.`;
       if (providerMode === 'auto') await removeShardCheckpoint(context.paths, identity).catch(() => {});
+    }
+    if ((usageLimitHits.length || providerFailures.length) && error && typeof error === 'object') {
+      // Every provider whose work failed this round, a usage limit first:
+      // what the restart under `auto` needs, and nothing else.
+      error.providerFailures = [
+        ...usageLimitHits.map((hit) => ({ ...hit, reason: 'usage-limit', retried: false })),
+        ...providerFailures,
+      ];
+      error.providerMode = providerMode;
+      error.providerSelection = selectedProviders;
+      error.reviewIdentity = identity;
     }
     throw error;
   } finally {
     const cleared = [...succeededProviders].filter((provider) => !usageLimitHits.some((hit) => hit.provider === provider));
-    if (cleared.length) await clearUsageLimits(context.paths, cleared).catch(() => {});
+    if (cleared.length) await clearProviderHolds(context.paths, cleared).catch(() => {});
     const cleanupErrors = [];
     for (const cleanup of [bundle?.cleanup, worktree.cleanup]) {
       if (!cleanup) continue;

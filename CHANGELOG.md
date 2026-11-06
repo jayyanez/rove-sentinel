@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Under `auto`, a review falls back to the other provider when one fails.** A round
+  that fails because a provider's work failed after its one retry (a shard or lens
+  reviewer, or the adjudicator; an error, a timeout, malformed output or a review still
+  incomplete), for Claude and Codex alike, restarts once from scratch without that
+  provider, the way a usage limit does (below). The provider is held out of `auto` reviews
+  for an hour, or until it completes work, under `providerHolds` in `status` and `doctor`
+  (a usage limit is a hold too, with `reason: "usage-limit"`).
+  `providerFallback.reason` is `"provider-failure"`. A process-tree cleanup failure, the
+  launch fence, a failed deterministic lane and an error that is not a provider's never
+  fall back; a tolerated scout or hypothesis failure stays tolerated; `both`, `claude` and
+  `codex` never fall back.
 - **A provider out of its usage allowance no longer blocks every push under `auto`.**
   Sentinel checked only a CLI's version and sign-in, so a provider that had used up its
   subscription's allowance was still selected, and every review failed closed until it

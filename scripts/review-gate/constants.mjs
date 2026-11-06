@@ -109,10 +109,10 @@ export const LIMITS = Object.freeze({
   // `providers: "auto"` until the reset it reported, or, when it named none
   // that could be read, for this long, after which it is tried again. A
   // reported reset further away than the hold bound is held only that long.
-  usageLimitReprobeMs: 60 * 60 * 1000,
-  usageLimitMaxHoldMs: 8 * 24 * 60 * 60 * 1000,
+  providerHoldReprobeMs: 60 * 60 * 1000,
+  providerHoldMaxMs: 8 * 24 * 60 * 60 * 1000,
   // How much of the provider's own usage-limit message a record keeps.
-  usageLimitMessageChars: 300,
+  providerHoldMessageChars: 300,
   // How much of a reviewer's own summary an incomplete-review error keeps.
   incompleteSummaryChars: 400,
   shardMaxCandidates: 8,

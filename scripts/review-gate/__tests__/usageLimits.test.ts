@@ -12,11 +12,14 @@ import { detectSubscriptions } from '../subscriptions.mjs';
 import {
   ProviderUsageLimitError,
   classifyUsageLimit,
-  clearUsageLimits,
+  clearProviderHolds,
+  describeProviderHold,
+  heldProviders,
   isProviderUsageLimit,
   parseResetTime,
-  readUsageLimits,
-  recordUsageLimits,
+  providerHoldRecord,
+  readProviderHolds,
+  recordProviderHolds,
   usageLimitFromFailure,
 } from '../usageLimits.mjs';
 
@@ -96,7 +99,7 @@ describe('reset times', () => {
     expect(parseResetTime('Claude AI usage limit reached|1000000000', { now })).toBeNull();
     expect(parseResetTime("You've hit your usage limit.", { now })).toBeNull();
     expect(parseResetTime('resets Nov 5 at 10am (UTC)', { now })).toBeNull();
-    expect(parseResetTime('try again in 30 days', { now })).toBe(now + LIMITS.usageLimitMaxHoldMs);
+    expect(parseResetTime('try again in 30 days', { now })).toBe(now + LIMITS.providerHoldMaxMs);
   });
 });
 
@@ -203,30 +206,30 @@ describe('provider runners', () => {
 describe('the usage-limit record', () => {
   it('records, expires by itself, keeps the latest reset and is cleared by a provider that worked', async () => {
     const paths = await ensureState(await temporaryDirectory());
-    await recordUsageLimits(paths, [
+    await recordProviderHolds(paths, [
       { provider: 'codex', resetAt: null, message: 'x'.repeat(1000) },
       { provider: 'claude', resetAt: now + 5 * HOUR, message: "You've hit your weekly limit" },
       { provider: 'claude', resetAt: now + 2 * HOUR, message: 'earlier' },
     ], { now });
-    const live = await readUsageLimits(paths, { now });
-    expect(live.codex).toMatchObject({ resetAt: null, retryAfter: new Date(now + LIMITS.usageLimitReprobeMs).toISOString() });
-    expect(live.codex.message).toHaveLength(LIMITS.usageLimitMessageChars);
+    const live = await readProviderHolds(paths, { now });
+    expect(live.codex).toMatchObject({ resetAt: null, retryAfter: new Date(now + LIMITS.providerHoldReprobeMs).toISOString() });
+    expect(live.codex.message).toHaveLength(LIMITS.providerHoldMessageChars);
     expect(live.claude).toMatchObject({ resetAt: new Date(now + 5 * HOUR).toISOString(), message: "You've hit your weekly limit" });
     // The unknown reset is re-probed after the window; the known one holds.
-    expect(Object.keys(await readUsageLimits(paths, { now: now + LIMITS.usageLimitReprobeMs + 1 }))).toEqual(['claude']);
-    expect(await readUsageLimits(paths, { now: now + 5 * HOUR + 1 })).toEqual({});
-    await clearUsageLimits(paths, ['claude']);
-    expect(Object.keys(await readUsageLimits(paths, { now }))).toEqual(['codex']);
-    await clearUsageLimits(paths, ['codex']);
-    await expect(readFile(paths.providerUsageLimits, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(Object.keys(await readProviderHolds(paths, { now: now + LIMITS.providerHoldReprobeMs + 1 }))).toEqual(['claude']);
+    expect(await readProviderHolds(paths, { now: now + 5 * HOUR + 1 })).toEqual({});
+    await clearProviderHolds(paths, ['claude']);
+    expect(Object.keys(await readProviderHolds(paths, { now }))).toEqual(['codex']);
+    await clearProviderHolds(paths, ['codex']);
+    await expect(readFile(paths.providerHolds, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('reads a corrupt record as no record', async () => {
     const paths = await ensureState(await temporaryDirectory());
-    await writeFile(paths.providerUsageLimits, '{not json');
-    expect(await readUsageLimits(paths, { now })).toEqual({});
-    await writeFile(paths.providerUsageLimits, JSON.stringify({ codex: { since: 'never' }, gemini: {} }));
-    expect(await readUsageLimits(paths, { now })).toEqual({});
+    await writeFile(paths.providerHolds, '{not json');
+    expect(await readProviderHolds(paths, { now })).toEqual({});
+    await writeFile(paths.providerHolds, JSON.stringify({ codex: { since: 'never' }, gemini: {} }));
+    expect(await readProviderHolds(paths, { now })).toEqual({});
   });
 });
 
@@ -246,20 +249,63 @@ describe('subscription selection with usage-limit records', () => {
 
   it('leaves an exhausted provider out under auto, without probing it', async () => {
     const run = probe();
-    const result = await detectSubscriptions('repo', { run, env, usageLimits: { codex: record(96) } });
+    const result = await detectSubscriptions('repo', { run, env, holds: { codex: record(96) } });
     expect(result.selected).toEqual(['claude']);
     expect(result.availability.codex).toMatchObject({ available: false, error: expect.stringMatching(/^codex usage limit reached; retry after 2026-11-10T12:00:00.000Z$/) });
     expect(run.mock.calls.every(([command]) => command === 'claude')).toBe(true);
   });
 
   it('names every reset time when no provider remains, and never falls back under an explicit requirement', async () => {
-    await expect(detectSubscriptions('repo', { run: probe(), env, usageLimits: { claude: record(2), codex: record(null) } }))
+    await expect(detectSubscriptions('repo', { run: probe(), env, holds: { claude: record(2), codex: record(null) } }))
       .rejects.toThrow(/No review provider is available: claude usage limit reached; retry after 2026-11-06T14:00:00.000Z; codex usage limit reached; retry after 2026-11-06T13:00:00.000Z \(no readable reset time/);
-    await expect(detectSubscriptions('repo', { mode: 'both', run: probe(), env, usageLimits: { codex: record(96) } }))
+    await expect(detectSubscriptions('repo', { mode: 'both', run: probe(), env, holds: { codex: record(96) } }))
       .rejects.toThrow(/Provider requirement both cannot be satisfied: codex usage limit reached; retry after 2026-11-10T12:00:00.000Z\. Sentinel does not fall back/);
-    await expect(detectSubscriptions('repo', { mode: 'codex', run: probe(), env, usageLimits: { codex: record(96) } }))
+    await expect(detectSubscriptions('repo', { mode: 'codex', run: probe(), env, holds: { codex: record(96) } }))
       .rejects.toThrow(/Provider requirement codex cannot be satisfied/);
     // A record for a provider the requirement does not name changes nothing.
-    expect((await detectSubscriptions('repo', { mode: 'claude', run: probe(), env, usageLimits: { codex: record(96) } })).selected).toEqual(['claude']);
+    expect((await detectSubscriptions('repo', { mode: 'claude', run: probe(), env, holds: { codex: record(96) } })).selected).toEqual(['claude']);
+  });
+});
+
+describe('failure holds', () => {
+  const env = { ANTHROPIC_API_KEY: 'do-not-use', OPENAI_API_KEY: 'do-not-use' };
+  const failure = { reason: 'provider-failure', since: new Date(now).toISOString(), resetAt: null, retryAfter: new Date(now + HOUR).toISOString(), message: 'timed out' };
+  const limited = { ...failure, reason: 'usage-limit' };
+
+  it('hold a provider out of auto only while another is free, and never refuse an explicit requirement', () => {
+    expect(heldProviders('auto', ['claude', 'codex'], { codex: failure })).toEqual(['codex']);
+    expect(heldProviders('auto', ['claude', 'codex'], { claude: failure, codex: failure })).toEqual([]);
+    expect(heldProviders('auto', ['claude', 'codex'], { claude: limited, codex: failure })).toEqual(['claude']);
+    expect(heldProviders('auto', ['codex'], { codex: failure })).toEqual([]);
+    expect(heldProviders('codex', ['codex'], { codex: failure })).toEqual([]);
+    expect(heldProviders('both', ['claude', 'codex'], { codex: limited })).toEqual(['codex']);
+  });
+
+  it('give a failure no reset, let a usage limit outrank it, and describe both', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    expect(providerHoldRecord({ reason: 'provider-failure', resetAt: now + 5 * HOUR, message: 'x' }, { now }))
+      .toMatchObject({ reason: 'provider-failure', resetAt: null, retryAfter: new Date(now + LIMITS.providerHoldReprobeMs).toISOString() });
+    await recordProviderHolds(paths, [
+      { provider: 'codex', reason: 'provider-failure', message: 'timed out' },
+      { provider: 'codex', reason: 'usage-limit', resetAt: now + 5 * HOUR, message: 'limit' },
+    ], { now });
+    const { codex } = await readProviderHolds(paths, { now });
+    expect(codex).toMatchObject({ reason: 'usage-limit', message: 'limit' });
+    expect(describeProviderHold('codex', codex)).toMatch(/^codex usage limit reached; retry after/);
+    expect(describeProviderHold('codex', failure)).toMatch(/^codex failed a recent review and is held back; retry after/);
+  });
+
+  it('still selects a failure-held provider when it is the only one installed', async () => {
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (command === 'claude') throw new Error('ENOENT');
+      return { code: 0, stderr: '', stdout: args[0] === '--version' ? 'codex 1.0' : 'Logged in using ChatGPT' };
+    });
+    expect((await detectSubscriptions('repo', { run, env, holds: { codex: failure } })).selected).toEqual(['codex']);
+    // A restart's dropped provider is never probed.
+    const both = vi.fn(async (command: string, args: string[]) => ({
+      code: 0, stderr: '', stdout: args[0] === '--version' ? `${command} 1.0` : command === 'claude' ? '{"loggedIn":true,"authMethod":"claude.ai"}' : 'Logged in using ChatGPT',
+    }));
+    expect((await detectSubscriptions('repo', { run: both, env, exclude: ['codex'] })).selected).toEqual(['claude']);
+    expect(both.mock.calls.every(([command]) => command === 'claude')).toBe(true);
   });
 });

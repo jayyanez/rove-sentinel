@@ -1047,8 +1047,11 @@ describe('shared review gate integration', () => {
       reviewer,
       hypothesisReviewer,
       coordinator: vi.fn(),
-    })).rejects.toThrow(/shard reviewer\(s\) failed after retry/);
-    expect(reviewer).toHaveBeenCalledTimes(2);
+    })).rejects.toThrow(/shard reviewer\(s\) failed after retry[\s\S]*does not restart again/);
+    // Under auto the review falls back once to the other provider, whose
+    // shard dies after its retry too: two attempts for each provider.
+    expect(reviewer).toHaveBeenCalledTimes(4);
+    expect(reviewer.mock.calls.map(([call]) => call.provider)).toEqual(['claude', 'claude', 'codex', 'codex']);
   });
 
   it('hands the scout the first pool slot so eight shards cannot serialize it', async () => {

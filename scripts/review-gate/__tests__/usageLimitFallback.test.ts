@@ -9,7 +9,7 @@ import { reviewPolicySnapshot } from '../context.mjs';
 import { formatGateResult, runGate } from '../gate.mjs';
 import { renderGateComment } from '../github.mjs';
 import { ensureState, readReport } from '../storage.mjs';
-import { ProviderUsageLimitError, readUsageLimits, recordUsageLimits } from '../usageLimits.mjs';
+import { ProviderUsageLimitError, readProviderHolds, recordProviderHolds } from '../usageLimits.mjs';
 
 // Real repositories and Git worktrees: Windows needs more than the default.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -97,7 +97,7 @@ describe('a provider that reaches its usage limit during an auto review', () => 
     expect(result.shards.every((shard: { reused?: boolean; provider: string }) => !shard.reused && shard.provider === 'claude')).toBe(true);
     // The record stays for status, doctor and the next review.
     const paths = await ensureState(stateRoot);
-    expect(await readUsageLimits(paths)).toMatchObject({ codex: { message: expect.stringContaining('usage limit') } });
+    expect(await readProviderHolds(paths)).toMatchObject({ codex: { message: expect.stringContaining('usage limit') } });
     // The report and the attestation say so; the PASS is ordinary auto
     // single-provider evidence for this commit and policy.
     const report = await readReport(paths, result.reportId);
@@ -124,7 +124,7 @@ describe('a provider that reaches its usage limit during an auto review', () => 
       deterministicLanes: async () => ({ lanes: [], findings: [] }),
     })).rejects.toThrow(/claude reported its subscription usage limit[\s\S]*claude usage limit reached; retry after [\s\S]*does not restart again/);
     expect(restarted).toBe(true);
-    expect(Object.keys(await readUsageLimits(await ensureState(stateRoot))).sort()).toEqual(['claude', 'codex']);
+    expect(Object.keys(await readProviderHolds(await ensureState(stateRoot))).sort()).toEqual(['claude', 'codex']);
     expect(worktreeCount(root)).toBe(1);
   });
 
@@ -156,7 +156,7 @@ describe('a provider that reaches its usage limit during an auto review', () => 
     // review that met a limit had no provider left to restart with.
     const { root, base, head, stateRoot } = await makeRepository();
     const paths = await ensureState(stateRoot);
-    await recordUsageLimits(paths, [{ provider: 'claude', resetAt: Date.now() + 4 * 24 * 3_600_000, message: 'stale' }]);
+    await recordProviderHolds(paths, [{ provider: 'claude', resetAt: Date.now() + 4 * 24 * 3_600_000, message: 'stale' }]);
     const shardReviewer = vi.fn(async ({ provider, roleIndex }) => {
       if (provider === 'codex') {
         await new Promise((resolve) => setTimeout(resolve, 50));
@@ -171,7 +171,7 @@ describe('a provider that reaches its usage limit during an auto review', () => 
       deterministicLanes: async () => ({ lanes: [], findings: [] }),
     });
     expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], restarted: true } });
-    expect(Object.keys(await readUsageLimits(paths))).toEqual(['codex']);
+    expect(Object.keys(await readProviderHolds(paths))).toEqual(['codex']);
   });
 
   it('does not restart when every selected provider reached its limit', async () => {
@@ -191,7 +191,7 @@ describe('a provider that reaches its usage limit during an auto review', () => 
 describe('usage limits under an explicit provider requirement', () => {
   it('refuses to start without the required provider and names its reset', async () => {
     const { root, base, head, stateRoot } = await makeRepository();
-    await recordUsageLimits(await ensureState(stateRoot), [{ provider: 'codex', resetAt: Date.now() + 4 * 24 * 3_600_000, message: 'limit' }]);
+    await recordProviderHolds(await ensureState(stateRoot), [{ provider: 'codex', resetAt: Date.now() + 4 * 24 * 3_600_000, message: 'limit' }]);
     const shardReviewer = vi.fn(async (args) => reviewed(args));
     await expect(runGate({
       repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy('both'),
@@ -211,7 +211,7 @@ describe('usage limits under an explicit provider requirement', () => {
       deterministicLanes: async () => ({ lanes: [], findings: [] }),
     })).rejects.toThrow(/explicit provider requirement codex does not fall back[\s\S]*codex usage limit reached; retry after/);
     expect(shardReviewer.mock.calls.every(([call]) => call.provider === 'codex')).toBe(true);
-    expect(Object.keys(await readUsageLimits(await ensureState(stateRoot)))).toEqual(['codex']);
+    expect(Object.keys(await readProviderHolds(await ensureState(stateRoot)))).toEqual(['codex']);
     expect(worktreeCount(root)).toBe(1);
   });
 });
@@ -220,7 +220,7 @@ describe('a usage-limit record at the start of an auto review', () => {
   it('plans without that provider and says so; --force tries it again and a success clears it', async () => {
     const { root, base, head, stateRoot } = await makeRepository();
     const paths = await ensureState(stateRoot);
-    await recordUsageLimits(paths, [{ provider: 'codex', resetAt: null, message: 'limit' }]);
+    await recordProviderHolds(paths, [{ provider: 'codex', resetAt: null, message: 'limit' }]);
     const shardReviewer = vi.fn(async (args) => reviewed(args));
     const options = {
       repoRoot: root, stateRoot, base, head, author: 'claude', risk: 'high', policy: policy(),
@@ -235,6 +235,182 @@ describe('a usage-limit record at the start of an auto review', () => {
     const forced = await runGate({ ...options, force: true });
     expect(forced).toMatchObject({ status: 'pass', providerSelection: ['claude', 'codex'] });
     expect(forced.providerFallback).toBeUndefined();
-    expect(await readUsageLimits(paths)).toEqual({});
+    expect(await readProviderHolds(paths)).toEqual({});
+  });
+});
+
+describe('any provider failure after its retry, under auto (owner decision)', () => {
+  const common = {
+    risk: 'high',
+    scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+    deterministicLanes: async () => ({ lanes: [], findings: [] }),
+  };
+  const failing = (bad: string, error = () => new Error('Provider must explicitly report review_complete.')) =>
+    vi.fn(async ({ provider, roleIndex }) => {
+      if (provider === bad) throw error();
+      return reviewed({ provider, roleIndex });
+    });
+
+  it('falls back to Claude when a Codex shard fails twice, and records why', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const shardReviewer = failing('codex');
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, progress: (line: string) => progress.push(line),
+    });
+    expect(result).toMatchObject({
+      status: 'pass', providerSelection: ['claude'], modelDiversity: 'single-provider',
+      providerFallback: { dropped: ['codex'], reason: 'provider-failure', restarted: true, resetAt: null },
+    });
+    expect(shardReviewer.mock.calls.filter(([call]) => call.provider === 'codex')).toHaveLength(2);
+    expect(progress).toContain('codex failed twice (Provider must explicitly report review_complete.); restarting this review with claude only.');
+    expect(formatGateResult(result)).toContain('codex left out after it failed and its retry failed');
+    const holds = await readProviderHolds(await ensureState(stateRoot));
+    expect(holds).toMatchObject({ codex: { reason: 'provider-failure', resetAt: null, message: expect.stringContaining('review_complete') } });
+    expect(holds.claude).toBeUndefined();
+    expect(worktreeCount(root)).toBe(1);
+  });
+
+  it('falls back to Codex when a Claude shard fails twice', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const shardReviewer = failing('claude', () => new Error('claude exceeded its 300000ms time limit'));
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'codex', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer,
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['codex'], providerFallback: { dropped: ['claude'], reason: 'provider-failure' } });
+    expect(Object.keys(await readProviderHolds(await ensureState(stateRoot)))).toEqual(['claude']);
+  });
+
+  it('falls back when the coordinator fails twice', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const shardReviewer = vi.fn(async ({ provider, roleIndex, shard }) => ({
+      provider, roleIndex, summary: 'One candidate.',
+      candidates: [{
+        id: `${provider}-${roleIndex}-0`, provider, roleIndex, title: `Defect in ${shard.files[0]}`, priority: 'P2', confidence: 90,
+        category: 'state', file: shard.files[0], line: 1, scenario: 's', evidence: 'e', proposed_test: 't',
+      }],
+    }));
+    const coordinator = vi.fn(async ({ provider, candidates }) => {
+      if (provider === 'codex') throw new Error('Coordinator findings must be an array.');
+      return {
+        summary: 'Dismissed.',
+        findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
+          candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+          disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+        })),
+      };
+    });
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, coordinator,
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
+    expect(coordinator.mock.calls.some(([call]) => call.provider === 'claude')).toBe(true);
+    expect(coordinator.mock.calls.filter(([call]) => call.provider === 'codex').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('fails closed when the other provider fails on the restart too', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    let restarted = false;
+    const shardReviewer = vi.fn(async ({ provider, roleIndex }) => {
+      if (provider === 'codex' || restarted) throw new Error(`${provider} exited with code 1`);
+      return reviewed({ provider, roleIndex });
+    });
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer,
+      progress: (line: string) => { if (line.includes('restarting this review')) restarted = true; },
+    })).rejects.toThrow(/failed after retry[\s\S]*does not restart again/);
+    expect(restarted).toBe(true);
+    // Only the provider the review fell back from is held.
+    expect(Object.keys(await readProviderHolds(await ensureState(stateRoot)))).toEqual(['codex']);
+  });
+
+  it('does not fall back over a process-tree cleanup failure, and keeps its code', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], progress: (line: string) => progress.push(line),
+      shardReviewer: failing('codex', () => Object.assign(new Error('codex tree could not be verified'), { code: 'PROCESS_TREE_CLEANUP_FAILED' })),
+    })).rejects.toMatchObject({ code: 'PROCESS_TREE_CLEANUP_FAILED' });
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('never falls back under an explicit requirement, and holds nothing', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const shardReviewer = failing('codex');
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy('both'),
+      availableProviders: ['claude', 'codex'], shardReviewer, progress: (line: string) => progress.push(line),
+    })).rejects.toThrow(/failed after retry/);
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('keeps tolerating a failed scout without a fallback', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer: vi.fn(async (args) => reviewed(args)),
+      scout: async () => { throw new Error('scout timed out'); },
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude', 'codex'] });
+    expect(result.providerFallback).toBeUndefined();
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('does not fall back for an error that is not a provider failure', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const shardReviewer = failing('codex');
+    // A deterministic lane (here a Git failure inside it) fails the round
+    // closed before any provider's failure is weighed.
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, progress: (line: string) => progress.push(line),
+      deterministicLanes: async () => { throw new Error('git exited with code 128: fatal: bad object'); },
+    })).rejects.toThrow(/deterministic lane failed/);
+    // A Git error before any provider work.
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head: 'no-such-ref', author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, progress: (line: string) => progress.push(line),
+    })).rejects.toThrow();
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('skips a failed provider in the next auto review until it is cleared by a success', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const paths = await ensureState(stateRoot);
+    const run = (target: string, shardReviewer: ReturnType<typeof vi.fn>, extra = {}) => runGate({
+      ...common, repoRoot: root, stateRoot, base, head: target, author: 'claude', policy: policy(),
+      availableProviders: ['claude', 'codex'], shardReviewer, ...extra,
+    });
+    await run(head, failing('codex'));
+    expect(Object.keys(await readProviderHolds(paths))).toEqual(['codex']);
+    const commit = async (name: string) => {
+      await writeFile(path.join(root, 'src', `${name}.ts`), `export const ${name} = 1;\n`);
+      git(root, 'add', '.');
+      git(root, 'commit', '-m', name);
+      return git(root, 'rev-parse', 'HEAD');
+    };
+    const next = vi.fn(async (args) => reviewed(args));
+    const second = await run(await commit('c'), next);
+    expect(second).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure', restarted: false } });
+    expect(next.mock.calls.every(([call]) => call.provider === 'claude')).toBe(true);
+    // A failure hold never leaves a review without a provider.
+    const alone = vi.fn(async (args) => reviewed(args));
+    expect(await run(await commit('e'), alone, { availableProviders: ['codex'] })).toMatchObject({ status: 'pass', providerSelection: ['codex'] });
+    // That success cleared it; hold it again, then --force tries every
+    // provider and the success clears it as well.
+    await recordProviderHolds(paths, [{ provider: 'codex', reason: 'provider-failure', message: 'failed' }]);
+    const third = await run(await commit('d'), vi.fn(async (args) => reviewed(args)), { force: true });
+    expect(third).toMatchObject({ status: 'pass', providerSelection: ['claude', 'codex'] });
+    expect(await readProviderHolds(paths)).toEqual({});
   });
 });

@@ -45,7 +45,7 @@ When a review still fails, read the report's own account of why
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
-| A provider's usage limit (unreleased) | Left out of `auto` reviews until the reset it reported, or for 1 hour when none could be read, at most 8 days; one restart per review | Under `auto` the review restarts once without it; under an explicit requirement it fails until then |
+| A provider that fails a round, or reports its usage limit (unreleased) | One restart per review. Held out of `auto` reviews for 1 hour after a failure; until the reported reset after a usage limit (1 hour when none could be read, at most 8 days) | Under `auto` the review restarts once without it; a second failure fails closed. An explicit requirement never falls back, and a usage limit refuses it until the reset |
 
 The exact values are in `scripts/review-gate/constants.mjs`; the
 [architecture](architecture.md) explains each stage.

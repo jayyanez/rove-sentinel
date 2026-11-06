@@ -78,9 +78,9 @@ export function sentinelLimits() {
         text: `A round that failed closed keeps its completed shard reviews for ${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours for the exact head; a rerun reviews only the rest.`,
       },
       {
-        id: 'usage-limit',
-        limit: `until the reported reset, or ${minutes(LIMITS.usageLimitReprobeMs)}`,
-        text: `A provider that reports its subscription's usage limit is left out of providers: auto reviews until the reset it reported, or for ${minutes(LIMITS.usageLimitReprobeMs)} when none could be read (at most ${Math.round(LIMITS.usageLimitMaxHoldMs / 86_400_000)} days); a review that meets one restarts once without it, and says so. Under both, claude or codex it fails until then. gate --force tries it again; status lists the records.`,
+        id: 'provider-fallback',
+        limit: '1 restart per review',
+        text: `Under providers: auto, a review whose provider work fails after its retry (any cause), or reports its usage limit (no retry), restarts once from scratch without that provider, and says so; a second failure fails closed. The provider is then held out of auto reviews for ${minutes(LIMITS.providerHoldReprobeMs)} after a failure, or until the reset it reported after a usage limit (${minutes(LIMITS.providerHoldReprobeMs)} when none could be read, at most ${Math.round(LIMITS.providerHoldMaxMs / 86_400_000)} days), or until it completes work. Under both, claude or codex nothing falls back, and a usage limit refuses the review until its reset. gate --force tries every provider; status lists the holds.`,
       },
     ],
     superseded: [
