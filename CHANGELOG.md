@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.18.0 — review accounts
+
+A user with several accounts of one CLI can declare them, and a review chooses among them:
+never the author's own while another is usable, the least recently used first, and the next
+account before a provider is dropped. With no accounts file, reviews are unchanged and nothing
+needs doing. To use accounts, write the per-user accounts file ([models](docs/models.md#accounts)).
 
 - **Review accounts: several logins of one CLI.** A user with several Claude Code
   (`CLAUDE_CONFIG_DIR`) or Codex (`CODEX_HOME`) accounts declares them, each with a label,
