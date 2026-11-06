@@ -1,5 +1,20 @@
 # Standalone validation record
 
+## 1.18.0 review accounts — 2026-11-06
+
+Deterministic tests cover the accounts file and its validation; that no file leaves reviews
+unchanged; the author's account kept out while another is usable, and used last, on the record;
+holds and rotation per account; the next account before a provider is dropped, under every
+requirement; the review target pinned across restarts; each reviewer's environment carrying
+only its account's folder; the refusal of overriding credential variables; probes that settle
+before a cleanup failure is raised; the accounts file carried by every watcher start and
+rollback; and labels, never folders, in the evidence. 982 tests passed on Windows, and the
+package smoke passed. Each change went through the review gate.
+
+Live: each account's sign-in was read through the CLIs' own status commands with its folder.
+Not yet live: no review has run under a second account of either CLI, and
+`doctor --test-models` probes models with the inherited login only.
+
 ## 1.17.0 a review that goes on when a provider cannot — 2026-11-06
 
 Deterministic tests cover the classification of usage-limit errors, including a completed

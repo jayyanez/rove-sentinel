@@ -10,7 +10,8 @@ import {
   REVIEWER_SCHEMA,
   SCOUT_SCHEMA,
 } from './constants.mjs';
-import { processTreeCleanupFailureCode, runProcess, subscriptionEnvironment } from './process.mjs';
+import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
+import { providerEnvironment } from './accounts.mjs';
 import { markProviderFailure, usageLimitFromFailure } from './usageLimits.mjs';
 import { shardTimeoutMs, splitShardPatch } from './shards.mjs';
 
@@ -800,6 +801,9 @@ ${inlineBlock(inline, candidatesPath.split(/[\\/]/).pop(), candidatesText)}` : '
 async function runClaudeJsonOnce({
   checkout, bundle, schema, prompt, profile, timeoutMs, runner,
 }) {
+  // Only this provider's review account, when one was chosen. A refusal
+  // (an overriding credential variable) is the host's, never the provider's.
+  const env = providerEnvironment('claude', bundle.accounts?.claude);
   try {
     const result = await runner(
       'claude',
@@ -813,7 +817,7 @@ async function runClaudeJsonOnce({
       }),
       {
         cwd: bundle.directory,
-        env: subscriptionEnvironment(),
+        env,
         timeoutMs,
         input: prompt,
       },
@@ -836,6 +840,8 @@ async function runClaudeJsonOnce({
 async function runCodexJsonOnce({
   checkout, bundle, schemaPath, outputPath, prompt, profile, timeoutMs, runner,
 }) {
+  // As for Claude: the account's environment, refused outside the provider's run.
+  const env = providerEnvironment('codex', bundle.accounts?.codex);
   let completed = null;
   try {
     completed = await runner(
@@ -851,7 +857,7 @@ async function runCodexJsonOnce({
       }),
       {
         cwd: bundle.directory,
-        env: subscriptionEnvironment(),
+        env,
         timeoutMs,
         input: prompt,
       },
@@ -934,7 +940,9 @@ assignment once in a fresh context at the ceiling. Still return all required
 JSON fields. An escalation cannot increase the tool or candidate bounds.
 ${COMPLETENESS_CONTRACT}`;
   const invoke = async (effort, currentPrompt, escalationReason = null) => {
-    const record = { provider, role: profile.role ?? null, model: profile.model, effort, escalationReason, status: 'running' };
+    // An account's label, never its folder, when the review chose one.
+    const account = bundle.accounts?.[provider]?.label;
+    const record = { provider, ...(account ? { account } : {}), role: profile.role ?? null, model: profile.model, effort, escalationReason, status: 'running' };
     records?.push(record);
     try {
       // The run's own errors carry their mark; what follows checks the

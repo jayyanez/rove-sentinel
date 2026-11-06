@@ -199,6 +199,88 @@ after an allowance was raised. Which provider messages are recognized as a
 usage limit, and which of them were not yet seen from a live CLI, is in the
 [plan](plans/provider-usage-limit-fallback.md).
 
+## Accounts
+
+You may have several accounts (subscriptions) of the same CLI. Claude Code
+chooses its account by the folder in `CLAUDE_CONFIG_DIR` (default
+`~/.claude`), and Codex by the folder in `CODEX_HOME` (default `~/.codex`).
+Declare the accounts Sentinel may review with in a per-user accounts file,
+each with a label of your own:
+
+```json
+{
+  "schemaVersion": 1,
+  "accounts": {
+    "claude": [
+      { "label": "personal", "configDir": "<absolute path of a CLAUDE_CONFIG_DIR>" },
+      { "label": "team", "configDir": "<absolute path of another one>" }
+    ],
+    "codex": [
+      { "label": "main", "home": "<absolute path of a CODEX_HOME>" }
+    ]
+  }
+}
+```
+
+The file is machine-local and never part of a repository or its policy
+digest. Sentinel reads it from `--accounts <file>` (`gate`, `status`,
+`doctor`, `install`), else the file `ROVE_SENTINEL_ACCOUNTS` names, else
+`accounts.json` beside its per-repository state:
+`%LOCALAPPDATA%\Rove\shared-review-gate\` on Windows,
+`~/Library/Application Support/Rove/shared-review-gate/` on macOS. The
+watcher reads, for each review, the file its installation named:
+`install --accounts` (or `ROVE_SENTINEL_ACCOUNTS` at install) records it, and
+every start of that watcher (its scheduled task or LaunchAgent, a start by the
+push hook, an install's rollback) uses it, whatever the starting shell names;
+without one it reads the default. Install again to change it. Unknown keys,
+an unknown provider, more than 8 accounts of a provider, a label other than
+1 to 32 letters, digits, `.`, `_` or `-`, a label used twice for one provider,
+a relative folder and one folder under two labels are refused.
+
+With no file, or no account declared for a provider, that provider reviews
+under the login Sentinel inherits, exactly as before. With accounts:
+
+- **Which account reviews.** Routing still prefers the provider the author
+  did not write with. Within a provider, Sentinel never uses the author's own
+  account while another is signed in and not held. The author's account is
+  the `CLAUDE_CONFIG_DIR` or `CODEX_HOME` of the shell that ran `gate` or the
+  push (its CLI's default folder when unset); the hook passes it to the watcher.
+  Among the eligible accounts the one with no hold and used least recently
+  goes first. Neither CLI documents a way to read how much allowance is left,
+  so Sentinel rotates instead of guessing; the
+  [plan](plans/review-accounts.md#research) has the research.
+- **The author's own account, last.** When no other account of that
+  provider is usable, the review uses the author's own, and the progress, the
+  report, the attestation, the comment and the text result say so.
+- **Holds and restarts per account.** An account that reports its usage limit,
+  or whose work fails the round after its retry, is held as a provider would
+  be, and the review restarts from scratch with the provider's next account,
+  under any requirement: `both`, `claude` and `codex` never change provider,
+  but they may change account. Only when none of its accounts remains is the
+  provider dropped, under `auto` only, as above. A review restarts at most
+  once per account that fails, plus once for the provider.
+- **Each reviewer process** gets only its account's variable set; no other
+  authentication variable changes, and no credential is read. A credential
+  variable that would override the account folder (`CLAUDE_CODE_OAUTH_TOKEN`
+  or `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` for Claude, `CODEX_ACCESS_TOKEN` or
+  `CODEX_API_KEY` for Codex) refuses a review that would use that provider's
+  accounts, naming the variable: unset it where Sentinel runs. Without
+  accounts these variables change nothing.
+- **Restarts review the same commits.** A restart, for an account or a
+  provider, reviews the base, head and branch the first round resolved, even
+  if `HEAD` has moved since.
+- **Evidence by label.** Reports, attestations, comments and text results
+  carry `accounts` (the label per provider, and `authorOwn` for the author's
+  provider: `true`, `false`, or `null` when the review's requester is not
+  known, as for a pull request found on GitHub) and `accountFallbacks`; each
+  provider execution names its `account`. Folders never appear.
+- `status` lists each account by label, signed in or not, with its hold and
+  last review; `doctor` and `install` probe every configured account, those
+  of a provider the requirement leaves out included, list them under
+  `accounts`, and `doctor` prints the holds. `gate --force`
+  ignores account holds as it does provider holds. `doctor --test-models`
+  still calls the models under the inherited login only.
+
 ## Client compatibility
 
 GPT-6.1 Sol was qualified on Windows with Codex CLI 0.159.0. The older 0.154.0

@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.17.0';
+export const GATE_VERSION = '1.18.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -113,6 +113,9 @@ export const LIMITS = Object.freeze({
   providerHoldMaxMs: 8 * 24 * 60 * 60 * 1000,
   // How much of the provider's own usage-limit message a record keeps.
   providerHoldMessageChars: 300,
+  // Review accounts a user may declare per provider in the accounts file;
+  // each bounds the account restarts of one review (one per account).
+  maxAccountsPerProvider: 8,
   // How much of a reviewer's own summary an incomplete-review error keeps.
   incompleteSummaryChars: 400,
   shardMaxCandidates: 8,

@@ -63,6 +63,19 @@ import {
 } from './usageLimits.mjs';
 import { classifyRisk, reviewPlan } from './risk.mjs';
 import {
+  accountHoldOf,
+  accountOverrideRefusal,
+  accountsProviderHold,
+  checkedRequesterAccounts,
+  clearAccountHolds,
+  describeAccountHold,
+  formatAccounts,
+  markAccountsUsed,
+  rankAccounts,
+  readAccountState,
+  recordAccountHolds,
+} from './accounts.mjs';
+import {
   metadataOnlySections, partitionShards, renameMapFor, renamedPaths, shardCountFor, shardPartShards, splitPatchByFile,
 } from './shards.mjs';
 import { deferCommand } from './dispositions.mjs';
@@ -976,55 +989,107 @@ function shortReason(reason, max = 160) {
 }
 
 /**
- * The one restart after a provider failed (owner's decision), under the
- * lease the caller holds. Under `providers: "auto"`, a round that failed
- * closed because a provider's work failed after its retry (any cause), or
- * because a provider reported its usage limit (no retry), was failed closed
- * with its own report. The review then starts again ONCE, from scratch (no
- * kept shard review), with the providers that remain; the dropped provider
- * is held out of later `auto` reviews for a while, and the report and the
- * attestation say which provider was dropped and why. It never restarts
- * under an explicit requirement, after a process-tree cleanup failure or
- * with the launch fence up, for an error that is not a provider's (Git, a
- * deterministic lane, the gate itself), when no provider remains, or twice.
+ * The restarts after a provider failed (owner's decisions), under the lease
+ * the caller holds. A round that failed closed because a provider's work
+ * failed after its retry (any cause), or because a provider reported its
+ * usage limit (no retry), was failed closed with its own report. The review
+ * then starts again from scratch (no kept shard review):
+ *
+ * - with another eligible account of that provider, when the review chose
+ *   one of the user's review accounts for it and another one is usable
+ *   (docs/plans/review-accounts.md), under any requirement: the account is
+ *   held, left out for the rest of the review, and the switch recorded;
+ * - otherwise, under `providers: "auto"` only, ONCE, with the providers that
+ *   remain: the dropped provider (or its account) is held out of later
+ *   `auto` reviews for a while, and the report and the attestation say which
+ *   provider was dropped and why.
+ *
+ * Every restart leaves out one more account, or the provider, so a review
+ * runs at most one round per configured account plus the one provider
+ * fallback. It never restarts after a process-tree cleanup failure or with
+ * the launch fence up, for an error that is not a provider's (Git, a
+ * deterministic lane, the gate itself), when the round's veto was set, or
+ * when no provider remains; an explicit requirement never drops a provider.
  */
 async function runGateWithProviderFallback(paths, options) {
-  try {
-    return await runGateWithLease(options);
-  } catch (error) {
-    const failures = Array.isArray(error?.providerFailures) ? error.providerFailures : [];
-    if (!failures.length || error.providerMode !== 'auto') throw error;
-    if (processTreeCleanupFailureCode(error) || providerCleanupFailureLatched() || newProcessLaunchesBlocked()) throw error;
-    const dropped = [...new Set(failures.map((failure) => failure.provider))];
-    const remaining = (error.providerSelection ?? []).filter((provider) => !dropped.includes(provider));
-    if (!remaining.length) {
-      error.message = `${error.message} No other selected provider remains, so the review cannot restart.`;
-      throw error;
-    }
-    // A usage limit outranks a failure of the same provider: it has a reset.
-    const failureOf = (provider) => failures.find((failure) => failure.provider === provider && failure.reason === 'usage-limit')
-      ?? failures.find((failure) => failure.provider === provider);
-    const recorded = error.providerHoldRecords ?? {};
-    const holds = Object.fromEntries(dropped.map((provider) => [provider, recorded[provider] ?? providerHoldRecord(failureOf(provider))]));
-    // A usage limit was recorded with the round; a failure is recorded only
-    // now, when the review falls back without it.
-    const failed = dropped.filter((provider) => holds[provider].reason === 'provider-failure');
-    if (failed.length) {
-      const written = await recordProviderHolds(paths, failed.map((provider) => failureOf(provider))).catch(() => null);
-      for (const provider of failed) if (written?.[provider]) holds[provider] = written[provider];
-    }
-    // Nothing of the discarded round is kept for a later review either.
-    if (error.reviewIdentity) await removeShardCheckpoint(paths, error.reviewIdentity).catch(() => {});
-    const first = dropped[0];
-    const hold = holds[first];
-    const why = dropped.map((provider) => (holds[provider].reason === 'usage-limit'
-      ? `${provider} usage limit reached (retry after ${holds[provider].retryAfter})`
-      : `${provider} failed${failureOf(provider).retried ? ' twice' : ''} (${shortReason(failureOf(provider).message)})`)).join('; ');
-    (options.progress ?? (() => {}))(`${why}; restarting this review with ${remaining.join(' and ')} only.`);
+  const progress = options.progress ?? (() => {});
+  let providerFallback = null;
+  const excluded = {};
+  const switches = [];
+  // Set by the first round that fails: the commits and branch it resolved.
+  let target = null;
+  for (let round = 0; ; round += 1) {
     try {
       return await runGateWithLease({
         ...options,
-        providerFallback: {
+        ...(target ? { base: target.base, head: target.head, branch: target.branch } : {}),
+        providerFallback,
+        accountFallback: switches.length || Object.keys(excluded).length
+          ? { excluded: { ...excluded }, switches: [...switches] } : null,
+      });
+    } catch (error) {
+      const failures = Array.isArray(error?.providerFailures) ? error.providerFailures : [];
+      if (!failures.length) throw error;
+      if (processTreeCleanupFailureCode(error) || providerCleanupFailureLatched() || newProcessLaunchesBlocked()) throw error;
+      // A guard past the structural bound above; never reached by design.
+      if (round > LIMITS.maxAccountsPerProvider * PROVIDERS.length + 1) throw error;
+      const failed = [...new Set(failures.map((failure) => failure.provider))];
+      // Without the target it reviewed, no restart could be the same review.
+      if (!error.reviewTarget?.head) throw error;
+      target ??= error.reviewTarget;
+      const chosen = error.accountSelection ?? {};
+      // The round that just failed chose the account an earlier switch went to.
+      for (const entry of switches) if (entry.to === undefined && chosen[entry.provider]) entry.to = chosen[entry.provider];
+      const switching = failed.filter((provider) => chosen[provider] && error.accountAlternatives?.[provider]?.length);
+      const dropped = failed.filter((provider) => !switching.includes(provider));
+      let remaining = error.providerSelection ?? [];
+      if (dropped.length) {
+        if (error.providerMode !== 'auto') throw error;
+        if (providerFallback) {
+          error.message = `${error.message} The review had already restarted once without ${providerFallback.dropped.join(' and ')}; it does not restart again.`;
+          throw error;
+        }
+        remaining = remaining.filter((provider) => !dropped.includes(provider));
+        if (!remaining.length) {
+          error.message = `${error.message} No other selected provider remains, so the review cannot restart.`;
+          throw error;
+        }
+      }
+      // A usage limit outranks a failure of the same provider: it has a reset.
+      const failureOf = (provider) => failures.find((failure) => failure.provider === provider && failure.reason === 'usage-limit')
+        ?? failures.find((failure) => failure.provider === provider);
+      const recorded = error.providerHoldRecords ?? {};
+      const holds = Object.fromEntries(failed.map((provider) => [provider, recorded[provider] ?? providerHoldRecord(failureOf(provider))]));
+      // A usage limit was recorded with the round; a failure is recorded only
+      // now, when the review falls back without that provider or account.
+      const newlyFailed = failed.filter((provider) => holds[provider].reason === 'provider-failure');
+      const providerFailed = newlyFailed.filter((provider) => !chosen[provider]);
+      const accountFailed = newlyFailed.filter((provider) => chosen[provider]);
+      if (providerFailed.length) {
+        const written = await recordProviderHolds(paths, providerFailed.map((provider) => failureOf(provider))).catch(() => null);
+        for (const provider of providerFailed) if (written?.[provider]) holds[provider] = written[provider];
+      }
+      if (accountFailed.length) {
+        const written = await recordAccountHolds(paths, accountFailed.map((provider) => ({ ...failureOf(provider), label: chosen[provider] }))).catch(() => null);
+        for (const provider of accountFailed) holds[provider] = accountHoldOf(written, provider, chosen[provider]) ?? holds[provider];
+      }
+      // An account this review fell back from is not chosen again in it.
+      for (const provider of failed) if (chosen[provider]) excluded[provider] = [...(excluded[provider] ?? []), chosen[provider]];
+      // Nothing of the discarded round is kept for a later review either.
+      if (error.reviewIdentity) await removeShardCheckpoint(paths, error.reviewIdentity).catch(() => {});
+      const subject = (provider) => (chosen[provider] ? `${provider} account "${chosen[provider]}"` : provider);
+      const why = (provider) => (holds[provider].reason === 'usage-limit'
+        ? `${subject(provider)} usage limit reached (retry after ${holds[provider].retryAfter})`
+        : `${subject(provider)} failed${failureOf(provider).retried ? ' twice' : ''} (${shortReason(failureOf(provider).message)})`);
+      for (const provider of switching) {
+        progress(`${why(provider)}; restarting this review with another ${provider} account.`);
+        const hold = holds[provider];
+        switches.push({ provider, from: chosen[provider], reason: hold.reason, resetAt: hold.resetAt, retryAfter: hold.retryAfter });
+      }
+      if (dropped.length) {
+        progress(`${dropped.map(why).join('; ')}; restarting this review with ${remaining.join(' and ')} only.`);
+        const hold = holds[dropped[0]];
+        providerFallback = {
           dropped,
           reason: hold.reason,
           resetAt: hold.resetAt,
@@ -1032,14 +1097,9 @@ async function runGateWithProviderFallback(paths, options) {
           message: hold.message,
           // Only the providers this round dropped, never a snapshot of
           // every live hold taken before the round cleared its successes.
-          limits: holds,
-        },
-      });
-    } catch (second) {
-      if (Array.isArray(second?.providerFailures) && second.providerFailures.length) {
-        second.message = `${second.message} The review had already restarted once without ${dropped.join(' and ')}; it does not restart again.`;
+          limits: Object.fromEntries(dropped.map((provider) => [provider, holds[provider]])),
+        };
       }
-      throw second;
     }
   }
 }
@@ -1072,6 +1132,15 @@ async function runGateWithLease({
   // Set only by the restart after a usage limit: the providers it
   // dropped, their records and why. It is evidence, not a request.
   providerFallback = null,
+  // The user's review accounts (`loadAccounts`), or null: none configured,
+  // and the review is what it was without them. The caller loads them; a
+  // queued request never carries them.
+  accounts = null,
+  // The author's account digests (`requesterAccountKeys` of the process
+  // that asked for the review), or null when it is not known.
+  requesterAccounts = null,
+  // Set only by the restarts: the accounts this review fell back from.
+  accountFallback = null,
 } = {}) {
   const context = await createGateContext(repoRootInput, { stateRoot });
   // Reviews are serialized (one per daemon, or one foreground run); the
@@ -1160,21 +1229,102 @@ async function runGateWithLease({
     ...(providerFallback?.limits ?? {}),
   };
   const dropped = providerFallback?.dropped ?? [];
+  const author = inferAuthor(branch, authorOverride);
+  // Review accounts (docs/plans/review-accounts.md): a provider the accounts
+  // file declares is held, chosen and fallen back from per account. A
+  // provider without accounts, and a review with none, are as before.
+  const accountProviders = accounts && risk.level !== 'skip' && !dryRun
+    ? PROVIDERS.filter((provider) => accounts[provider]?.length) : [];
+  // An inherited credential that overrides the account folder would make a
+  // recorded label name the wrong account: refused before any provider work.
+  // Only a provider the requirement lets this review use: a codex
+  // requirement never runs Claude, whatever its accounts or token.
+  const usableProviders = providerMode === 'claude' || providerMode === 'codex' ? [providerMode] : PROVIDERS;
+  for (const provider of accountProviders.filter((candidate) => usableProviders.includes(candidate))) {
+    const refusal = accountOverrideRefusal(provider, process.env);
+    if (refusal) throw new Error(refusal);
+  }
+  const authorAccounts = checkedRequesterAccounts(requesterAccounts);
+  const accountState = accountProviders.length ? await readAccountState(context.paths) : { holds: {}, lastUsed: {} };
+  const accountHolds = (provider) => (force ? {} : accountState.holds[provider] ?? {});
+  const accountExcluded = (provider) => accountFallback?.excluded?.[provider] ?? [];
+  const switchedAccounts = new Set((accountFallback?.switches ?? []).map((entry) => entry.provider));
+  for (const provider of accountProviders) {
+    // A provider-wide hold is not read for a provider with accounts.
+    delete usageLimits[provider];
+    // A provider this review already switched accounts for goes on while one
+    // of them is not limited: only usage limits hold it out.
+    const holds = switchedAccounts.has(provider)
+      ? Object.fromEntries(Object.entries(accountHolds(provider)).filter(([, record]) => record.reason === 'usage-limit'))
+      : accountHolds(provider);
+    const hold = accountsProviderHold(provider, accounts[provider], holds, { excluded: accountExcluded(provider) });
+    if (hold) usageLimits[provider] = hold;
+  }
+  // The author's own account is excluded only for the author's provider.
+  const accountCandidates = (provider, signedIn = null) => rankAccounts(accounts[provider], {
+    holds: accountHolds(provider),
+    lastUsed: accountState.lastUsed[provider],
+    authorKey: provider === author ? authorAccounts?.[provider] ?? null : null,
+    excluded: accountExcluded(provider),
+    signedIn,
+  });
   let subscriptions;
   let selectedProviders;
   if (risk.level === 'skip') {
     selectedProviders = [];
   } else if (dryRun || availableProviders !== undefined || reviewer !== runReviewer) {
-    const candidates = (availableProviders ?? PROVIDERS).filter((provider) => !dropped.includes(provider));
+    const candidates = (availableProviders ?? PROVIDERS).filter((provider) => !dropped.includes(provider)
+      && (!accountProviders.includes(provider) || accountCandidates(provider).length));
     const refusal = providerHoldRefusal(providerMode, usageLimits, providerMode === 'auto' ? candidates : undefined);
     if (refusal) throw new Error(refusal);
     const held = heldProviders(providerMode, candidates, usageLimits);
     selectedProviders = selectProviders(providerMode, candidates.filter((provider) => !held.includes(provider)));
   } else {
-    subscriptions = await detectSubscriptions(context.repoRoot, { mode: providerMode, holds: usageLimits, exclude: dropped });
+    subscriptions = await detectSubscriptions(context.repoRoot, {
+      mode: providerMode,
+      holds: usageLimits,
+      exclude: dropped,
+      ...(accountProviders.length ? { accounts: Object.fromEntries(accountProviders.map((provider) => [provider, accountCandidates(provider)])) } : {}),
+    });
     selectedProviders = subscriptions.selected;
   }
   if (subscriptions) validateModelClients(reviewPolicy.config, subscriptions);
+  // One account per selected provider that has accounts: the best ranked of
+  // those signed in. The rest are the restart's alternatives.
+  const accountSelection = {};
+  const accountAlternatives = {};
+  for (const provider of selectedProviders.filter((candidate) => accountProviders.includes(candidate))) {
+    const signedIn = subscriptions?.accounts?.[provider]?.filter((account) => account.signedIn).map((account) => account.label) ?? null;
+    const ranked = accountCandidates(provider, signedIn);
+    if (!ranked.length) throw new Error(`No configured ${provider} account is signed in and free for this review.`);
+    accountSelection[provider] = ranked[0];
+    accountAlternatives[provider] = ranked.slice(1).map((account) => account.label);
+    if (ranked[0].authorOwn) {
+      progress(`No other ${provider} account is usable; this review uses the author's own ${provider} account "${ranked[0].label}".`);
+    }
+  }
+  if (Object.keys(accountSelection).length) {
+    // The rotation's record is best effort: it never fails a review.
+    await markAccountsUsed(context.paths, Object.entries(accountSelection).map(([provider, account]) => ({ provider, label: account.label })))
+      .catch(() => {});
+  }
+  // Labels only: which account reviewed for each provider, whether it was
+  // the author's own (null when the author's account is not known), and
+  // every account this review fell back from.
+  const switches = accountFallback?.switches ?? [];
+  const accountEvidence = {
+    ...(Object.keys(accountSelection).length ? {
+      accounts: Object.fromEntries(Object.entries(accountSelection).map(([provider, account]) => [provider, {
+        label: account.label,
+        ...(provider === author ? { authorOwn: authorAccounts ? account.authorOwn : null } : {}),
+      }])),
+    } : {}),
+    ...(switches.length ? {
+      // A switch names the account the next round chose: this one's, unless
+      // a later round already did.
+      accountFallbacks: switches.map((entry) => ({ ...entry, to: entry.to ?? accountSelection[entry.provider]?.label ?? null })),
+    } : {}),
+  };
   // Nothing about the provider set is silent: a provider `auto` left out
   // for a hold, at the start or by the restart, is named in the report and
   // the attestation with the reason and its retry time.
@@ -1279,7 +1429,6 @@ async function runGateWithLease({
     }), failures);
   };
   const providerExecutions = [];
-  const author = inferAuthor(branch, authorOverride);
   const lineage = convergenceLineage(identity, branch);
   const lineageReviews = risk.level === 'skip'
     ? []
@@ -1409,6 +1558,7 @@ async function runGateWithLease({
     modelSettings: modelSettings(reviewPolicy.config),
     providerExecutions,
     ...(providerFallbackEvidence ? { providerFallback: providerFallbackEvidence } : {}),
+    ...accountEvidence,
   };
 
   if (dryRun) {
@@ -1492,6 +1642,10 @@ async function runGateWithLease({
 
     bundle.modelConfig = reviewPolicy.config;
     bundle.providerExecutions = providerExecutions;
+    // Each provider process gets its account's folder in its environment;
+    // nothing else of the bundle carries it.
+    bundle.accounts = Object.fromEntries(Object.entries(accountSelection)
+      .map(([provider, account]) => [provider, { label: account.label, folder: account.folder }]));
 
     // Deterministic lanes (v1.8.0) run alongside everything else. They can
     // only reject through the process-tree fence, which must reach the same
@@ -1587,7 +1741,7 @@ async function runGateWithLease({
       shard, provider: shardProviders[index], round, followUpBaseSha, priorBlocking: priorBlockingList, patchDigest, branch, author, risk: risk.level,
     }));
     // The restart after a usage limit starts from scratch, as --force does.
-    const checkpoint = force || providerFallback ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
+    const checkpoint = force || providerFallback || accountFallback ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
     const keptShards = shards.map((_, index) => keptShardReview(checkpoint?.shards[assignments[index]], shardProviders[index], index));
     const keptCount = keptShards.filter(Boolean).length;
     for (const kept of keptShards) {
@@ -2259,6 +2413,7 @@ async function runGateWithLease({
       providerExecutions,
       modelDiversity: baseReport.modelDiversity,
       ...(baseReport.providerFallback ? { providerFallback: baseReport.providerFallback } : {}),
+      ...accountEvidence,
       reportId: report.id,
       providerSelection: selectedProviders,
       modelSettings: modelSettings(reviewPolicy.config),
@@ -2283,15 +2438,25 @@ async function runGateWithLease({
       // round that mixed providers is not kept: the restart starts afresh.
       error.providerMode = providerMode;
       error.providerSelection = selectedProviders;
+      // A provider reviewing under one of the user's accounts is held per
+      // account; any other per provider, as before.
+      const accountLabel = (provider) => accountSelection[provider]?.label;
       try {
-        const recorded = await recordProviderHolds(context.paths, usageLimitHits);
-        error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, recorded[hit.provider]]));
+        const recorded = await recordProviderHolds(context.paths, usageLimitHits.filter((hit) => !accountLabel(hit.provider)));
+        const accountHits = usageLimitHits.filter((hit) => accountLabel(hit.provider)).map((hit) => ({ ...hit, label: accountLabel(hit.provider) }));
+        const accountRecorded = accountHits.length ? await recordAccountHolds(context.paths, accountHits) : {};
+        error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, accountLabel(hit.provider)
+          ? accountHoldOf(accountRecorded, hit.provider, accountLabel(hit.provider)) : recorded[hit.provider]]));
       } catch (recordError) {
         error.providerHoldRecords = Object.fromEntries(usageLimitHits.map((hit) => [hit.provider, providerHoldRecord(hit)]));
         error.message = `${error.message} The usage-limit record could not be written: ${recordError?.message || String(recordError)}`;
       }
       const limited = [...new Set(usageLimitHits.map((hit) => hit.provider))];
-      error.message = `${error.message} ${limited.map((provider) => describeProviderHold(provider, error.providerHoldRecords[provider] ?? providerHoldRecord(usageLimitHits.find((hit) => hit.provider === provider)))).join('; ')}.`;
+      const describeHold = (provider) => {
+        const record = error.providerHoldRecords[provider] ?? providerHoldRecord(usageLimitHits.find((hit) => hit.provider === provider));
+        return accountLabel(provider) ? describeAccountHold(provider, accountLabel(provider), record) : describeProviderHold(provider, record);
+      };
+      error.message = `${error.message} ${limited.map(describeHold).join('; ')}.`;
       if (providerMode === 'auto') await removeShardCheckpoint(context.paths, identity).catch(() => {});
     }
     if ((usageLimitHits.length || providerFailures.length) && error?.providerFallbackEligible === true && !roundVeto) {
@@ -2304,11 +2469,21 @@ async function runGateWithLease({
       error.providerMode = providerMode;
       error.providerSelection = selectedProviders;
       error.reviewIdentity = identity;
+      // The exact commits and branch this round reviewed: every restart
+      // reviews them again, never what HEAD or the base names by then.
+      error.reviewTarget = { base: baseSha, head: headSha, branch };
+      // Labels only: the account each provider used, and the others usable.
+      error.accountSelection = Object.fromEntries(Object.entries(accountSelection).map(([provider, account]) => [provider, account.label]));
+      error.accountAlternatives = accountAlternatives;
     }
     throw error;
   } finally {
     const cleared = [...succeededProviders].filter((provider) => !usageLimitHits.some((hit) => hit.provider === provider));
-    if (cleared.length) await clearProviderHolds(context.paths, cleared).catch(() => {});
+    const clearedProviders = cleared.filter((provider) => !accountSelection[provider]);
+    const clearedAccounts = cleared.filter((provider) => accountSelection[provider])
+      .map((provider) => ({ provider, label: accountSelection[provider].label }));
+    if (clearedProviders.length) await clearProviderHolds(context.paths, clearedProviders).catch(() => {});
+    if (clearedAccounts.length) await clearAccountHolds(context.paths, clearedAccounts).catch(() => {});
     const cleanupErrors = [];
     for (const cleanup of [bundle?.cleanup, worktree.cleanup]) {
       if (!cleanup) continue;
@@ -2366,7 +2541,7 @@ export function formatGateResult(result) {
     : '';
   const stages = formatStages(result.stages);
   const selection = result.providerSelection?.length ? `Providers: ${result.providerSelection.join(' + ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}` : '';
-  const trailer = [selection, formatProviderFallback(result.providerFallback), stages, ...dismissedLines].filter(Boolean).join('\n');
+  const trailer = [selection, formatProviderFallback(result.providerFallback), ...formatAccounts(result), stages, ...dismissedLines].filter(Boolean).join('\n');
   if (result.status === 'pass') {
     const cache = result.cached ? ' (cached exact-SHA attestation)' : '';
     const advisories = (result.findings || []).filter((finding) => finding.disposition === 'advisory');

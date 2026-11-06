@@ -3,6 +3,7 @@ import { ensureCommitAvailable, inferAuthor, mergeBase, repoSlugFromRemote } fro
 import { applyRecordedDeferrals } from './dispositions.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { formatProviderFallback } from './usageLimits.mjs';
+import { formatAccounts } from './accounts.mjs';
 import {
   attestationIdentity,
   readAttestation,
@@ -107,6 +108,9 @@ function compactOutcomeResult(result) {
     reportId: result.reportId,
     ...(result.providerSelection ? { providerSelection: result.providerSelection } : {}),
     ...(result.providerFallback ? { providerFallback: result.providerFallback } : {}),
+    // Review account labels, never their folders.
+    ...(result.accounts ? { accounts: result.accounts } : {}),
+    ...(result.accountFallbacks ? { accountFallbacks: result.accountFallbacks } : {}),
     deferredCount: advisories.filter((finding) => finding.deferral).length,
     // The stored outcome keeps every finding up to the adjudication bound
     // (compact), not only the comment's row budget: a deferral recorded later
@@ -194,6 +198,7 @@ export function renderGateComment(result) {
     `- Gate: ${identity.gateVersion || 'unknown'} / charter ${identity.charterVersion || 'unknown'}`,
     ...(result.providerSelection?.length ? [`- Selected providers: ${result.providerSelection.join(', ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}`] : []),
     ...(result.providerFallback?.dropped?.length ? [`- ${githubText(formatProviderFallback(result.providerFallback), 300)}`] : []),
+    ...formatAccounts(result).map((line) => `- ${githubText(line, 300)}`),
     '',
     githubText(result.summary || 'No summary was produced.', LIMITS.githubSummaryChars),
   ];

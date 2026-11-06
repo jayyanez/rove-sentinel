@@ -3,7 +3,7 @@
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
 These instructions pin the
-[v1.17.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.17.0)
+[v1.18.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.18.0)
 as an exact dependency. Confirm its archive is listed before installing.
 To work on Sentinel itself, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -41,7 +41,7 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.17.0/rove-sentinel-1.17.0.tgz
+npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.18.0/rove-sentinel-1.18.0.tgz
 ```
 
 From npm 12, npm refuses a dependency given as a URL (`EALLOWREMOTE`)
@@ -53,7 +53,7 @@ Releases before npm 12 install the URL without it.
 Or with pnpm:
 
 ```powershell
-pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.17.0/rove-sentinel-1.17.0.tgz
+pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.18.0/rove-sentinel-1.18.0.tgz
 ```
 
 This is a GitHub Release archive; the instructions do not depend on an npm

@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.18.0 — review accounts
+
+A user with several accounts of one CLI can declare them, and a review chooses among them:
+never the author's own while another is usable, the least recently used first, and the next
+account before a provider is dropped. With no accounts file, reviews are unchanged and nothing
+needs doing. To use accounts, write the per-user accounts file ([models](docs/models.md#accounts)).
+
+- **Review accounts: several logins of one CLI.** A user with several Claude Code
+  (`CLAUDE_CONFIG_DIR`) or Codex (`CODEX_HOME`) accounts declares them, each with a label,
+  in a per-user accounts file (`--accounts`, `ROVE_SENTINEL_ACCOUNTS`, or `accounts.json`
+  beside the state folders), never in the repository or the policy digest. Within a
+  provider, a review never uses the author's own account (the `CLAUDE_CONFIG_DIR` or
+  `CODEX_HOME` of the shell that asked for it, carried to the watcher as a digest) while
+  another is usable, prefers an account with no hold, and rotates by last use; neither CLI
+  documents a way to read the allowance left. Holds are kept per account: an account that
+  fails or reports its usage limit is held, and the review restarts from scratch with the
+  provider's next account, under any requirement, before the provider is dropped under
+  `auto`. When no other account is usable the author's own is used, and the evidence says
+  so. Reports, attestations, comments and text results carry `accounts` and
+  `accountFallbacks` by label; `status` and `doctor` list each account's sign-in and hold,
+  and `install` checks them too and gives the scheduled watcher a named accounts file. A
+  credential variable that overrides an account folder (`CLAUDE_CODE_OAUTH_TOKEN`,
+  `CODEX_ACCESS_TOKEN`, …) refuses such a review. Every restart, an account's or the
+  provider fallback's, reviews the commits the first round resolved, even if `HEAD` moved.
+  With no accounts file, reviews are unchanged. See the
+  [plan](docs/plans/review-accounts.md).
+
 ## 1.17.0 — a review that goes on when a provider cannot
 
 Under `auto`, a provider that fails, or that has used up its subscription's allowance, no

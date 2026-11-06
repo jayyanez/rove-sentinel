@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { requesterAccountKeys } from '../accounts.mjs';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { acquireUpdateLease } from '../maintenance.mjs';
@@ -121,15 +122,22 @@ describe('shared review pre-push enforcement', () => {
       repository: 'repo', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40),
       policyDigest: 'd'.repeat(64),
     });
-    expect(buildGateRequestOptions({
-      repoRoot: 'C:\\repo', identity, branch: 'codex/example',
-    })).toEqual({
+    const env = { CODEX_HOME: path.join(os.tmpdir(), 'example-codex-home') };
+    const options = buildGateRequestOptions({
+      repoRoot: 'C:\\repo', identity, branch: 'codex/example', env,
+    });
+    expect(options).toEqual({
       repoRoot: 'C:\\repo',
       base: 'a'.repeat(40),
       head: 'b'.repeat(40),
       branch: 'codex/example',
       author: 'codex',
+      // The author's account travels with the request, as digests: the
+      // watcher's own environment is not the author's.
+      requesterAccounts: requesterAccountKeys(env),
     });
+    expect(options.requesterAccounts.codex).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.stringify(options)).not.toContain('example-codex-home');
   });
 
   it('cancels a queued review when detached watcher startup fails', async () => {

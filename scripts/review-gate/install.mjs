@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS, TASK_PREFIX } from './constants.mjs';
-import { detectSubscriptions } from './subscriptions.mjs';
+import { detectSubscriptions, probeAccountSignIns, settleEvery } from './subscriptions.mjs';
+import { ACCOUNTS_FILE_VARIABLE, loadAccounts, readAccountState } from './accounts.mjs';
 import { readProviderHolds } from './usageLimits.mjs';
 import { modelSettings, validateModelClients } from './modelSettings.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from './context.mjs';
@@ -242,6 +243,10 @@ export function buildInstallPlan({
   updateNotifications = process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS,
   environment = process.env,
   realPath,
+  // An accounts file named explicitly at install; the default needs none.
+  // Every platform's plan carries it (or null): the install records it from
+  // there for the watcher's detached starts.
+  accountsFile = null,
 }) {
   const cliPath = fileURLToPath(new URL('./cli.mjs', import.meta.url));
   const id = hashText(stateRoot.toLowerCase(), 8);
@@ -252,7 +257,10 @@ export function buildInstallPlan({
       ['LOCALAPPDATA', localAppData], ['ROVE_SENTINEL_AUTO_UPDATE', autoUpdate],
       ['ROVE_SENTINEL_UPDATE_NOTIFICATIONS', updateNotifications],
     ].filter(([, value]) => value !== undefined && value !== '')
-      .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('');
+      .map(([key, value]) => `set ${quoteBatch(`${key}=${value}`)}\r\n`).join('')
+      // The accounts file this installation names, or none (the default) over
+      // any value the task inherits: the installation decides.
+      + `set ${quoteBatch(`${ACCOUNTS_FILE_VARIABLE}=${accountsFile ?? ''}`)}\r\n`;
     const toolSettings = WATCHER_TOOL_SETTINGS
       .filter((key) => environment[key] && !/["\r\n]/.test(environment[key]))
       .map((key) => `set ${quoteBatch(`${key}=${environment[key]}`)}\r\n`).join('');
@@ -271,6 +279,7 @@ export function buildInstallPlan({
     const taskXmlPath = path.win32.join(stateRoot, 'watch-task.xml');
     return {
       platform,
+      accountsFile,
       taskName,
       wrapperPath,
       wrapper,
@@ -296,6 +305,7 @@ export function buildInstallPlan({
       ['PATH', launchAgentPath(environment.PATH, repoRoot, realPath ? { realPath } : {})],
       ...WATCHER_TOOL_SETTINGS.filter((key) => environment[key] && !CONTROL_CHARACTERS.test(environment[key]))
         .map((key) => [key, environment[key]]),
+      ...(accountsFile ? [[ACCOUNTS_FILE_VARIABLE, accountsFile]] : []),
     ].map(([key, value]) => `    <key>${key}</key><string>${xmlEscape(value)}</string>\n`).join('');
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -318,6 +328,7 @@ ${carried}    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
 `;
     return {
       platform,
+      accountsFile,
       label,
       plistPath,
       plist,
@@ -328,7 +339,7 @@ ${carried}    <key>ROVE_REVIEW_ALLOW_API_BILLING</key><string></string>
       remove: { command: 'launchctl', args: ['bootout', `gui/${uid}/${label}`] },
     };
   }
-  return { platform, taskName, unsupportedScheduler: true, stateRoot };
+  return { platform, accountsFile, taskName, unsupportedScheduler: true, stateRoot };
 }
 
 async function currentHooksPath(repoRoot) {
@@ -341,7 +352,7 @@ async function currentHooksPath(repoRoot) {
 
 export async function verifyPrerequisites(
   repoRoot,
-  { run = runProcess, env: sourceEnvironment = process.env, config = {} } = {},
+  { run = runProcess, env: sourceEnvironment = process.env, config = {}, accounts = null } = {},
 ) {
   const env = detachedWatcherEnvironment(sourceEnvironment);
   const probe = async (label, command, args) => {
@@ -357,16 +368,40 @@ export async function verifyPrerequisites(
     }
     return (result.stdout || result.stderr).split(/\r?\n/).find(Boolean) || 'available';
   };
-  const [subscriptions, git, gh] = await Promise.all([
-    detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env }),
+  // Every probe is awaited before one's failure is raised: a process-tree
+  // cleanup failure never leaves a sibling probe running unseen.
+  const [subscriptions, git, gh, accountSignIns] = await settleEvery([
+    detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env, ...(accounts ? { accounts } : {}) }),
     probe('Git version check', 'git', ['--version']),
     probe('GitHub CLI authentication check', 'gh', ['auth', 'status']),
+    // Every configured account, by label, the providers the requirement
+    // leaves out included: the file is the user's, not the policy's.
+    accounts ? probeAccountSignIns(repoRoot, accounts, { run, env }) : null,
   ]);
   validateModelClients(config, subscriptions);
   return {
     ...Object.fromEntries(subscriptions.selected.map((provider) => [provider, subscriptions.availability[provider].version])),
     git, gh, providers: subscriptions, models: modelSettings(config),
+    ...(accountSignIns ? { accounts: accountSignIns } : {}),
   };
+}
+
+/**
+ * The accounts file a user named explicitly (`--accounts`, else
+ * ROVE_SENTINEL_ACCOUNTS), resolved, or null for the default place. An
+ * installed watcher is given this path so it reads the same file.
+ */
+export function explicitAccountsFile({ file, env = process.env } = {}) {
+  const named = file || env[ACCOUNTS_FILE_VARIABLE];
+  return named ? path.resolve(named) : null;
+}
+
+/** Install checks the prerequisites with the user's accounts, as doctor does. */
+export async function installPrerequisites(repoRoot, {
+  config, accountsFile, env = process.env, load = loadAccounts, verify = verifyPrerequisites,
+} = {}) {
+  const accounts = await load({ file: accountsFile, env });
+  return await verify(repoRoot, { config, accounts });
 }
 
 export function heartbeatIsHealthy(
@@ -500,6 +535,17 @@ async function snapshotFile(target) {
   }
 }
 
+/**
+ * The one place the watcher's accounts file is recorded, from the plan of
+ * any platform: read by every detached start of that watcher
+ * (`detachedStartEnvironment`); no file named removes the record, and the
+ * watcher reads the default.
+ */
+export async function recordWatcherAccounts(paths, plan) {
+  if (plan.accountsFile) await atomicWriteJson(paths.watcherAccounts, { accountsFile: plan.accountsFile });
+  else await removeStoredJson(paths.watcherAccounts);
+}
+
 async function restoreFile(target, snapshot, { storedJson = false } = {}) {
   if (storedJson) await removeStoredJson(target);
   if (!snapshot.existed) {
@@ -528,7 +574,9 @@ function hooksPathIsOurs(repoRoot, value) {
   return path.resolve(repoRoot, value) === path.join(repoRoot, '.githooks');
 }
 
-export async function installGate({ repoRoot = process.cwd(), dryRun = false, start = true, github, preservePolicy = false } = {}) {
+export async function installGate({
+  repoRoot = process.cwd(), dryRun = false, start = true, github, preservePolicy = false, accountsFile,
+} = {}) {
   const context = await createGateContext(repoRoot);
   const previousDaemonActive = await assertNoOtherCheckoutDaemon(context);
   const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
@@ -542,12 +590,13 @@ export async function installGate({ repoRoot = process.cwd(), dryRun = false, st
     platform: process.platform,
     repoRoot: context.repoRoot,
     stateRoot: context.stateRoot,
+    accountsFile: explicitAccountsFile({ file: accountsFile }),
   });
   if (plan.installRefusal) throw new Error(plan.installRefusal);
   const policy = preservePolicy
     ? await policyForEngineUpgrade(context.paths)
     : reviewPolicySnapshot(await readReviewPolicy(context.repoRoot));
-  const prerequisites = await verifyPrerequisites(context.repoRoot, { config: policy.config });
+  const prerequisites = await installPrerequisites(context.repoRoot, { config: policy.config, accountsFile });
   if (dryRun) return { dryRun: true, hooksPath: '.githooks', prerequisites, plan };
 
   return await executeInstallTransaction({
@@ -629,10 +678,11 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, watcherOptionsBefore, artifactBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, artifactBefore, watcherAccountsBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
     snapshotFile(context.paths.watcherOptions),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
+    snapshotFile(context.paths.watcherAccounts),
   ]);
   // Taken as it is cleared: until the watcher stops, it may be counting.
   let githubFailureBefore = null;
@@ -664,6 +714,7 @@ export async function executeInstallTransaction(
     }
 
     await atomicWriteJson(context.paths.policy, policy);
+    await recordWatcherAccounts(context.paths, plan);
     // pending while this process lives: the watcher started below honours it
     // at once, and it is gone if this install is killed (readWatcherGithub)
     if (github !== undefined) {
@@ -707,6 +758,8 @@ export async function executeInstallTransaction(
       }
     } else if (start) {
       daemonStartAttempted = true;
+      // Its accounts file is the one just recorded, as the Windows task and
+      // the macOS LaunchAgent carry it.
       await startDetached(context.repoRoot, context.stateRoot);
     }
     const heartbeat = start ? await waitHeartbeat(context.paths, context.repoRoot, {
@@ -768,6 +821,9 @@ export async function executeInstallTransaction(
     }
     await attempt(() => restoreFile(context.paths.policy, policyBefore, { storedJson: true }));
     await attempt(() => restoreFile(context.paths.watcherOptions, watcherOptionsBefore, { storedJson: true }));
+    // Before any restart below: a restored watcher reads the accounts file
+    // its own installation recorded.
+    await attempt(() => restoreFile(context.paths.watcherAccounts, watcherAccountsBefore, { storedJson: true }));
     if (githubFailureBefore) await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
@@ -904,12 +960,42 @@ export function watcherState({ running, compatible, heartbeat, lock, daemonError
   };
 }
 
+/**
+ * The user's review accounts as `status` lists them, by label: signed in or
+ * not, the live hold and the last review. Null when none are configured;
+ * an unreadable accounts file is reported, never thrown.
+ */
+export async function accountsStatus(context, { accountsFile, run = runProcess, load = loadAccounts } = {}) {
+  let accounts;
+  try {
+    accounts = await load({ file: accountsFile });
+  } catch (error) {
+    return { error: error?.message || String(error) };
+  }
+  if (!accounts) return null;
+  const [signIns, state] = await settleEvery([
+    probeAccountSignIns(context.repoRoot, accounts, { run, env: detachedWatcherEnvironment({ ...process.env }) }),
+    readAccountState(context.paths).catch(() => ({ holds: {}, lastUsed: {} })),
+  ]);
+  return Object.fromEntries(Object.entries(accounts).map(([provider, list]) => [provider, list.map((account) => {
+    const signIn = signIns[provider]?.find((entry) => entry.label === account.label);
+    return {
+      label: account.label,
+      signedIn: Boolean(signIn?.signedIn),
+      ...(signIn?.error ? { error: signIn.error } : {}),
+      hold: Object.hasOwn(state.holds[provider] ?? {}, account.label) ? state.holds[provider][account.label] : null,
+      lastUsed: Object.hasOwn(state.lastUsed[provider] ?? {}, account.label) ? state.lastUsed[provider][account.label] : null,
+    };
+  })]));
+}
+
 export async function gateStatus(
-  { repoRoot = process.cwd() } = {},
+  { repoRoot = process.cwd(), accountsFile } = {},
   {
     createContext = createGateContext,
     getHooksPath = currentHooksPath,
     run = runProcess,
+    loadUserAccounts = loadAccounts,
   } = {},
 ) {
   const context = await createContext(repoRoot);
@@ -1011,6 +1097,8 @@ export async function gateStatus(
     // Live usage-limit records: `auto` leaves these providers out
     // of new reviews until `retryAfter`; an explicit requirement is refused.
     providerHolds: await readProviderHolds(context.paths).catch(() => ({})),
+    // Review accounts, by label, when the user configured any.
+    ...await accountsStatus(context, { accountsFile, run, load: loadUserAccounts }).then((accounts) => (accounts ? { accounts } : {})),
     models: installedPolicy ? modelSettings(installedPolicy.config) : null,
     reviewTiming,
     hookInstalled: hooksPathIsOurs(context.repoRoot, hooksPath),

@@ -28,6 +28,19 @@ cleanup are bounded but do not constitute secure erasure. Keep machine access
 and filesystem permissions appropriate to your repositories. Never commit
 provider tokens or upload complete local state as a public debugging artifact.
 
+Review [accounts](models.md#accounts) are paths on your machine. Sentinel keeps
+them in your per-user accounts file and sets the chosen one, as
+`CLAUDE_CONFIG_DIR` or `CODEX_HOME`, only in that provider's reviewer process.
+It never reads, copies or logs anything inside an account folder; it runs the
+CLI's own sign-in status with the folder set. A request queued for the watcher
+carries a digest of the author's folder, and reports, attestations, comments
+and logs name accounts by label only. A credential variable that overrides
+the folder (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`,
+`CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`) refuses a review that would use that
+provider's accounts, so a label never names the wrong account. `install`
+writes a named accounts file's path into the local scheduled watcher, never
+into a report.
+
 To report a suspected vulnerability, use GitHub's private vulnerability reporting
 for this repository when available. Do not disclose working credentials or
 private code in a public issue. See [SECURITY.md](../SECURITY.md).
