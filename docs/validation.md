@@ -1,5 +1,22 @@
 # Standalone validation record
 
+## 1.17.0 a review that goes on when a provider cannot — 2026-11-06
+
+Deterministic tests cover the classification of usage-limit errors, including a completed
+review that mentions a limit; the reading of reset times; provider holds, their expiry,
+their clearing and their precedence; `auto` selection skipping a held provider; explicit
+requirements refusing; the one restart after a usage limit or a provider failure that
+survived its retry, for Claude and Codex; a second failure failing closed; the round veto
+that keeps a local error, a cleanup failure, the launch fence or a failed deterministic
+lane from restarting; tolerated scout and hypothesis failures; and the evidence the report
+and attestation carry. 932 tests passed on Windows. Each change went through the review
+gate.
+
+Not yet live: no provider CLI out of its allowance has been observed, so the usage-limit
+wordings are assumed (see the [plan](plans/provider-usage-limit-fallback.md)); the generic
+fallback does not depend on them. The watcher path has no test of its own; it runs the
+same gate.
+
 ## 1.16.1 a watcher that comes back, and says when it cannot — 2026-11-02
 
 Deterministic tests cover what a LaunchAgent carries: the shell's `PATH` without the

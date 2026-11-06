@@ -1,7 +1,7 @@
 # Rove Sentinel review charter
 
 **Charter version:** 1.8.0
-**Gate version:** 1.16.1
+**Gate version:** 1.17.0
 
 Review the exact committed diff for concrete, actionable defects. Explain the
 trigger, resulting behavior, and affected location. Do not invent findings to

@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.17.0 — a review that goes on when a provider cannot
+
+Under `auto`, a provider that fails, or that has used up its subscription's allowance, no
+longer blocks every push until it recovers: the review restarts once, explicitly and on the
+record, with the other provider. Explicit `both`, `claude` and `codex` requirements are
+unchanged. Nothing needs doing by hand.
 
 - **Under `auto`, a review falls back to the other provider when one fails.** A round
   that fails because a provider's work failed after its one retry (a shard or lens

@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.16.1
+**Engine version:** 1.17.0
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,7 +28,7 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.16.1
+## Limits of 1.17.0
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ When a review still fails, read the report's own account of why
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
-| A provider that fails a round, or reports its usage limit (unreleased) | One restart per review. Held out of `auto` reviews for 1 hour after a failure; until the reported reset after a usage limit (1 hour when none could be read, at most 8 days) | Under `auto` the review restarts once without it; a second failure fails closed. An explicit requirement never falls back, and a usage limit refuses it until the reset |
+| A provider that fails a round, or reports its usage limit | One restart per review. Held out of `auto` reviews for 1 hour after a failure; until the reported reset after a usage limit (1 hour when none could be read, at most 8 days) | Under `auto` the review restarts once without it; a second failure fails closed. An explicit requirement never falls back, and a usage limit refuses it until the reset |
 
 The exact values are in `scripts/review-gate/constants.mjs`; the
 [architecture](architecture.md) explains each stage.
@@ -64,7 +64,7 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 ## Limits that remain
 
-These are real in 1.16.1; work within them rather than around them.
+These are real in 1.17.0; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:
