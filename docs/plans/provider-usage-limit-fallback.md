@@ -70,7 +70,10 @@ The fallback keeps each of these:
    provider's (a usage limit, work a usage limit stopped, or a marked failure
    after its retry). One unmarked failure among them, or any safety stop, and
    the round fails closed without a restart; a usage limit it met is still
-   held, but no failure is. A scout or a
+   held, but no failure is. The failures weighed are every failed shard,
+   every lens reviewer when none completed, and every adjudication batch
+   already sent, drained before the round stops (a batch skipped because the
+   round had stopped is not a failure). A scout or a
    hypothesis reviewer that fails is tolerated as before and triggers
    nothing. A usage limit, in any role, is the exception: it is not retried,
    no further provider work starts in the round, and the round fails at once.

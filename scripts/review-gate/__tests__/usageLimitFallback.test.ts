@@ -541,3 +541,76 @@ describe('a fallback needs every failure of the round to be a provider\'s (gate 
     expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
   });
 });
+
+describe('an adjudication batch already sent counts toward the fallback (gate review of 22beba5)', () => {
+  const common = {
+    risk: 'high', author: 'claude', policy: policy(), availableProviders: ['claude', 'codex'],
+    scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+    deterministicLanes: async () => ({ lanes: [], findings: [] }),
+  };
+  // The Claude shard returns five candidates at once, so a Codex batch is
+  // sent while the Codex shard is still running; that batch fails with a
+  // local error of the host (no provider-failure mark), retry included.
+  const fiveCandidates = ({ provider, roleIndex, shard }: { provider: string; roleIndex: number; shard: { files: string[] } }) => ({
+    provider, roleIndex, summary: 'Five candidates.',
+    candidates: Array.from({ length: 5 }, (_, index) => ({
+      id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title: `Defect ${index}`, priority: 'P2', confidence: 90,
+      category: 'state', file: shard.files[0], line: index + 1, scenario: 's', evidence: 'e', proposed_test: 't',
+    })),
+  });
+  const localCoordinatorError = () => vi.fn(async () => {
+    throw Object.assign(new Error('ENOSPC: no space left on device, write candidates-0.json'), { code: 'ENOSPC' });
+  });
+  const slowCodexShard = (failure: () => Error) => vi.fn(async (args) => {
+    if (args.provider === 'codex') {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      throw failure();
+    }
+    return fiveCandidates(args);
+  });
+
+  it('does not restart after a usage limit beside a local adjudication error', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const coordinator = localCoordinatorError();
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line),
+      shardReviewer: slowCodexShard(() => limit('codex')), coordinator,
+    })).rejects.toThrow(/usage limit/);
+    expect(coordinator).toHaveBeenCalled();
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({ codex: expect.objectContaining({ reason: 'usage-limit' }) });
+  });
+
+  it('does not restart, or hold, after a tagged shard failure beside a local adjudication error', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const progress: string[] = [];
+    const coordinator = localCoordinatorError();
+    await expect(runGate({
+      ...common, repoRoot: root, stateRoot, base, head, progress: (line: string) => progress.push(line),
+      shardReviewer: slowCodexShard(() => markProviderFailure(new Error('codex exited with code 1'))), coordinator,
+    })).rejects.toThrow(/failed after retry/);
+    expect(coordinator).toHaveBeenCalled();
+    expect(progress.some((line) => line.includes('restarting'))).toBe(false);
+    expect(await readProviderHolds(await ensureState(stateRoot))).toEqual({});
+  });
+
+  it('still restarts when the batch already sent failed as the provider’s', async () => {
+    const { root, base, head, stateRoot } = await makeRepository();
+    const coordinator = vi.fn(async ({ provider, candidates }) => {
+      if (provider === 'codex') throw markProviderFailure(new Error('codex exited with code 1'));
+      return {
+        summary: 'Dismissed.',
+        findings: candidates.map((entry: { id: string; title: string; file: string; line: number }) => ({
+          candidate_id: entry.id, title: entry.title, priority: 'P2', file: entry.file, line: entry.line,
+          disposition: 'dismissed', reason: 'Not a defect.', scenario: 's', proposed_test: 't',
+        })),
+      };
+    });
+    const result = await runGate({
+      ...common, repoRoot: root, stateRoot, base, head,
+      shardReviewer: slowCodexShard(() => markProviderFailure(new Error('codex exited with code 1'))), coordinator,
+    });
+    expect(result).toMatchObject({ status: 'pass', providerSelection: ['claude'], providerFallback: { dropped: ['codex'], reason: 'provider-failure' } });
+  });
+});

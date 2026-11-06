@@ -102,6 +102,8 @@ import {
 } from './storage.mjs';
 
 export const providerTreeCleanupFailureCode = processTreeCleanupFailureCode;
+// An adjudication batch not run because its round had already stopped.
+const ADJUDICATION_SKIPPED = 'ADJUDICATION_SKIPPED';
 
 export function describeReviewerFailures(settled, reviewers) {
   return settled.flatMap((result, roleIndex) => result.status === 'rejected'
@@ -1671,7 +1673,8 @@ async function runGateWithLease({
       // that will fail closed launches no further adjudicator.
       dispatch: (batch, batchIndex) => pool.run(() => runProviderWithOneRetry(() => {
         if (adjudicationHalted || adjudicationStream.halted) {
-          throw new Error('Adjudication skipped: the round failed closed.');
+          // Not a failure of the batch: the round had already stopped.
+          throw Object.assign(new Error('Adjudication skipped: the round failed closed.'), { code: ADJUDICATION_SKIPPED });
         }
         return coordinator({
           provider: plan.coordinator,
@@ -1695,18 +1698,25 @@ async function runGateWithLease({
         progress(`Adjudicating ${batch.length} candidate finding(s) in a fresh ${plan.coordinator} batch.`);
       },
     });
-    // Stop adjudicating and wait for the batches already running. A batch
-    // that left an unverified process tree is returned: its classification
-    // must reach the fail-closed error, which the watcher's pause keys on.
+    // Stop adjudicating and wait for the batches already running. Returns a
+    // batch that left an unverified process tree as `cleanup` (its
+    // classification must reach the fail-closed error, which the watcher's
+    // pause keys on), and every batch that failed as `failures`, which the
+    // fallback's eligibility weighs with the round's other failures. A batch
+    // skipped because the round had stopped is not a failure.
     const haltAdjudication = async () => {
       adjudicationHalted = true;
       adjudicationStream.stop();
       const sent = await adjudicationStream.drain();
-      const failed = sent.map(({ settled }) => settled)
-        .find((settled) => settled?.status === 'rejected' && processTreeCleanupFailureCode(settled.reason));
-      return failed
-        ? { code: processTreeCleanupFailureCode(failed.reason), message: `${plan.coordinator} coordinator: ${failed.reason?.message || String(failed.reason)}` }
-        : null;
+      const failures = sent.map(({ settled }) => settled)
+        .filter((settled) => settled?.status === 'rejected' && settled.reason?.code !== ADJUDICATION_SKIPPED);
+      const failed = failures.find((settled) => processTreeCleanupFailureCode(settled.reason));
+      return {
+        cleanup: failed
+          ? { code: processTreeCleanupFailureCode(failed.reason), message: `${plan.coordinator} coordinator: ${failed.reason?.message || String(failed.reason)}` }
+          : null,
+        failures,
+      };
     };
     // A failed shard fails the round closed; a failed hypothesis or lens does
     // not, unless it left an unverified process tree.
@@ -1774,7 +1784,7 @@ async function runGateWithLease({
           // The shard reviews that completed beside the scout are kept too.
           await keepCompletedShards(await shardPromise);
           await lanesPromise;
-          const adjudicationCleanup = await haltAdjudication();
+          const { cleanup: adjudicationCleanup } = await haltAdjudication();
           throw await buildFailClosedError({
             paths: context.paths,
             baseReport,
@@ -1839,7 +1849,7 @@ async function runGateWithLease({
     const reviews = settledReviewers.filter((result) => result.status === 'fulfilled').map((result) => result.value);
     const lanesSettled = await lanesPromise;
     if (lanesSettled.status === 'rejected') {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup } = await haltAdjudication();
       // Whichever wave produced a cleanup classification, it must reach the
       // fail-closed error: the watcher's mandatory pause keys on it.
       const laneCode = processTreeCleanupFailureCode(lanesSettled.reason) || reviewerCleanupFailure(settledReviewers)?.code || adjudicationCleanup?.code || null;
@@ -1857,7 +1867,7 @@ async function runGateWithLease({
     // a lens or an adjudication batch) leaves it without the provider set it
     // was planned for: it fails closed, and under `auto` the review restarts.
     if (usageLimitHits.length) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup, failures: drainedBatches } = await haltAdjudication();
       const cleanupFailure = reviewerCleanupFailure(settledReviewers);
       // Every other failure that fails this round on its own counts too: a
       // failed shard, or every lens reviewer.
@@ -1869,6 +1879,7 @@ async function runGateWithLease({
       ], cleanupFailure?.code || adjudicationCleanup?.code || null, [
         ...settledShards.filter((result) => result.status === 'rejected'),
         ...(lensAllFailed ? settledLens : []),
+        ...drainedBatches,
       ]);
     }
     const lanes = lanesSettled.value || { lanes: [], findings: [] };
@@ -1881,7 +1892,7 @@ async function runGateWithLease({
       .map((result, index) => ({ result, shard: shards[index] }))
       .filter(({ result }) => result.status !== 'fulfilled');
     if (failedShards.length) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup, failures: drainedBatches } = await haltAdjudication();
       for (const { result, shard } of failedShards) failedProvider(shardProviders[shard.index], result.reason, result.retried);
       throw fallbackStop(await buildFailClosedError({
         paths: context.paths,
@@ -1902,10 +1913,10 @@ async function runGateWithLease({
         extra: {
           shards: shardRecords.map((record, index) => ({ ...record, completed: settledShards[index].status === 'fulfilled' })),
         },
-      }), failedShards.map(({ result }) => result));
+      }), [...failedShards.map(({ result }) => result), ...drainedBatches]);
     }
     if (!reviews.length) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup, failures: drainedBatches } = await haltAdjudication();
       settledLens.forEach((result, roleIndex) => {
         if (result.status === 'rejected') failedProvider(plan.reviewers[roleIndex], result.reason, result.retried);
       });
@@ -1922,7 +1933,7 @@ async function runGateWithLease({
           .filter((result) => result.status === 'rejected')
           .map((result) => providerTreeCleanupFailureCode(result.reason))
           .find(Boolean) || adjudicationCleanup?.code || null,
-      }), settledLens.filter((result) => result.status === 'rejected'));
+      }), [...settledLens.filter((result) => result.status === 'rejected'), ...drainedBatches]);
     }
     // A provider-tree cleanup failure fails the review closed even when
     // sibling reviewers succeeded: attesting or completing normally would
@@ -1930,7 +1941,7 @@ async function runGateWithLease({
     // watcher (§5 safety fence).
     const partialCleanupFailure = reviewerCleanupFailure(settledReviewers);
     if (partialCleanupFailure) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup } = await haltAdjudication();
       throw await buildFailClosedError({
         paths: context.paths,
         baseReport,
@@ -1943,7 +1954,7 @@ async function runGateWithLease({
     const streamed = await adjudicationStream.candidates();
     const candidates = streamed.candidates;
     if (streamed.overflow) {
-      const adjudicationCleanup = await haltAdjudication();
+      const { cleanup: adjudicationCleanup } = await haltAdjudication();
       // The kept reviews are what exceeded the bound: reusing them would
       // fail every rerun the same way, so the rerun reviews afresh.
       await removeShardCheckpoint(context.paths, identity).catch(() => {});
@@ -1991,7 +2002,7 @@ async function runGateWithLease({
         const failed = failedBatches.find((result) => providerTreeCleanupFailureCode(result.reason)) || failedBatches[0];
         if (failed) {
           adjudicationRetried = failed.retried === true;
-          adjudicationFailures = failedBatches;
+          adjudicationFailures = failedBatches.filter((result) => result.reason?.code !== ADJUDICATION_SKIPPED);
           throw failed.reason;
         }
         // Identity across heads comes from the REVIEWER's title (the one a
