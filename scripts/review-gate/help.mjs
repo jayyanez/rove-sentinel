@@ -16,7 +16,7 @@ Review:
   gate [--base REF] [--head REF] [--branch NAME]
        [--author auto|claude|codex|grok|human] [--risk low|medium|high]
        [--native-evidence TEXT] [--force] [--dry-run] [--json]
-       [--detach [--log PATH]] [--state-root PATH]
+       [--detach [--log PATH]] [--state-root PATH] [--accounts FILE]
   defer --report ID --finding ID[,ID...]|all --reason TEXT
        [--base REF] [--head REF] [--branch NAME]
 
@@ -40,6 +40,10 @@ ROVE_SENTINEL_AUTO_UPDATE=0 disables background installation, separately from no
 Optional integrations:
   ledger --pr N [--write] [--heading TEXT] [--json]
   design-evidence [--base REF] [--head REF] [--branch NAME]
+
+Several accounts of one CLI (CLAUDE_CONFIG_DIR, CODEX_HOME folders) are declared in a
+per-user accounts file, never in the repository: --accounts FILE or
+ROVE_SENTINEL_ACCOUNTS names it; status and doctor list them by label.
 
 Use --repo ROOT to target a checkout. Default review base: origin/main.
 At least one native AI CLI must be installed and subscription-authenticated.

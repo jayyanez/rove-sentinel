@@ -209,6 +209,10 @@ Arbitrary provider plugins are not public extension points yet. Do not set API k
 around an unsupported account: normal subscription runs scrub inherited API
 credentials, and installed watchers explicitly discard the billing override.
 
+Several accounts of one CLI are not repository configuration: they are paths
+on one person's machine, declared in a per-user accounts file that the policy
+digest never covers. See [accounts](models.md#accounts).
+
 The default base is `origin/main`. Use `gate --base <ref>` for an explicit
 foreground target. The pre-push workflow currently assumes the remote's `main`
 branch for new branches; projects with a different primary branch need an

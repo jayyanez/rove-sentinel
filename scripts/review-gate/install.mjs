@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CHARTER_VERSION, GATE_VERSION, LIMITS, TASK_PREFIX } from './constants.mjs';
-import { detectSubscriptions } from './subscriptions.mjs';
+import { detectSubscriptions, probeAccountSignIns } from './subscriptions.mjs';
+import { loadAccounts, readAccountState } from './accounts.mjs';
 import { readProviderHolds } from './usageLimits.mjs';
 import { modelSettings, validateModelClients } from './modelSettings.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from './context.mjs';
@@ -341,7 +342,7 @@ async function currentHooksPath(repoRoot) {
 
 export async function verifyPrerequisites(
   repoRoot,
-  { run = runProcess, env: sourceEnvironment = process.env, config = {} } = {},
+  { run = runProcess, env: sourceEnvironment = process.env, config = {}, accounts = null } = {},
 ) {
   const env = detachedWatcherEnvironment(sourceEnvironment);
   const probe = async (label, command, args) => {
@@ -358,7 +359,7 @@ export async function verifyPrerequisites(
     return (result.stdout || result.stderr).split(/\r?\n/).find(Boolean) || 'available';
   };
   const [subscriptions, git, gh] = await Promise.all([
-    detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env }),
+    detectSubscriptions(repoRoot, { mode: config.providers ?? 'auto', run, env, ...(accounts ? { accounts } : {}) }),
     probe('Git version check', 'git', ['--version']),
     probe('GitHub CLI authentication check', 'gh', ['auth', 'status']),
   ]);
@@ -904,12 +905,42 @@ export function watcherState({ running, compatible, heartbeat, lock, daemonError
   };
 }
 
+/**
+ * The user's review accounts as `status` lists them, by label: signed in or
+ * not, the live hold and the last review. Null when none are configured;
+ * an unreadable accounts file is reported, never thrown.
+ */
+export async function accountsStatus(context, { accountsFile, run = runProcess, load = loadAccounts } = {}) {
+  let accounts;
+  try {
+    accounts = await load({ file: accountsFile });
+  } catch (error) {
+    return { error: error?.message || String(error) };
+  }
+  if (!accounts) return null;
+  const [signIns, state] = await Promise.all([
+    probeAccountSignIns(context.repoRoot, accounts, { run, env: detachedWatcherEnvironment({ ...process.env }) }),
+    readAccountState(context.paths).catch(() => ({ holds: {}, lastUsed: {} })),
+  ]);
+  return Object.fromEntries(Object.entries(accounts).map(([provider, list]) => [provider, list.map((account) => {
+    const signIn = signIns[provider]?.find((entry) => entry.label === account.label);
+    return {
+      label: account.label,
+      signedIn: Boolean(signIn?.signedIn),
+      ...(signIn?.error ? { error: signIn.error } : {}),
+      hold: Object.hasOwn(state.holds[provider] ?? {}, account.label) ? state.holds[provider][account.label] : null,
+      lastUsed: Object.hasOwn(state.lastUsed[provider] ?? {}, account.label) ? state.lastUsed[provider][account.label] : null,
+    };
+  })]));
+}
+
 export async function gateStatus(
-  { repoRoot = process.cwd() } = {},
+  { repoRoot = process.cwd(), accountsFile } = {},
   {
     createContext = createGateContext,
     getHooksPath = currentHooksPath,
     run = runProcess,
+    loadUserAccounts = loadAccounts,
   } = {},
 ) {
   const context = await createContext(repoRoot);
@@ -1011,6 +1042,8 @@ export async function gateStatus(
     // Live usage-limit records: `auto` leaves these providers out
     // of new reviews until `retryAfter`; an explicit requirement is refused.
     providerHolds: await readProviderHolds(context.paths).catch(() => ({})),
+    // Review accounts, by label, when the user configured any.
+    ...await accountsStatus(context, { accountsFile, run, load: loadUserAccounts }).then((accounts) => (accounts ? { accounts } : {})),
     models: installedPolicy ? modelSettings(installedPolicy.config) : null,
     reviewTiming,
     hookInstalled: hooksPathIsOurs(context.repoRoot, hooksPath),

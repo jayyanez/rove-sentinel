@@ -5,6 +5,7 @@ import { maybeStartUpdateWorker } from './automatic-updates.mjs';
 import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
 import { createGateContext, runGate } from './gate.mjs';
+import { loadAccounts } from './accounts.mjs';
 import { recoverStaleReviewResources } from './git.mjs';
 import { syncPullRequests } from './github.mjs';
 import {
@@ -242,6 +243,9 @@ async function processOne(context, progress) {
           stateRoot: context.stateRoot,
           policy: context.policy,
           progress,
+          // The watcher's own accounts file, read for each review; the
+          // request carries only the author's account digests.
+          accounts: await loadAccounts(),
         });
         await completeRequest(context.paths, claim, { status: result.status, result });
       } catch (error) {
@@ -371,7 +375,8 @@ export async function runWatcher({
                 { activity: 'github-review' },
                 () => syncPulls({
                   context,
-                  runGate: (options) => runGate({ ...options, policy: context.policy }),
+                  // A pull request's author account is not known here.
+                  runGate: async (options) => runGate({ ...options, policy: context.policy, accounts: await loadAccounts() }),
                   progress,
                   shouldStop: () => stopped,
                   shouldYield: async () => (

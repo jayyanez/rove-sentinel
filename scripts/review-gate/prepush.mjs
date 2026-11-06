@@ -19,6 +19,7 @@ import { CHARTER_VERSION, GATE_VERSION, LIMITS } from './constants.mjs';
 import { loadInstalledReviewPolicy } from './context.mjs';
 import { undisposedRefusal } from './dispositions.mjs';
 import { createGateContext, formatGateResult, runGate } from './gate.mjs';
+import { requesterAccountKeys } from './accounts.mjs';
 import {
   evidenceLayout,
   evidenceScreenshotPaths,
@@ -78,7 +79,7 @@ export function nonPassRemediation(status) {
   return 'Push blocked by the shared review gate. Resolve the findings and rerun npx --no-install rove-sentinel gate.';
 }
 
-export function buildGateRequestOptions({ repoRoot, identity, branch }) {
+export function buildGateRequestOptions({ repoRoot, identity, branch, env = process.env }) {
   if (!identity?.baseSha || !identity?.headSha) {
     throw new Error('Shared review request requires an exact immutable review identity.');
   }
@@ -88,6 +89,10 @@ export function buildGateRequestOptions({ repoRoot, identity, branch }) {
     head: identity.headSha,
     branch,
     author: inferAuthor(branch),
+    // The author's account: digests of this process's CLAUDE_CONFIG_DIR and
+    // CODEX_HOME (or the CLIs' defaults). The watcher's own are not the
+    // author's, and no path is queued.
+    requesterAccounts: requesterAccountKeys(env),
   };
 }
 

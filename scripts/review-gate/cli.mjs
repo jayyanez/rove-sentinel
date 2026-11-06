@@ -13,6 +13,7 @@ import { firstUseToolsNotice, formatToolsNotice, installPlan, installTools, miss
 import { readReviewPolicy, loadInstalledReviewPolicy, policyForLocalCheck } from './context.mjs';
 import { checkModels } from './modelCheck.mjs';
 import { describeProviderHold, readProviderHolds } from './usageLimits.mjs';
+import { describeAccountHold, loadAccounts, readAccountState, requesterAccountKeys } from './accounts.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
@@ -45,7 +46,7 @@ import { runPrePush } from './prepush.mjs';
 function parseArgs(args) {
   const options = {};
   const positional = [];
-  const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log']);
+  const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log', 'accounts']);
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (!value.startsWith('--')) {
@@ -253,7 +254,8 @@ async function main() {
         if (!String(error.message).includes('no installed policy snapshot')) throw error;
         return readReviewPolicy(root);
       });
-    const result = await verifyPrerequisites(root, { config: policy.config });
+    const accounts = await loadAccounts({ file: options.accounts });
+    const result = await verifyPrerequisites(root, { config: policy.config, accounts });
     result.lintTools = await detectLintTools({ config: policy.config });
     const missingLintTools = await missingTools({ config: policy.config });
     if (missingLintTools.length) result.lintToolsInstall = formatToolsNotice(missingLintTools);
@@ -268,6 +270,13 @@ async function main() {
     result.providerHolds = await readProviderHolds(context.paths).catch(() => ({}));
     for (const [provider, record] of Object.entries(result.providerHolds)) {
       process.stderr.write(`${describeProviderHold(provider, record)}.\n`);
+    }
+    if (accounts) {
+      // By label: never a folder.
+      result.accountHolds = (await readAccountState(context.paths).catch(() => ({ holds: {} }))).holds;
+      for (const [provider, holds] of Object.entries(result.accountHolds)) {
+        for (const [label, record] of Object.entries(holds)) process.stderr.write(`${describeAccountHold(provider, label, record)}.\n`);
+      }
     }
     print(result, true);
     return;
@@ -297,6 +306,9 @@ async function main() {
       force: options.force,
       dryRun: options['dry-run'],
       progress: (message) => process.stderr.write(`${message}\n`),
+      accounts: await loadAccounts({ file: options.accounts }),
+      // This shell asks for the review: its account is the author's.
+      requesterAccounts: requesterAccountKeys(process.env),
     });
     print(options.json ? result : formatGateResult(result), options.json);
     if (!['pass', 'planned'].includes(result.status)) process.exitCode = 1;
@@ -396,7 +408,7 @@ async function main() {
     return;
   }
   if (command === 'status') {
-    const result = await gateStatus({ repoRoot });
+    const result = await gateStatus({ repoRoot, accountsFile: options.accounts });
     result.updates = await checkForUpdates({ enabled: options['update-check'] !== false
       && process.env.ROVE_SENTINEL_UPDATE_CHECK !== '0' });
     result.engine = await updateInformation((await createGateContext(repoRoot)).paths);

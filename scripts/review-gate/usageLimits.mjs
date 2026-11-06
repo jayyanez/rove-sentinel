@@ -286,7 +286,7 @@ function codexErrorLines(text) {
 
 export const HOLD_REASONS = Object.freeze(['usage-limit', 'provider-failure']);
 
-function validRecord(value) {
+export function validHoldRecord(value) {
   return Boolean(value && typeof value === 'object' &&
     (value.reason === undefined || HOLD_REASONS.includes(value.reason)) &&
     typeof value.since === 'string' && Number.isFinite(Date.parse(value.since)) &&
@@ -304,7 +304,7 @@ async function readRaw(paths) {
     return {};
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(PROVIDERS.filter((provider) => validRecord(value[provider]))
+  return Object.fromEntries(PROVIDERS.filter((provider) => validHoldRecord(value[provider]))
     .map((provider) => [provider, { reason: 'usage-limit', ...value[provider] }]));
 }
 
@@ -328,6 +328,15 @@ export function providerHoldRecord({ reason = 'usage-limit', resetAt = null, mes
   };
 }
 
+/**
+ * Whether a new hold replaces the one held: a usage limit outranks a
+ * failure, and of one reason the later retry time wins.
+ */
+export function strongerHold(record, held) {
+  return !held || (record.reason === 'usage-limit' && held.reason !== 'usage-limit')
+    || (record.reason === held.reason && Date.parse(record.retryAfter) > Date.parse(held.retryAfter));
+}
+
 /** Record holds; other live holds are kept. A usage limit outranks a failure. */
 export async function recordProviderHolds(paths, hits, { now = Date.now() } = {}) {
   const records = await readProviderHolds(paths, { now });
@@ -337,10 +346,7 @@ export async function recordProviderHolds(paths, hits, { now = Date.now() } = {}
     const record = providerHoldRecord(hit, { now });
     // Weighed against the hold already on disk too: a failure never
     // replaces a usage limit, whose reset it would lose.
-    const held = added[hit.provider] ?? records[hit.provider];
-    const stronger = !held || (record.reason === 'usage-limit' && held.reason !== 'usage-limit')
-      || (record.reason === held.reason && Date.parse(record.retryAfter) > Date.parse(held.retryAfter));
-    if (stronger) added[hit.provider] = record;
+    if (strongerHold(record, added[hit.provider] ?? records[hit.provider])) added[hit.provider] = record;
   }
   if (!Object.keys(added).length) return records;
   const next = { ...records, ...added };
@@ -359,6 +365,10 @@ export async function clearProviderHolds(paths, providers) {
 
 /** "codex usage limit reached; retry after 2026-11-10T15:00:00.000Z" */
 export function describeProviderHold(provider, record) {
+  if (Array.isArray(record.accounts)) {
+    // Derived from review accounts: every one the review may use is held.
+    return `every configured ${provider} account (${record.accounts.join(', ')}) is held back by ${record.reason === 'usage-limit' ? 'its usage limit' : 'a usage limit or a recent failure'}; retry after ${record.retryAfter}`;
+  }
   if (record.reason === 'provider-failure') {
     return `${provider} failed a recent review and is held back; retry after ${record.retryAfter}`;
   }

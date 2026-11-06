@@ -46,6 +46,7 @@ When a review still fails, read the report's own account of why
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
 | A provider that fails a round, or reports its usage limit | One restart per review. Held out of `auto` reviews for 1 hour after a failure; until the reported reset after a usage limit (1 hour when none could be read, at most 8 days) | Under `auto` the review restarts once without it; a second failure fails closed. An explicit requirement never falls back, and a usage limit refuses it until the reset |
+| Review accounts (unreleased) | 8 per provider, declared in a per-user file; one restart per account that fails, plus the one provider restart | A failing account is held as a provider would be, and the review restarts with the provider's next account, under any requirement; the provider is dropped (under `auto` only) when none remains. See [models](models.md#accounts) |
 
 The exact values are in `scripts/review-gate/constants.mjs`; the
 [architecture](architecture.md) explains each stage.
