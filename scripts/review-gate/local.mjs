@@ -148,7 +148,26 @@ export function assertPolicyOutside({ configFile, config, roots, platform = proc
  * What a local installation will write: Git's own pre-push hook, refused when
  * Git would not run it (core.hooksPath is set) or when another hook is there.
  */
-export async function prepareLocalHook({ repoRoot, launcher, hooksPath, git = runGit }) {
+/**
+ * Every change to the hook relies on an exclusive hard link, so a file system
+ * without them (FAT, some network shares) would leave a replaced hook neither
+ * written nor restorable: it is refused before anything changes.
+ */
+export async function assertHardLinks(folder, { linkFile = link } = {}) {
+  await mkdir(folder, { recursive: true });
+  const probe = path.join(folder, `.rove-sentinel-link-probe-${process.pid}-${randomUUID().slice(0, 8)}`);
+  try {
+    await writeFile(probe, '', { flag: 'wx' });
+    await linkFile(probe, `${probe}-linked`);
+  } catch (error) {
+    throw new Error(`A local installation needs hard links in ${folder}, to change the hook without ever leaving part of one or replacing another's, and this file system refused one (${error?.code || error?.message}). Use an installation from the project's files here.`);
+  } finally {
+    await rm(`${probe}-linked`, { force: true });
+    await rm(probe, { force: true });
+  }
+}
+
+export async function prepareLocalHook({ repoRoot, launcher, hooksPath, git = runGit, linkFile = link }) {
   if (hooksPath) {
     const ours = hooksPath.replaceAll('\\', '/') === '.githooks';
     throw new Error(ours
@@ -156,6 +175,7 @@ export async function prepareLocalHook({ repoRoot, launcher, hooksPath, git = ru
       : `core.hooksPath=${hooksPath} is set, so Git would not run a hook in its own hooks folder; it was preserved. A local installation cannot share the pre-push hook with another: unset core.hooksPath, or use an installation from the project's files, which integrates with an existing hook (docs/installation.md#existing-git-hooks).`);
   }
   const hookPath = await defaultHookPath(repoRoot, { git });
+  await assertHardLinks(path.dirname(hookPath), { linkFile });
   const existing = await readOptional(hookPath);
   if (existing !== null && localHookLauncher(existing) === null) {
     throw new Error(`Existing Git pre-push hook at ${hookPath} was preserved. A local installation cannot share the pre-push hook with another: remove that hook, or use an installation from the project's files, which integrates with it (docs/installation.md#existing-git-hooks).`);

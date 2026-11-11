@@ -159,7 +159,9 @@ it reviews or any of its worktrees, which all run that hook. Git runs that
 folder's hooks only while `core.hooksPath` is unset, so `install --local` refuses
 when it is set (by a hook manager such as Husky, or by an earlier project
 installation), and when another pre-push hook is already there, and preserves
-both. A local installation does not share the pre-push hook: in such a repository,
+both. It also refuses a Git directory on a file system without hard links (FAT,
+some network shares), which it needs to change the hook safely. A local
+installation does not share the pre-push hook: in such a repository,
 use the project installation, which [integrates](#existing-git-hooks) with an
 existing hook.
 

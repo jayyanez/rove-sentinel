@@ -508,3 +508,20 @@ describe('the gate review of a2640c5', () => {
     expect(await readFile(hookPath, 'utf8')).toBe(earlier);
   });
 });
+
+describe('the gate review of 79aea3d', () => {
+  it('refuses, before anything changes, a hooks folder whose file system has no hard links', async () => {
+    const root = await temporary('rove-local-links-');
+    const repoRoot = await repository(root);
+    const launcher = await outsideLauncher(root);
+    const hookPath = await defaultHookPath(repoRoot);
+    await mkdir(path.dirname(hookPath), { recursive: true });
+    const earlier = localHookText('/Users/me/old/launcher.mjs');
+    await writeFile(hookPath, earlier);
+    const noLinks = async () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); };
+    await expect(prepareLocalHook({ repoRoot, launcher, hooksPath: '', linkFile: noLinks })).rejects.toThrow('needs hard links');
+    expect(await readFile(hookPath, 'utf8')).toBe(earlier);
+    expect((await readdir(path.dirname(hookPath))).filter((name) => name.includes('rove-sentinel'))).toEqual([]);
+    await expect(prepareLocalHook({ repoRoot, launcher, hooksPath: '' })).resolves.toMatchObject({ previous: earlier });
+  });
+});

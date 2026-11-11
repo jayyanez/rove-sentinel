@@ -85,7 +85,7 @@ export function sentinelLimits() {
       {
         id: 'local-installation',
         limit: 'core.hooksPath unset',
-        text: 'install --local keeps nothing in the repository\'s files: its pre-push hook is in Git\'s own hooks folder and calls a Sentinel installed outside the repository by its path, and its configuration is a file outside the repository or the defaults. Git runs that folder\'s hooks only while core.hooksPath is unset, so install --local refuses while it is set, or while another pre-push hook is there, and preserves both.',
+        text: 'install --local keeps nothing in the repository\'s files: its pre-push hook is in Git\'s own hooks folder and calls a Sentinel installed outside the repository by its path, and its configuration is a file outside the repository or the defaults. Git runs that folder\'s hooks only while core.hooksPath is unset, so install --local refuses while it is set, or while another pre-push hook is there, and preserves both. It also needs hard links in the Git directory (not FAT or some network shares), and refuses before changing anything without them.',
       },
       {
         id: 'review-accounts',
