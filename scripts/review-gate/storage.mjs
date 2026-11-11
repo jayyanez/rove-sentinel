@@ -103,6 +103,8 @@ export function statePaths(root) {
     providerHolds: path.join(root, 'provider-holds.json'),
     accountState: path.join(root, 'account-state.json'),
     watcherAccounts: path.join(root, 'watcher-accounts.json'),
+    // How Sentinel is installed in this repository: from its files, or locally (1.19.0).
+    installation: path.join(root, 'installation.json'),
   };
 }
 

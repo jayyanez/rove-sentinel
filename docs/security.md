@@ -16,6 +16,15 @@ commit and policy digest; they are local evidence, not cryptographic proof to a
 remote server. A user controlling local files or Git configuration can bypass a
 local hook. Use independent server-side controls where required.
 
+A [local installation](installation.md#install-without-changing-the-repository)
+puts its hook in Git's own hooks folder, which the repository's commits cannot
+change, and the hook calls a Sentinel installed outside the repository by its
+path: `install --local` refuses a launcher inside the repository it reviews, so a
+branch cannot replace its own reviewer. Its configuration file is outside the
+repository too, and like any installed policy it is frozen at installation. The
+hook is invisible to the rest of the team, and no server-side control knows of
+it.
+
 Automatic PR discovery excludes forks and requires an allowed author with a
 same-repository head. This reduces unsolicited usage and exposure; it does not
 make every allowed commit safe. Manual reviews are an explicit trust decision.

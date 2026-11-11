@@ -36,8 +36,8 @@ npx --no-install rove-sentinel gate --base origin/main --head HEAD --detach
 git push -u origin HEAD
 ```
 
-The detached command returns immediately with a PID and a log path under
-`output/`. **That return is not a PASS.** Read the log and its final
+The detached command returns immediately with a PID and a log path in the
+repository's state folder. **That return is not a PASS.** Read the log and its final
 `[review-gate] exit 0` marker before pushing. The pre-push hook checks the exact
 ref, base, policy digest, and versions; a changed commit needs a compatible
 attestation. Missing evidence queues a review and waits within a bounded timeout.

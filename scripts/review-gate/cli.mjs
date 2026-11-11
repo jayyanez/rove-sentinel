@@ -46,7 +46,7 @@ import { runPrePush } from './prepush.mjs';
 function parseArgs(args) {
   const options = {};
   const positional = [];
-  const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log', 'accounts']);
+  const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log', 'accounts', 'config']);
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (!value.startsWith('--')) {
@@ -249,7 +249,9 @@ async function main() {
     warnOfWatcher(watcher, scheduler);
     // Desired configuration is used only for an explicit pre-install probe.
     const context = await createGateContext(root);
-    const policy = options['project-config'] ? await readReviewPolicy(root)
+    // --config probes a local installation's configuration file before installing.
+    const policy = options.config ? await readReviewPolicy(root, { configFile: options.config })
+      : options['project-config'] ? await readReviewPolicy(root)
       : await loadInstalledReviewPolicy(context.paths).catch(async (error) => {
         if (!String(error.message).includes('no installed policy snapshot')) throw error;
         return readReviewPolicy(root);
@@ -287,7 +289,9 @@ async function main() {
       cliPath: fileURLToPath(import.meta.url),
       args: rest,
       cwd: process.cwd(),
-      logPath: options.log ? path.resolve(options.log) : defaultDetachLogPath(root),
+      // By default in the repository's state folder, never in its files.
+      logPath: options.log ? path.resolve(options.log)
+        : defaultDetachLogPath((await createGateContext(root, { stateRoot: options['state-root'] })).stateRoot),
       exclusive: !options.log,
     }), true);
     return;
@@ -392,9 +396,14 @@ async function main() {
   }
   if (command === 'install') {
     // An engine update installs with --preserve-policy, and keeps the choice.
-    const github = options['preserve-policy'] ? undefined : options.github !== false;
+    // A local installation leaves pull requests alone unless --github says otherwise.
+    const github = options['preserve-policy'] ? undefined
+      : options.local ? options.github === true : options.github !== false;
     const result = await installGate({ repoRoot, dryRun: options['dry-run'], start: options.start !== false, github,
-      preservePolicy: Boolean(options['preserve-policy']), accountsFile: options.accounts });
+      preservePolicy: Boolean(options['preserve-policy']), accountsFile: options.accounts,
+      local: Boolean(options.local), configFile: options.config,
+      // The Sentinel this command was started as: a local hook calls it by its path.
+      launcherPath: process.argv[1] });
     if (!options['dry-run'] && !options['preserve-policy']) await configureAutomaticUpdates(await createGateContext(repoRoot), process.env.ROVE_SENTINEL_AUTO_UPDATE !== '0', { onlyIfMissing: true });
     if (!options['dry-run']) {
       const notice = formatToolsNotice(await missingTools({ config: await installedConfig(repoRoot) }));

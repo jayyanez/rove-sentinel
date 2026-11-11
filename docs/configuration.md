@@ -2,6 +2,10 @@
 
 Configuration is optional. The defaults work for any repository.
 Create `.rove-sentinel.json` at your repository root with `rove-sentinel init`.
+A [local installation](installation.md#install-without-changing-the-repository)
+reads the same fields from a file outside the repository, named with
+`install --local --config FILE`, and never reads `.rove-sentinel.json`; its
+`charter` and `lessons` paths are relative to that file's folder.
 
 ```json
 {

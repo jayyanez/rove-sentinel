@@ -17,6 +17,7 @@ See the [validation record](docs/validation.md) for what was tested.
 | You want to… | Read this |
 | --- | --- |
 | Install Sentinel in your project | [Installation guide](docs/installation.md) |
+| Use it without changing the repository | [Local installation](docs/installation.md#install-without-changing-the-repository) |
 | Run your first review and handle findings | [Usage guide](docs/usage.md) |
 | Understand automatic updates | [Update guide](docs/updates.md) |
 | Use Sentinel across agents and projects | [Multiple projects](docs/multiple-projects.md) |

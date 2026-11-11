@@ -68,9 +68,10 @@ On Windows, per-repository records live under
 `%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>`. `status` reports the actual paths. Reports and context may contain
 source code; do not upload that directory wholesale to a public issue.
 
-Detached foreground logs are written under the repository's `output/` directory.
-Add `output/` to your `.gitignore`. A detached process launch is incomplete until
-its log ends with an exit marker. A crashed or interrupted review is not a PASS.
+Detached foreground logs are written under the repository's state folder, in
+`logs/` (before 1.19.0, in the checkout's `output/` directory); `--log PATH`
+names another file. A detached process launch is incomplete until its log ends
+with an exit marker. A crashed or interrupted review is not a PASS.
 
 Local hooks can be bypassed by someone controlling their machine. Emergency
 bypass variables are retained for compatibility and are audited by exact SHA

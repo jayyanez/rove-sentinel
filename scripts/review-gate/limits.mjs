@@ -1,6 +1,6 @@
 import { GATE_VERSION, LIMITS } from './constants.mjs';
 
-// What this engine version accepts and where it stops (1.18.0), from the
+// What this engine version accepts and where it stops (1.19.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -83,6 +83,11 @@ export function sentinelLimits() {
         text: `Under providers: auto, a review whose provider work fails after its retry (any cause), or reports its usage limit (no retry), restarts once from scratch without that provider, and says so; a second failure fails closed. The provider is then held out of auto reviews for ${minutes(LIMITS.providerHoldReprobeMs)} after a failure, or until the reset it reported after a usage limit (${minutes(LIMITS.providerHoldReprobeMs)} when none could be read, at most ${Math.round(LIMITS.providerHoldMaxMs / 86_400_000)} days), or until it completes work. Under both, claude or codex nothing falls back, and a usage limit refuses the review until its reset. gate --force tries every provider; status lists the holds.`,
       },
       {
+        id: 'local-installation',
+        limit: 'core.hooksPath unset',
+        text: 'install --local keeps nothing in the repository\'s files: its pre-push hook is in Git\'s own hooks folder and calls a Sentinel installed outside the repository by its path, and its configuration is a file outside the repository or the defaults. Git runs that folder\'s hooks only while core.hooksPath is unset, so install --local refuses while it is set, or while another pre-push hook is there, and preserves both.',
+      },
+      {
         id: 'review-accounts',
         limit: `${LIMITS.maxAccountsPerProvider} accounts per provider`,
         text: `A user may declare up to ${LIMITS.maxAccountsPerProvider} accounts of each CLI (a CLAUDE_CONFIG_DIR or CODEX_HOME folder and a label) in a per-user accounts file, never in the repository. Reviewers avoid the author's own account while another is usable, and rotate through the rest. An account that fails or reports its usage limit is held, as a provider would be, and the review restarts from scratch with the provider's next account, under any provider requirement: one restart per failing account, plus the one provider restart under auto. Only labels reach reports.`,
@@ -118,6 +123,16 @@ export function sentinelLimits() {
         rule: 'Run recover and install after a restart to bring a watcher back',
         unnecessarySince: '1.16.1',
         why: 'A start replaces a lock when the machine booted after that lock\'s last heartbeat and its process is gone. Any other dead process\'s lock still needs both; status says why a watcher is stopped.',
+      },
+      {
+        rule: 'Commit Sentinel\'s dependency, configuration and hook to use the push gate',
+        unnecessarySince: '1.19.0',
+        why: 'install --local puts the hook in Git\'s own hooks folder and reads its configuration from a file outside the repository; nothing goes into the repository\'s files.',
+      },
+      {
+        rule: 'Ignore output/ for the logs of gate --detach',
+        unnecessarySince: '1.19.0',
+        why: 'The default log is in the repository\'s state folder, outside the checkout.',
       },
       {
         rule: 'Run install from an elevated shell on Windows',

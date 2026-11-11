@@ -300,16 +300,28 @@ ${inlined.join('\n\n') || '(none matched among the scanned briefs; consult the i
 ${unscanned > 0 ? `\nNOTE: ${unscanned} brief(s) beyond the bounded ${scanned.length}-file scan were NOT searched for matches; consult docs/bugs/open/ directly if a changed path may be covered there.\n` : ''}`;
 }
 
-export async function readReviewPolicy(policyRoot) {
+/**
+ * The policy installation snapshots: the configuration, and the charter and
+ * lessons it names, relative to `policyRoot`. A local installation names its
+ * configuration file outside the repository with `configFile`; its folder is
+ * then the policy root.
+ */
+export async function readReviewPolicy(policyRoot, { configFile, defaults = false } = {}) {
+  if (configFile) policyRoot = path.dirname(path.resolve(configFile));
   try {
-    const config = await readConfig(policyRoot);
+    // `defaults`: a local installation with no configuration file never reads
+    // the repository's own, whatever it holds.
+    const config = defaults ? normalizeConfig()
+      : await readConfig(policyRoot, configFile ? { file: path.resolve(configFile) } : {});
     const [charter, lessons] = await Promise.all([
       readFile(config.charter ? path.join(policyRoot, config.charter) : new URL('../../templates/charter.md', import.meta.url), 'utf8'),
       config.lessons ? readFile(path.join(policyRoot, config.lessons), 'utf8') : Promise.resolve('No project lessons configured.'),
     ]);
     return { charter, lessons, config };
   } catch (error) {
-    throw new Error(`Could not load Sentinel policy from ${policyRoot}. Check .rove-sentinel.json and reinstall from your trusted checkout. ${error?.message || String(error)}`);
+    throw new Error(configFile
+      ? `Could not load Sentinel policy from ${path.resolve(configFile)}. Check that configuration file and the charter and lessons it names. ${error?.message || String(error)}`
+      : `Could not load Sentinel policy from ${policyRoot}. Check .rove-sentinel.json and reinstall from your trusted checkout. ${error?.message || String(error)}`);
   }
 }
 
