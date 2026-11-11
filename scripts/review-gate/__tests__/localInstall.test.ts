@@ -459,3 +459,29 @@ describe('a hook written or removed meanwhile is never lost (gate review of 78b9
     expect(await readFile(raced.kept as string, 'utf8')).toBe(theirs);
   });
 });
+
+describe('the gate review of e6fe65a', () => {
+  it('puts the earlier hook back when the replacement could not be created', async () => {
+    const root = await temporary('rove-local-restore-');
+    const repoRoot = await repository(root);
+    const hookPath = await defaultHookPath(repoRoot);
+    await mkdir(path.dirname(hookPath), { recursive: true });
+    const earlier = localHookText('/Users/me/old/launcher.mjs');
+    const replacement = localHookText('/Users/me/new/launcher.mjs');
+    // The write moved the earlier hook aside, then failed before creating its own.
+    await expect(restoreLocalHook(hookPath, replacement, earlier)).resolves.toBeUndefined();
+    expect(await readFile(hookPath, 'utf8')).toBe(earlier);
+  });
+
+  it('reads worktree paths that hold a newline whole', async () => {
+    const listing = 'worktree /work/main\0HEAD abc\0branch refs/heads/main\0\0worktree /work/odd\nname\0HEAD def\0detached\0\0';
+    const git = vi.fn(async (_cwd: string, args: string[]) => (args[0] === 'worktree'
+      ? { code: 0, stdout: listing, stderr: '' }
+      : { code: 0, stdout: '/work/main/.git\n', stderr: '' }));
+    const roots = await repositoryRoots('/work/main', { git });
+    expect(git.mock.calls[0][1]).toEqual(['worktree', 'list', '--porcelain', '-z']);
+    expect(roots).toContain(path.resolve('/work/odd\nname'));
+    expect(() => assertPolicyOutside({ configFile: '/work/odd\nname/sentinel.json', config: {}, roots, realPath: (target: string) => target }))
+      .toThrow('could write the policy');
+  });
+});

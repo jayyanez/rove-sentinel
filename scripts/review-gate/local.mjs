@@ -90,9 +90,10 @@ function realOrSelf(target, realPath) {
  * its Git directory.
  */
 export async function repositoryRoots(repoRoot, { git = runGit } = {}) {
-  const listing = await git(repoRoot, ['worktree', 'list', '--porcelain']);
-  const worktrees = listing.split(/\r?\n/).filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length));
-  const commonDir = path.resolve(repoRoot, (await git(repoRoot, ['rev-parse', '--git-common-dir'])).trim());
+  // -z: a worktree path may hold a newline, which would cut a line-based listing.
+  const listing = await git(repoRoot, ['worktree', 'list', '--porcelain', '-z'], { result: true });
+  const worktrees = listing.stdout.split('\0').filter((field) => field.startsWith('worktree ')).map((field) => field.slice('worktree '.length));
+  const commonDir = path.resolve(repoRoot, (await git(repoRoot, ['rev-parse', '--git-common-dir'], { result: true })).stdout.replace(/\r?\n$/, ''));
   return [...new Set([repoRoot, ...worktrees, commonDir].map((entry) => path.resolve(entry)))];
 }
 
@@ -219,13 +220,14 @@ export async function writeLocalHook(hookPath, text, previous = null) {
 }
 
 /**
- * Undo an attempted write: only while the hook is still the one written
- * (`written`), put back what was there (`previous`) or nothing. A hook changed
- * since is someone's, and stays.
+ * Undo an attempted write: take away the hook written (`written`), if it is
+ * still there and unchanged, and put back what was there before (`previous`),
+ * also when the write moved it aside and then failed. A hook changed or
+ * created since is someone's, and stays.
  */
 export async function restoreLocalHook(hookPath, written, previous) {
   const taken = await takeOwnHook(hookPath, (text) => text.replaceAll('\r\n', '\n') === written);
-  if (taken.state !== 'taken' || previous === null) return;
+  if (taken.state === 'foreign' || previous === null) return;
   await createHook(hookPath, previous);
 }
 

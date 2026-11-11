@@ -11,30 +11,31 @@ another hook; a launcher inside the reviewed repository (in any letter case on W
 the managed engines refused; the policy read from a file outside the repository, with its
 lessons beside it, the repository's `.rove-sentinel.json` ignored and a missing file refused;
 the installation record; the install transaction writing the hook and the record without
-`core.hooksPath`, and taking both back, or restoring an earlier hook, when the watcher does not
-start; `status`; `uninstall` removing only its own hook; and a detached gate's default log in
-the state folder, with the checkout left clean. After the gate's review they also cover every
-worktree and the Git directory as the repository, for the launcher and for a configuration
-file, charter or lessons; another clone of the same remote neither replacing nor removing the
-installation, nor reported as holding it; and a hook written or changed meanwhile never
-overwritten, deleted or lost by an install, a rollback or an uninstall. 1,011 tests passed on
-Windows. The package
-smoke installs the archive outside a consumer repository, writes the local hook with the
-packaged module, and pushes through it to the packaged launcher.
+`core.hooksPath`, and taking both back, or restoring an earlier hook, when the watcher does
+not start; `status`; `uninstall` removing only its own hook; and a detached gate's default log
+in the state folder, with the checkout left clean. After the gate's review they also cover
+every worktree and the Git directory as the repository, for the launcher and for a
+configuration file, charter or lessons; another clone of the same remote neither replacing nor
+removing the installation, nor reported as holding it; and a hook written or changed meanwhile
+never overwritten, deleted or lost by an install, a rollback (an earlier hook is put back even
+when the replacement could not be created) or an uninstall; and worktree paths that hold a
+newline. 1,013 tests passed on Windows. The package smoke installs the archive outside a
+consumer repository, writes the local hook with the packaged module, and pushes through it to
+the packaged launcher.
 
 Live on Windows Server 2025, with a throwaway repository whose remote is a local bare
-repository, the packed archive installed with `npm install` in a folder of its own, and
-`{ "providers": "claude" }` in a configuration file outside the repository: `doctor --config`
-selected Claude Code only, `install --local --dry-run` probed the same, then `install --local` registered and started the watcher
-(`watcher-options.json` `github: false`), wrote `.git/hooks/pre-push` and left
-`core.hooksPath` unset. A `git push` of a code change ran the hook, the watcher reviewed it with
-Claude Code only and passed it, and the push completed. A plain `install` was refused, naming
-the local hook; `install --local` without `--config` kept the recorded file and `providers:
-claude`; `install --preserve-policy` run by the engine's own CLI, as an engine update does,
-kept the installation local and the hook byte for byte; `uninstall` removed the task, the hook
-and the record. `git status --porcelain --ignored --untracked-files=all` stayed empty
-throughout. Not yet live: a global npm installation, macOS, and an automatic update to a newer
-engine (none newer exists).
+repository, the packed archive installed with `npm install` in a folder of its own, and `{
+"providers": "claude" }` in a configuration file outside the repository: `doctor --config`
+selected Claude Code only, `install --local --dry-run` probed the same, then `install --local`
+registered and started the watcher (`watcher-options.json` `github: false`), wrote
+`.git/hooks/pre-push` and left `core.hooksPath` unset. A `git push` of a code change ran the
+hook, the watcher reviewed it with Claude Code only and passed it, and the push completed. A
+plain `install` was refused, naming the local hook; `install --local` without `--config` kept
+the recorded file and `providers: claude`; `install --preserve-policy` run by the engine's own
+CLI, as an engine update does, kept the installation local and the hook byte for byte;
+`uninstall` removed the task, the hook and the record. `git status --porcelain --ignored
+--untracked-files=all` stayed empty throughout. Not yet live: a global npm installation,
+macOS, and an automatic update to a newer engine (none newer exists).
 
 ## 1.18.0 review accounts — 2026-11-06
 
