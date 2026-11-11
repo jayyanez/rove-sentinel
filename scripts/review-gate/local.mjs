@@ -227,7 +227,7 @@ export async function prepareLocalHook({ repoRoot, launcher, node = process.exec
  * rather than replace a hook written in the meantime; the moved one is then
  * kept beside it and named. Returns `absent`, `taken` or `foreign`.
  */
-export async function takeOwnHook(hookPath, accept = (text) => localHookLauncher(text) !== null) {
+export async function takeOwnHook(hookPath, accept = (text) => localHookLauncher(text) !== null, { read = readFile } = {}) {
   const aside = `${hookPath}.rove-sentinel-${process.pid}-${randomUUID().slice(0, 8)}`;
   try {
     await rename(hookPath, aside);
@@ -235,19 +235,31 @@ export async function takeOwnHook(hookPath, accept = (text) => localHookLauncher
     if (error?.code === 'ENOENT') return { state: 'absent' };
     throw error;
   }
-  const text = await readFile(aside, 'utf8');
+  // Put the moved hook back exclusively; a hook written meanwhile is kept, and
+  // the moved one stays beside it, named.
+  const putBack = async () => {
+    try {
+      await link(aside, hookPath);
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      return { state: 'foreign', kept: aside };
+    }
+    await rm(aside, { force: true });
+    return { state: 'foreign' };
+  };
+  let text;
+  try {
+    text = await read(aside, 'utf8');
+  } catch (error) {
+    // Unread, it cannot be known as Sentinel's: it goes back before the error.
+    const back = await putBack();
+    throw new Error(`Could not read the Git pre-push hook at ${hookPath}; it was ${back.kept ? `kept at ${back.kept}` : 'put back'}: ${error?.message || String(error)}`, { cause: error });
+  }
   if (accept(text)) {
     await rm(aside, { force: true });
     return { state: 'taken', text };
   }
-  try {
-    await link(aside, hookPath);
-  } catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
-    return { state: 'foreign', kept: aside };
-  }
-  await rm(aside, { force: true });
-  return { state: 'foreign' };
+  return await putBack();
 }
 
 /**

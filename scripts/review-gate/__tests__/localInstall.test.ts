@@ -643,3 +643,15 @@ describe('the gate review of 555365c', () => {
     await expect(assertSameClone(installation, '/work/second/.git/hooks/pre-push', { check: gone })).resolves.toBeUndefined();
   });
 });
+
+describe('the CodeRabbit review of 4356fe4', () => {
+  it('puts a hook it moved aside back when it cannot read it', async () => {
+    const root = await temporary('rove-local-unreadable-');
+    const hookPath = path.join(root, 'pre-push');
+    await writeFile(hookPath, '#!/bin/sh\nmake lint\n');
+    const failing = async () => { throw Object.assign(new Error('input/output error'), { code: 'EIO' }); };
+    await expect(takeOwnHook(hookPath, () => true, { read: failing })).rejects.toThrow('put back');
+    expect(await readFile(hookPath, 'utf8')).toBe('#!/bin/sh\nmake lint\n');
+    expect((await readdir(root)).filter((name) => name.includes('rove-sentinel'))).toEqual([]);
+  });
+});
