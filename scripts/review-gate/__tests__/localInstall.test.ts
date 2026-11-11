@@ -619,3 +619,17 @@ describe('the gate review of e07f138', () => {
     await expect(assertSameClone(installation, await defaultHookPath(second))).rejects.toThrow('from another clone');
   });
 });
+
+describe('the CodeRabbit review of 1847ece', () => {
+  it('keeps another clone’s installation while any file is at its hook path, an edited hook included', async () => {
+    const root = await temporary('rove-local-clones-edit-');
+    const first = await repository(root);
+    const second = path.join(root, 'second');
+    execFileSync('git', ['clone', '-q', first, second]);
+    const firstHook = await defaultHookPath(first);
+    await mkdir(path.dirname(firstHook), { recursive: true });
+    await writeFile(firstHook, `${localHookText('/Users/me/tools/launcher.mjs')}make lint\n`, { mode: 0o755 });
+    const installation = { mode: 'local', hook: firstHook, launcher: '/Users/me/tools/launcher.mjs', node: process.execPath, config: null };
+    await expect(assertSameClone(installation, await defaultHookPath(second))).rejects.toThrow('from another clone');
+  });
+});

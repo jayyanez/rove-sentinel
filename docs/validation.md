@@ -24,7 +24,7 @@ changes, and probed without creating a hooks folder; and worktree paths that hol
 After CodeRabbit's review they cover Node run by its absolute path while a planted `node`
 comes first on `PATH`, a Node inside the repository refused, only the exact hook written
 replaced or removed, and a hook without its executable bit not counted outside Windows.
-1,021 tests passed on Windows. The package smoke installs the archive outside a
+1,022 tests passed on Windows. The package smoke installs the archive outside a
 consumer repository, writes the local hook with the packaged module, and pushes through it to
 the packaged launcher.
 
