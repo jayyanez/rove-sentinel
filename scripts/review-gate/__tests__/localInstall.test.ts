@@ -381,7 +381,8 @@ describe('another clone of the same remote (gate review of 78b9f7b)', () => {
     execFileSync('git', ['clone', '-q', first, second]);
     const firstHook = await defaultHookPath(first);
     await mkdir(path.dirname(firstHook), { recursive: true });
-    await writeFile(firstHook, localHookText('/Users/me/tools/launcher.mjs'));
+    // Executable, as the installer writes it: outside Windows, status counts only a hook Git runs.
+    await writeFile(firstHook, localHookText('/Users/me/tools/launcher.mjs'), { mode: 0o755 });
     const installation = { mode: 'local', hook: firstHook, launcher: '/Users/me/tools/launcher.mjs', node: process.execPath, config: null };
     return { root, first, second, firstHook, installation };
   }
@@ -599,5 +600,22 @@ describe('the CodeRabbit review of 40d4055', () => {
     // Git for Windows does not read the bit.
     await expect(localHookPresent(hookPath, ours, { platform: 'win32', executable: notExecutable })).resolves.toBe(true);
     await expect(localHookPresent(hookPath, localHookText('/Users/me/other/launcher.mjs'), { platform: 'win32' })).resolves.toBe(false);
+  });
+});
+
+describe('the gate review of e07f138', () => {
+  it('counts another clone’s hook as its installation even without its executable bit', async () => {
+    const root = await temporary('rove-local-clones-exec-');
+    const first = await repository(root);
+    const second = path.join(root, 'second');
+    execFileSync('git', ['clone', '-q', first, second]);
+    const firstHook = await defaultHookPath(first);
+    await mkdir(path.dirname(firstHook), { recursive: true });
+    const text = localHookText('/Users/me/tools/launcher.mjs');
+    await writeFile(firstHook, text, { mode: 0o644 });
+    await expect(localHookPresent(firstHook, null, { platform: 'linux', executable: async () => { throw new Error('denied'); }, runnable: false }))
+      .resolves.toBe(true);
+    const installation = { mode: 'local', hook: firstHook, launcher: '/Users/me/tools/launcher.mjs', node: process.execPath, config: null };
+    await expect(assertSameClone(installation, await defaultHookPath(second))).rejects.toThrow('from another clone');
   });
 });

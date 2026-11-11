@@ -309,11 +309,13 @@ export async function restoreLocalHook(hookPath, written, previous) {
  */
 export async function localHookPresent(hookPath, expected = null, {
   platform = process.platform, executable = (target) => access(target, fsConstants.X_OK),
+  // false: whether the hook is there, not whether Git would run it.
+  runnable = true,
 } = {}) {
   if (!hookPath) return false;
   const text = await readOptional(hookPath).catch(() => null);
   if (text === null || (expected === null ? localHookLauncher(text) === null : !sameText(text, expected))) return false;
-  if (platform === 'win32') return true;
+  if (!runnable || platform === 'win32') return true;
   return await executable(hookPath).then(() => true, () => false);
 }
 

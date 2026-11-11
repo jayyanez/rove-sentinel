@@ -704,7 +704,9 @@ export async function policyForEngineUpgrade(paths) {
  */
 export async function assertSameClone(installation, hookPath) {
   if (installation?.mode !== 'local' || sameHookPath(installation.hook, hookPath)) return;
-  if (await localHookPresent(installation.hook)) {
+  // Ownership, not health: the other clone's hook holds the installation
+  // whether or not Git would run it now (an executable bit lost, an edit).
+  if (await localHookPresent(installation.hook, null, { runnable: false })) {
     throw new Error(`Sentinel is installed locally for this repository from another clone, with its hook at ${installation.hook}. Run uninstall from that clone first.`);
   }
 }
