@@ -702,13 +702,19 @@ export async function policyForEngineUpgrade(paths) {
  * record. A local installation's hook is in one clone's Git directory: another
  * clone may neither replace nor remove that record while its hook is there.
  */
-export async function assertSameClone(installation, hookPath) {
+export async function assertSameClone(installation, hookPath, { check = access } = {}) {
   if (installation?.mode !== 'local' || sameHookPath(installation.hook, hookPath)) return;
   // Ownership, not health: any file at the other clone's recorded hook path
   // holds the installation, whether or not Git would run it now (an
   // executable bit lost) or it still reads as Sentinel's (an edit). Only a
   // clone whose hook is gone (deleted) gives it up.
-  if (await access(installation.hook).then(() => true, () => false)) {
+  // Only a path proven absent releases it; an error reading it (EACCES, EIO)
+  // proves nothing, and refuses.
+  const present = await check(installation.hook).then(() => true, (error) => {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+    throw new Error(`Could not tell whether another clone's local Sentinel hook is still at ${installation.hook}, so its installation was kept: ${error?.message || String(error)}`, { cause: error });
+  });
+  if (present) {
     throw new Error(`Sentinel is installed locally for this repository from another clone, with its hook at ${installation.hook}. Run uninstall from that clone first.`);
   }
 }

@@ -633,3 +633,13 @@ describe('the CodeRabbit review of 1847ece', () => {
     await expect(assertSameClone(installation, await defaultHookPath(second))).rejects.toThrow('from another clone');
   });
 });
+
+describe('the gate review of 555365c', () => {
+  it('keeps another clone’s installation when its hook path cannot be read', async () => {
+    const installation = { mode: 'local', hook: '/work/first/.git/hooks/pre-push', launcher: '/Users/me/tools/launcher.mjs', node: process.execPath, config: null };
+    const denied = async () => { throw Object.assign(new Error('permission denied'), { code: 'EACCES' }); };
+    await expect(assertSameClone(installation, '/work/second/.git/hooks/pre-push', { check: denied })).rejects.toThrow('was kept');
+    const gone = async () => { throw Object.assign(new Error('no such file'), { code: 'ENOENT' }); };
+    await expect(assertSameClone(installation, '/work/second/.git/hooks/pre-push', { check: gone })).resolves.toBeUndefined();
+  });
+});
