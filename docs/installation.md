@@ -153,9 +153,11 @@ no `package.json`, lockfile, `.npmrc`, `.rove-sentinel.json` or `.githooks/`.
 
 `install --local` writes the pre-push hook into Git's own hooks folder
 (`.git\hooks\pre-push`, which Git never commits and every worktree of the clone
-shares). The hook calls the Sentinel you ran by its full path, so it needs no
-`node_modules` in the project; Sentinel refuses to call one inside the repository
-it reviews or any of its worktrees, which all run that hook. Git runs that
+shares). The hook calls the Sentinel you ran, and the Node that ran it, by their
+full paths, so it needs no `node_modules` in the project and never runs a `node`
+that comes first on `PATH`; Sentinel refuses either inside the repository it
+reviews or any of its worktrees, which all run that hook. Run `install --local`
+again after moving Node or Sentinel to another folder. Git runs that
 folder's hooks only while `core.hooksPath` is unset, so `install --local` refuses
 when it is set (by a hook manager such as Husky, or by an earlier project
 installation), and when another pre-push hook is already there, and preserves
@@ -178,7 +180,9 @@ usual and keep the installation local; `rove-sentinel updates --disable --repo
 C:\src\project` keeps the engine you installed. To move to a newer launcher,
 install the newer release globally as in step 1; the hook keeps calling it. Run `install --local` again to change the configuration: without
 `--config` it reads the same file again, never the defaults. `uninstall` stops
-the watcher and removes the hook it wrote; a hook you edited is left for you.
+the watcher and removes the hook it wrote, exactly as it wrote it; a hook you
+edited is left for you. `status` counts the hook only while Git would run it:
+unchanged and, outside Windows, executable.
 To move to a project installation, `uninstall` first. Every clone of one remote
 shares Sentinel's state, so a local installation belongs to the clone it was made
 from: another clone of the same remote can neither replace nor remove it while

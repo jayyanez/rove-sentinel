@@ -14,6 +14,7 @@ import {
   localHookPresent,
   localHookText,
   localLauncher,
+  localNode,
   prepareLocalHook,
   readInstallation,
   removeInstallation,
@@ -200,8 +201,8 @@ describe('the installation record', () => {
     const root = await temporary('rove-local-record-');
     const paths = await ensureState(root);
     await expect(readInstallation(paths)).resolves.toBeNull();
-    await writeInstallation(paths, { mode: 'local', hook: '/repo/.git/hooks/pre-push', launcher: '/tools/launcher.mjs', config: null });
-    await expect(readInstallation(paths)).resolves.toMatchObject({ schemaVersion: 1, mode: 'local', config: null });
+    await writeInstallation(paths, { mode: 'local', hook: '/repo/.git/hooks/pre-push', launcher: '/tools/launcher.mjs', node: process.execPath, config: null });
+    await expect(readInstallation(paths)).resolves.toMatchObject({ schemaVersion: 1, mode: 'local', node: process.execPath, config: null });
     await atomicWriteJson(paths.installation, { schemaVersion: 1, mode: 'local' });
     await expect(readInstallation(paths)).rejects.toThrow('not one Sentinel wrote');
     await removeInstallation(paths);
@@ -217,7 +218,7 @@ describe('installing and uninstalling locally', () => {
     const paths = await ensureState(stateRoot);
     const launcher = await outsideLauncher(root);
     const localHook = await prepareLocalHook({ repoRoot, launcher, hooksPath: '' });
-    const installation = { mode: 'local', hook: localHook.hookPath, launcher, config: null };
+    const installation = { mode: 'local', hook: localHook.hookPath, launcher, node: process.execPath, config: null };
     const install = (startDetached: () => Promise<void>, overrides = {}) => executeInstallTransaction({
       context: { repoRoot, stateRoot, paths },
       plan: { platform: 'linux', unsupportedScheduler: true },
@@ -258,7 +259,7 @@ describe('installing and uninstalling locally', () => {
     const { paths, localHook, install } = await fixture();
     const earlier = localHookText('/Users/me/old/launcher.mjs');
     await writeFile(localHook.hookPath, earlier);
-    await writeInstallation(paths, { mode: 'local', hook: localHook.hookPath, launcher: '/Users/me/old/launcher.mjs', config: null });
+    await writeInstallation(paths, { mode: 'local', hook: localHook.hookPath, launcher: '/Users/me/old/launcher.mjs', node: process.execPath, config: null });
     await expect(install(async () => { throw new Error('spawn denied'); }, { localHook: { ...localHook, previous: earlier } }))
       .rejects.toThrow('spawn denied');
     expect(await readFile(localHook.hookPath, 'utf8')).toBe(earlier);
@@ -288,10 +289,10 @@ describe('installing and uninstalling locally', () => {
   it('removes only the hook it wrote', async () => {
     const { localHook, install } = await fixture();
     await install(async () => {});
-    await expect(removeLocalHook(localHook.hookPath)).resolves.toBe('removed-local-hook');
-    await expect(removeLocalHook(localHook.hookPath)).resolves.toBe('absent');
+    await expect(removeLocalHook(localHook.hookPath, localHook.hookText)).resolves.toBe('removed-local-hook');
+    await expect(removeLocalHook(localHook.hookPath, localHook.hookText)).resolves.toBe('absent');
     await writeFile(localHook.hookPath, `${localHook.hookText}make lint\n`);
-    await expect(removeLocalHook(localHook.hookPath)).resolves.toBe('manual');
+    await expect(removeLocalHook(localHook.hookPath, localHook.hookText)).resolves.toBe('manual');
     expect(await readFile(localHook.hookPath, 'utf8')).toContain('make lint');
   });
 
@@ -305,7 +306,7 @@ describe('installing and uninstalling locally', () => {
       loadUserAccounts: async () => null,
     });
     const installed = await status();
-    expect(installed.installation).toMatchObject({ mode: 'local', hook: localHook.hookPath, config: null });
+    expect(installed.installation).toMatchObject({ mode: 'local', hook: localHook.hookPath, node: process.execPath, config: null });
     expect(installed.hookInstalled).toBe(true);
     expect(installed.watcher.state).toBe('stopped');
     await rm(localHook.hookPath);
@@ -381,7 +382,7 @@ describe('another clone of the same remote (gate review of 78b9f7b)', () => {
     const firstHook = await defaultHookPath(first);
     await mkdir(path.dirname(firstHook), { recursive: true });
     await writeFile(firstHook, localHookText('/Users/me/tools/launcher.mjs'));
-    const installation = { mode: 'local', hook: firstHook, launcher: '/Users/me/tools/launcher.mjs', config: null };
+    const installation = { mode: 'local', hook: firstHook, launcher: '/Users/me/tools/launcher.mjs', node: process.execPath, config: null };
     return { root, first, second, firstHook, installation };
   }
 
@@ -535,5 +536,68 @@ describe('the gate review of f21023f', () => {
     await expect(prepareLocalHook({ repoRoot, launcher, hooksPath: '' })).resolves.toMatchObject({ previous: null });
     await expect(access(path.join(repoRoot, '.git', 'hooks'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await readdir(path.join(repoRoot, '.git'))).filter((name) => name.includes('rove-sentinel'))).toEqual([]);
+  });
+});
+
+describe('the CodeRabbit review of 40d4055', () => {
+  it('runs Node by its absolute path, never a node a repository puts first on PATH', async () => {
+    const root = await temporary('rove-local-node-');
+    const repoRoot = await repository(root);
+    const remote = path.join(root, 'remote.git');
+    execFileSync('git', ['init', '-q', '--bare', remote]);
+    git(repoRoot, 'remote', 'add', 'origin', remote);
+    const launcher = await outsideLauncher(root);
+    const prepared = await prepareLocalHook({ repoRoot, launcher, node: process.execPath, hooksPath: '' });
+    expect(prepared.hookText).toContain(`exec '${process.execPath.replaceAll('\\', '/')}' `);
+    await writeFile(prepared.hookPath, prepared.hookText, { mode: 0o755 });
+    // A planted `node` first on PATH, as npm's node_modules/.bin would be.
+    const planted = path.join(repoRoot, 'node_modules', '.bin');
+    await mkdir(planted, { recursive: true });
+    const marker = path.join(root, 'planted-ran');
+    await writeFile(path.join(planted, 'node'), `#!/bin/sh\necho ran > '${marker.replaceAll('\\', '/')}'\nexit 0\n`, { mode: 0o755 });
+    await writeFile(path.join(planted, 'node.cmd'), `@echo ran> "${marker}"\r\n`);
+    execFileSync('git', ['push', '-q', 'origin', 'main'], {
+      cwd: repoRoot, env: { ...process.env, PATH: `${planted}${path.delimiter}${process.env.PATH}` },
+    });
+    await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(JSON.parse(await readFile(path.join(root, 'hook-call.json'), 'utf8')).args[0]).toBe('pre-push');
+  });
+
+  it('refuses a Node inside the repository', async () => {
+    const root = await temporary('rove-local-node-');
+    const repoRoot = await repository(root);
+    const roots = await repositoryRoots(repoRoot);
+    expect(() => localNode(path.join(repoRoot, 'node_modules', '.bin', 'node.exe'), { roots })).toThrow('could change its own reviewer');
+    expect(localNode(process.execPath, { roots })).toBe(realpathSync.native(process.execPath));
+  });
+
+  it('replaces or removes only the exact hook it wrote, never another local hook or an edited one', async () => {
+    const root = await temporary('rove-local-exact-');
+    const repoRoot = await repository(root);
+    const hookPath = await defaultHookPath(repoRoot);
+    await mkdir(path.dirname(hookPath), { recursive: true });
+    const ours = localHookText('/Users/me/tools/launcher.mjs');
+    const another = localHookText('/Users/me/other/launcher.mjs');
+    // Another installation replaced the hook after this one read it.
+    await writeFile(hookPath, another);
+    await expect(writeLocalHook(hookPath, localHookText('/Users/me/new/launcher.mjs'), ours)).rejects.toThrow('changed during the installation');
+    expect(await readFile(hookPath, 'utf8')).toBe(another);
+    // Its launcher path edited by hand.
+    await expect(removeLocalHook(hookPath, ours)).resolves.toBe('manual');
+    expect(await readFile(hookPath, 'utf8')).toBe(another);
+    await expect(removeLocalHook(hookPath, another)).resolves.toBe('removed-local-hook');
+  });
+
+  it('does not report a hook Git would not run, without its executable bit', async () => {
+    const root = await temporary('rove-local-exec-');
+    const hookPath = path.join(root, 'pre-push');
+    const ours = localHookText('/Users/me/tools/launcher.mjs');
+    await writeFile(hookPath, ours);
+    const notExecutable = async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+    await expect(localHookPresent(hookPath, ours, { platform: 'linux', executable: notExecutable })).resolves.toBe(false);
+    await expect(localHookPresent(hookPath, ours, { platform: 'linux', executable: async () => {} })).resolves.toBe(true);
+    // Git for Windows does not read the bit.
+    await expect(localHookPresent(hookPath, ours, { platform: 'win32', executable: notExecutable })).resolves.toBe(true);
+    await expect(localHookPresent(hookPath, localHookText('/Users/me/other/launcher.mjs'), { platform: 'win32' })).resolves.toBe(false);
   });
 });

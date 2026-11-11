@@ -18,8 +18,8 @@ local hook. Use independent server-side controls where required.
 
 A [local installation](installation.md#install-without-changing-the-repository)
 puts its hook in Git's own hooks folder, which the repository's commits cannot
-change, and the hook calls a Sentinel installed outside the repository by its
-path: `install --local` refuses a launcher inside the repository it reviews, so a
+change, and the hook calls Node and a Sentinel installed outside the repository by
+their paths, never a `node` found on `PATH`: `install --local` refuses a launcher inside the repository it reviews, so a
 branch cannot replace its own reviewer. Its configuration file, and the charter
 and lessons it names, must be outside the repository too, and like any installed
 policy they are frozen at installation. The containment checks cover the clone's

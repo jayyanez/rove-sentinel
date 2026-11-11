@@ -21,7 +21,10 @@ never overwritten, deleted or lost by an install, a rollback (an earlier hook is
 when the replacement could not be created, or was cut short) or an uninstall, since a hook is
 created whole or not at all; a Git directory without hard links refused before anything
 changes, and probed without creating a hooks folder; and worktree paths that hold a newline.
-1,016 tests passed on Windows. The package smoke installs the archive outside a
+After CodeRabbit's review they cover Node run by its absolute path while a planted `node`
+comes first on `PATH`, a Node inside the repository refused, only the exact hook written
+replaced or removed, and a hook without its executable bit not counted outside Windows.
+1,020 tests passed on Windows. The package smoke installs the archive outside a
 consumer repository, writes the local hook with the packaged module, and pushes through it to
 the packaged launcher.
 

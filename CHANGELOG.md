@@ -9,15 +9,16 @@ installations are unchanged and nothing needs doing for them.
 - **`install --local`.** Run from a Sentinel installed outside the repository (globally, or
   in a folder of its own), it writes the pre-push hook into Git's own hooks folder
   (`git rev-parse --git-path hooks/pre-push`, never committed, shared by every worktree of
-  the clone), which calls that Sentinel's launcher by its absolute path. It leaves
+  the clone), which calls Node and that Sentinel's launcher by their absolute paths, never
+  a `node` found first on `PATH`. It leaves
   `core.hooksPath` alone, refuses while it is set or while another pre-push hook is there,
   and refuses a launcher inside the reviewed repository (any of its worktrees, which share
   the hook) or a managed engine. The policy comes from `--config FILE` outside the
   repository (its `charter` and `lessons` relative to that file, all refused inside it), or
   the defaults, never from the repository's `.rove-sentinel.json`; a reinstall without
   `--config` reads the recorded file again. The hook is written, replaced, rolled back and
-  removed without ever deleting or overwriting a hook Sentinel did not write, even one
-  written meanwhile, and another clone of the same remote cannot replace or remove the
+  removed without ever deleting or overwriting a hook other than the exact one Sentinel
+  wrote, even one written meanwhile; `status` counts it only while Git would run it, and another clone of the same remote cannot replace or remove the
   installation while its hook is there. The installation is
   recorded in the state folder (`installation.json`): an automatic engine update keeps it
   local, `status` reports `installation.mode`, and `uninstall` removes only the hook it

@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { chmod, link, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, chmod, link, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { runGit } from './git.mjs';
@@ -20,25 +21,44 @@ const LOCAL_HOOK_HEADER = `#!/bin/sh
 # It lives in Git's own hooks folder, outside the repository's tracked files.
 # \`rove-sentinel uninstall\` removes it.
 `;
-const LOCAL_HOOK_CALL = /^exec node '((?:[^'\n]|'\\'')+)' pre-push "\$@"\n$/;
+const QUOTED = "'((?:[^'\\n]|'\\\\'')+)'";
+const LOCAL_HOOK_CALL = new RegExp(`^exec ${QUOTED} ${QUOTED} pre-push "\\$@"\\n$`);
+const unquote = (value) => value.replaceAll("'\\''", "'");
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/** The hook text for a launcher path. Forward slashes: Git's sh and Node both take them on Windows. */
-export function localHookText(launcherPath) {
-  const portable = launcherPath.replaceAll('\\', '/');
-  if (/[\u0000-\u001f\u007f]/.test(portable)) throw new Error(`The Sentinel launcher path cannot be written into a hook: ${JSON.stringify(launcherPath)}`);
-  return `${LOCAL_HOOK_HEADER}exec node ${shellQuote(portable)} pre-push "$@"\n`;
+function quotedPath(value, label) {
+  const portable = value.replaceAll('\\', '/');
+  if (/[\u0000-\u001f\u007f]/.test(portable)) throw new Error(`The ${label} path cannot be written into a hook: ${JSON.stringify(value)}`);
+  return shellQuote(portable);
 }
 
-/** The launcher a hook text calls when it is a local hook this installer wrote, else null. */
+/**
+ * The hook text: Node and the launcher, both by absolute path, so a `node`
+ * that a repository puts first on PATH (npm puts node_modules/.bin there for
+ * its scripts) is never the one that runs. Forward slashes: Git's sh and
+ * Node both take them on Windows.
+ */
+export function localHookText(launcherPath, nodePath = process.execPath) {
+  return `${LOCAL_HOOK_HEADER}exec ${quotedPath(nodePath, 'Node')} ${quotedPath(launcherPath, 'Sentinel launcher')} pre-push "$@"\n`;
+}
+
+/** The launcher a hook text calls when it is a local hook this installer writes, else null. */
 export function localHookLauncher(text) {
   const normalized = String(text).replaceAll('\r\n', '\n');
   if (!normalized.startsWith(LOCAL_HOOK_HEADER)) return null;
   const match = LOCAL_HOOK_CALL.exec(normalized.slice(LOCAL_HOOK_HEADER.length));
-  return match ? match[1].replaceAll("'\\''", "'") : null;
+  return match ? unquote(match[2]) : null;
+}
+
+const sameText = (left, right) => typeof left === 'string' && typeof right === 'string'
+  && left.replaceAll('\r\n', '\n') === right.replaceAll('\r\n', '\n');
+
+/** The exact hook an installation record says Sentinel wrote. */
+export function installedHookText(installation) {
+  return localHookText(installation.launcher, installation.node);
 }
 
 /** Git's own pre-push hook path for this repository, as Git resolves it when core.hooksPath is unset. */
@@ -127,6 +147,16 @@ export async function localLauncher(launcherPath, {
   return resolved;
 }
 
+/** The Node a local hook runs, by its absolute path: never one inside the repository. */
+export function localNode(nodePath, { roots, platform = process.platform, realPath = realpathSync.native } = {}) {
+  const resolved = realOrSelf(nodePath, realPath);
+  const container = insideAny(resolved, roots, platform, realPath);
+  if (container) {
+    throw new Error(`A local installation runs Node by its path, and ${resolved} is inside ${container}: a branch could change its own reviewer. Run install --local with a Node installed outside the repository.`);
+  }
+  return resolved;
+}
+
 /**
  * A local installation's policy files (the configuration file, and the charter
  * and lessons it names) must be outside the repository, or a branch could
@@ -174,7 +204,7 @@ export async function assertHardLinks(folder, { linkFile = link } = {}) {
   }
 }
 
-export async function prepareLocalHook({ repoRoot, launcher, hooksPath, git = runGit, linkFile = link }) {
+export async function prepareLocalHook({ repoRoot, launcher, node = process.execPath, hooksPath, git = runGit, linkFile = link }) {
   if (hooksPath) {
     const ours = hooksPath.replaceAll('\\', '/') === '.githooks';
     throw new Error(ours
@@ -187,7 +217,7 @@ export async function prepareLocalHook({ repoRoot, launcher, hooksPath, git = ru
   if (existing !== null && localHookLauncher(existing) === null) {
     throw new Error(`Existing Git pre-push hook at ${hookPath} was preserved. A local installation cannot share the pre-push hook with another: remove that hook, or use an installation from the project's files, which integrates with it (docs/installation.md#existing-git-hooks).`);
   }
-  return { hookPath, hookText: localHookText(launcher), previous: existing };
+  return { hookPath, hookText: localHookText(launcher, node), previous: existing };
 }
 
 /**
@@ -249,7 +279,9 @@ export async function createHook(hookPath, text, { write = writeFile } = {}) {
  */
 export async function writeLocalHook(hookPath, text, previous = null, { write = writeFile } = {}) {
   if (previous !== null) {
-    const taken = await takeOwnHook(hookPath);
+    // Only the very hook the installation read: another local hook written
+    // since, by another installation or by hand, is not this one's to replace.
+    const taken = await takeOwnHook(hookPath, (current) => sameText(current, previous));
     if (taken.state === 'foreign') {
       throw new Error(`The Git pre-push hook at ${hookPath} changed during the installation; it was preserved${taken.kept ? `, and the one it replaced is at ${taken.kept}` : ''}.`);
     }
@@ -264,21 +296,30 @@ export async function writeLocalHook(hookPath, text, previous = null, { write = 
  * created since is someone's, and stays.
  */
 export async function restoreLocalHook(hookPath, written, previous) {
-  const taken = await takeOwnHook(hookPath, (text) => text.replaceAll('\r\n', '\n') === written);
+  const taken = await takeOwnHook(hookPath, (text) => sameText(text, written));
   if (taken.state === 'foreign' || previous === null) return;
   await createHook(hookPath, previous);
 }
 
-/** Whether a local hook this installer wrote is at that path. */
-export async function localHookPresent(hookPath) {
+/**
+ * Whether the hook at that path is one Git will run: exactly `expected` (the
+ * hook this installation wrote), or with no `expected` any local hook, and
+ * executable where Git requires it (it ignores a hook without the executable
+ * bit; Git for Windows does not read that bit).
+ */
+export async function localHookPresent(hookPath, expected = null, {
+  platform = process.platform, executable = (target) => access(target, fsConstants.X_OK),
+} = {}) {
   if (!hookPath) return false;
   const text = await readOptional(hookPath).catch(() => null);
-  return text !== null && localHookLauncher(text) !== null;
+  if (text === null || (expected === null ? localHookLauncher(text) === null : !sameText(text, expected))) return false;
+  if (platform === 'win32') return true;
+  return await executable(hookPath).then(() => true, () => false);
 }
 
-/** Remove the local hook if it is still one this installer wrote; a changed one is the person's to edit. */
-export async function removeLocalHook(hookPath) {
-  const taken = await takeOwnHook(hookPath);
+/** Remove the local hook only while it is exactly the one this installation wrote; a changed one is the person's to edit. */
+export async function removeLocalHook(hookPath, expected) {
+  const taken = await takeOwnHook(hookPath, (text) => sameText(text, expected));
   return taken.state === 'absent' ? 'absent' : taken.state === 'taken' ? 'removed-local-hook' : 'manual';
 }
 
@@ -289,14 +330,14 @@ export function sameHookPath(left, right, { platform = process.platform, realPat
 
 /**
  * How this repository's Sentinel is installed, recorded in its state folder:
- * `{ mode: 'project' }`, or `{ mode: 'local', hook, launcher, config }`. No
+ * `{ mode: 'project' }`, or `{ mode: 'local', hook, launcher, node, config }`. No
  * record is an installation from before 1.19.0, which is a project one.
  */
 export async function readInstallation(paths) {
   const record = await readJson(paths.installation, null);
   if (record === null) return null;
   if (record?.schemaVersion !== 1 || !['project', 'local'].includes(record.mode)
-    || (record.mode === 'local' && (typeof record.hook !== 'string' || typeof record.launcher !== 'string'
+    || (record.mode === 'local' && (typeof record.hook !== 'string' || typeof record.launcher !== 'string' || typeof record.node !== 'string'
       || (record.config !== null && typeof record.config !== 'string')))) {
     throw new Error(`The installation record ${paths.installation} is not one Sentinel wrote. Delete it, then run install again (with --local for a local installation).`);
   }

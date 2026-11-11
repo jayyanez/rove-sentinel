@@ -19,9 +19,11 @@ import { engineRoot } from './engine-store.mjs';
 import {
   assertPolicyOutside,
   defaultHookPath,
+  installedHookText,
   localHookLauncher,
   localHookPresent,
   localLauncher,
+  localNode,
   prepareLocalHook,
   repositoryRoots,
   sameHookPath,
@@ -619,7 +621,7 @@ export async function installGate({
   if (localMode && preservePolicy) {
     // An engine update: the hook calls the person's own launcher, which picks
     // the active engine, so it stays exactly as it is.
-    if (current || !await localHookPresent(installation.hook)
+    if (current || !await localHookPresent(installation.hook, installedHookText(installation))
       || !sameHookPath(installation.hook, await defaultHookPath(context.repoRoot))) {
       throw new Error(`The local Sentinel hook at ${installation.hook} is gone or changed, belongs to another clone, or core.hooksPath is now set. Run install --local again from the clone it reviews.`);
     }
@@ -627,13 +629,14 @@ export async function installGate({
   } else if (localMode) {
     roots = await repositoryRoots(context.repoRoot);
     const launcher = await localLauncher(launcherPath, { roots, engineStore: engineRoot() });
-    localHook = await prepareLocalHook({ repoRoot: context.repoRoot, launcher, hooksPath: current });
+    const node = localNode(process.execPath, { roots });
+    localHook = await prepareLocalHook({ repoRoot: context.repoRoot, launcher, node, hooksPath: current });
     await assertSameClone(installation, localHook.hookPath);
     // A reinstall keeps the configuration it was given, unless told another:
     // falling back to the defaults could select a provider the person excluded.
     const config = configFile ? path.resolve(configFile)
       : installation?.mode === 'local' ? installation.config : null;
-    installationRecord = { mode: 'local', hook: localHook.hookPath, launcher, config };
+    installationRecord = { mode: 'local', hook: localHook.hookPath, launcher, node, config };
   } else {
     const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
     await access(hook);
@@ -976,7 +979,7 @@ export async function uninstallGate({ repoRoot = process.cwd(), dryRun = false }
   // A local installation's hook is in Git's own hooks folder: the project's
   // generated hook is not touched by it, nor the reverse.
   const hookCleanup = mode === 'local'
-    ? await removeLocalHook(installation.hook)
+    ? await removeLocalHook(installation.hook, installedHookText(installation))
     : await uninstallGeneratedHook(context.repoRoot);
   await removeInstallation(context.paths);
   return { dryRun: false, mode, ...hook, hookCleanup, preserveHooksPath: true, plan,
@@ -1118,7 +1121,8 @@ export async function gateStatus(
   // The record is shared by every clone of the remote; the hook is in one clone's Git directory.
   const thisClone = installation?.mode === 'local'
     && sameHookPath(installation.hook, await defaultHookPath(context.repoRoot).catch(() => ''));
-  const localHookInstalled = installation?.mode === 'local' && await localHookPresent(installation.hook);
+  const localHookInstalled = installation?.mode === 'local'
+    && await localHookPresent(installation.hook, installedHookText(installation));
   const [heartbeatState, lockState, daemonErrorState, githubFailureState, pausedState, queueSubmitLockState] = await Promise.all([
     readStatusState(context.paths.heartbeat),
     readStatusState(context.paths.lock),
@@ -1223,7 +1227,7 @@ export async function gateStatus(
     // `local`: the hook is in Git's own hooks folder, and nothing of Sentinel
     // is in the repository's files (1.19.0). No record: a project installation.
     installation: installation?.mode === 'local'
-      ? { mode: 'local', hook: installation.hook, config: installation.config, launcher: installation.launcher, thisClone }
+      ? { mode: 'local', hook: installation.hook, config: installation.config, launcher: installation.launcher, node: installation.node, thisClone }
       : { mode: 'project' },
     ...(installationError ? { installationError } : {}),
     // Git runs a hook in its own folder only while core.hooksPath is unset.
