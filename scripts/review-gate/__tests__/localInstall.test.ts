@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { realpathSync, writeFileSync } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -483,5 +483,28 @@ describe('the gate review of e6fe65a', () => {
     expect(roots).toContain(path.resolve('/work/odd\nname'));
     expect(() => assertPolicyOutside({ configFile: '/work/odd\nname/sentinel.json', config: {}, roots, realPath: (target: string) => target }))
       .toThrow('could write the policy');
+  });
+});
+
+describe('the gate review of a2640c5', () => {
+  it('never leaves part of a hook, and a failed replacement is undone to the earlier hook', async () => {
+    const root = await temporary('rove-local-partial-');
+    const repoRoot = await repository(root);
+    const hookPath = await defaultHookPath(repoRoot);
+    await mkdir(path.dirname(hookPath), { recursive: true });
+    const earlier = localHookText('/Users/me/old/launcher.mjs');
+    const replacement = localHookText('/Users/me/new/launcher.mjs');
+    await writeFile(hookPath, earlier);
+    // The write stops after half the text, as a full disk would leave it.
+    const partial = async (target: string, text: string, options: object) => {
+      await writeFile(target, text.slice(0, text.length / 2), options);
+      throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+    };
+    await expect(writeLocalHook(hookPath, replacement, earlier, { write: partial })).rejects.toThrow('no space left');
+    await expect(access(hookPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readdir(path.dirname(hookPath))).filter((name) => name.includes('rove-sentinel'))).toEqual([]);
+
+    await restoreLocalHook(hookPath, replacement, earlier);
+    expect(await readFile(hookPath, 'utf8')).toBe(earlier);
   });
 });

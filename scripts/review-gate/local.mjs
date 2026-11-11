@@ -193,15 +193,26 @@ export async function takeOwnHook(hookPath, accept = (text) => localHookLauncher
   return { state: 'foreign' };
 }
 
-async function createHook(hookPath, text) {
+/**
+ * Create the hook whole or not at all: it is written in full beside its
+ * place, then linked there exclusively, so the path never holds part of it,
+ * and a hook that appeared meanwhile is never replaced.
+ */
+export async function createHook(hookPath, text, { write = writeFile } = {}) {
   await mkdir(path.dirname(hookPath), { recursive: true });
+  const staged = `${hookPath}.rove-sentinel-new-${process.pid}-${randomUUID().slice(0, 8)}`;
   try {
-    await writeFile(hookPath, text, { mode: 0o755, flag: 'wx' });
-  } catch (error) {
-    if (error?.code === 'EEXIST') throw new Error(`Another Git pre-push hook appeared at ${hookPath} during the installation; it was preserved.`);
-    throw error;
+    await write(staged, text, { mode: 0o755, flag: 'wx' });
+    await chmod(staged, 0o755).catch(() => {});
+    try {
+      await link(staged, hookPath);
+    } catch (error) {
+      if (error?.code === 'EEXIST') throw new Error(`Another Git pre-push hook appeared at ${hookPath} during the installation; it was preserved.`);
+      throw error;
+    }
+  } finally {
+    await rm(staged, { force: true });
   }
-  await chmod(hookPath, 0o755).catch(() => {});
 }
 
 /**
@@ -209,14 +220,14 @@ async function createHook(hookPath, text) {
  * only an earlier local hook (`previous`) and never another hook, even one
  * written since the installation looked.
  */
-export async function writeLocalHook(hookPath, text, previous = null) {
+export async function writeLocalHook(hookPath, text, previous = null, { write = writeFile } = {}) {
   if (previous !== null) {
     const taken = await takeOwnHook(hookPath);
     if (taken.state === 'foreign') {
       throw new Error(`The Git pre-push hook at ${hookPath} changed during the installation; it was preserved${taken.kept ? `, and the one it replaced is at ${taken.kept}` : ''}.`);
     }
   }
-  await createHook(hookPath, text);
+  await createHook(hookPath, text, { write });
 }
 
 /**

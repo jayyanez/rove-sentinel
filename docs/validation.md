@@ -18,8 +18,9 @@ every worktree and the Git directory as the repository, for the launcher and for
 configuration file, charter or lessons; another clone of the same remote neither replacing nor
 removing the installation, nor reported as holding it; and a hook written or changed meanwhile
 never overwritten, deleted or lost by an install, a rollback (an earlier hook is put back even
-when the replacement could not be created) or an uninstall; and worktree paths that hold a
-newline. 1,013 tests passed on Windows. The package smoke installs the archive outside a
+when the replacement could not be created, or was cut short) or an uninstall, since a hook is
+created whole or not at all; and worktree paths that hold a newline. 1,014 tests passed on
+Windows. The package smoke installs the archive outside a
 consumer repository, writes the local hook with the packaged module, and pushes through it to
 the packaged launcher.
 
