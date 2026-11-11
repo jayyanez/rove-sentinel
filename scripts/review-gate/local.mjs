@@ -1,5 +1,6 @@
 import { realpathSync } from 'node:fs';
-import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { chmod, link, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { runGit } from './git.mjs';
@@ -66,22 +67,48 @@ function isInside(child, parent, platform) {
   return folded === root || folded.startsWith(`${root}${path.sep}`) || folded.startsWith(`${root}/`);
 }
 
+/** The real path of a file, or of its nearest existing folder followed by the rest (short names and links resolved). */
 function realOrSelf(target, realPath) {
-  try {
-    return realPath(target);
-  } catch {
-    return path.resolve(target);
+  const resolved = path.resolve(target);
+  let base = resolved;
+  const rest = [];
+  for (;;) {
+    try {
+      return path.join(realPath(base), ...rest);
+    } catch {
+      const parent = path.dirname(base);
+      if (parent === base) return resolved;
+      rest.unshift(path.basename(base));
+      base = parent;
+    }
   }
 }
 
 /**
+ * Every folder of this clone a branch can write to: each of its worktrees
+ * (they all share Git's hooks folder, so the local hook runs for each) and
+ * its Git directory.
+ */
+export async function repositoryRoots(repoRoot, { git = runGit } = {}) {
+  const listing = await git(repoRoot, ['worktree', 'list', '--porcelain']);
+  const worktrees = listing.split(/\r?\n/).filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length));
+  const commonDir = path.resolve(repoRoot, (await git(repoRoot, ['rev-parse', '--git-common-dir'])).trim());
+  return [...new Set([repoRoot, ...worktrees, commonDir].map((entry) => path.resolve(entry)))];
+}
+
+function insideAny(target, roots, platform, realPath) {
+  const resolved = realOrSelf(target, realPath);
+  return roots.find((root) => isInside(resolved, realOrSelf(root, realPath), platform)) ?? null;
+}
+
+/**
  * The launcher a local hook may call: the Sentinel the person ran, by its
- * absolute path. Never one inside the reviewed repository, whose branch could
- * then change its own reviewer, and never a managed engine, which updates
- * remove once nothing uses it.
+ * absolute path. Never one inside the reviewed repository (any worktree of the
+ * clone, which all run the same hook), whose branch could then change its own
+ * reviewer, and never a managed engine, which updates remove once nothing uses it.
  */
 export async function localLauncher(launcherPath, {
-  repoRoot, engineStore, platform = process.platform, realPath = realpathSync.native,
+  repoRoot, roots = [repoRoot], engineStore, platform = process.platform, realPath = realpathSync.native,
 } = {}) {
   if (!launcherPath) throw new Error('A local installation needs the path of the Sentinel it runs; run it as rove-sentinel install --local.');
   const resolved = realOrSelf(launcherPath, realPath);
@@ -89,13 +116,31 @@ export async function localLauncher(launcherPath, {
   if (!info?.isFile() || !/^(launcher|cli)\.mjs$/.test(path.basename(resolved))) {
     throw new Error(`A local installation runs Sentinel's launcher by its path, and ${launcherPath} is not one. Run it as rove-sentinel install --local from a Sentinel installed outside the repository.`);
   }
-  if (isInside(resolved, realOrSelf(repoRoot, realPath), platform)) {
-    throw new Error(`A local installation must run a Sentinel installed outside the repository it reviews, and ${resolved} is inside ${repoRoot}: a branch could change its own reviewer. Install Sentinel globally (npm install --global) or in a folder of its own, and run install --local from there.`);
+  const container = insideAny(resolved, roots, platform, realPath);
+  if (container) {
+    throw new Error(`A local installation must run a Sentinel installed outside the repository it reviews, and ${resolved} is inside ${container}: a branch could change its own reviewer. Install Sentinel globally (npm install --global) or in a folder of its own, and run install --local from there.`);
   }
   if (engineStore && isInside(resolved, realOrSelf(engineStore, realPath), platform)) {
     throw new Error(`A local installation cannot call a managed engine (${resolved}): updates remove engines nothing uses. Run install --local from the Sentinel you installed.`);
   }
   return resolved;
+}
+
+/**
+ * A local installation's policy files (the configuration file, and the charter
+ * and lessons it names) must be outside the repository, or a branch could
+ * write the policy a reinstall snapshots.
+ */
+export function assertPolicyOutside({ configFile, config, roots, platform = process.platform, realPath = realpathSync.native }) {
+  if (!configFile) return;
+  const folder = path.dirname(path.resolve(configFile));
+  const files = [path.resolve(configFile), ...[config?.charter, config?.lessons].filter(Boolean).map((file) => path.join(folder, file))];
+  for (const file of files) {
+    const container = insideAny(file, roots, platform, realPath);
+    if (container) {
+      throw new Error(`A local installation reads its policy from outside the repository, and ${file} is inside ${container}: a branch could write the policy it is reviewed under. Keep the configuration file, and the charter and lessons it names, in a folder outside the repository.`);
+    }
+  }
 }
 
 /**
@@ -107,27 +152,81 @@ export async function prepareLocalHook({ repoRoot, launcher, hooksPath, git = ru
     const ours = hooksPath.replaceAll('\\', '/') === '.githooks';
     throw new Error(ours
       ? `core.hooksPath is .githooks, from a Sentinel installation from the project's files. A local installation needs Git's own hooks folder: run rove-sentinel uninstall, then git config --unset core.hooksPath, then install --local again.`
-      : `core.hooksPath=${hooksPath} is set, so Git would not run a hook in its own hooks folder; it was preserved. Add a call to node "${launcher}" pre-push "$@" to the pre-push hook in ${hooksPath} deliberately, or unset core.hooksPath.`);
+      : `core.hooksPath=${hooksPath} is set, so Git would not run a hook in its own hooks folder; it was preserved. A local installation cannot share the pre-push hook with another: unset core.hooksPath, or use an installation from the project's files, which integrates with an existing hook (docs/installation.md#existing-git-hooks).`);
   }
   const hookPath = await defaultHookPath(repoRoot, { git });
   const existing = await readOptional(hookPath);
   if (existing !== null && localHookLauncher(existing) === null) {
-    throw new Error(`Existing Git pre-push hook at ${hookPath} was preserved. Add a call to node "${launcher}" pre-push "$@" to it deliberately; see docs/installation.md.`);
+    throw new Error(`Existing Git pre-push hook at ${hookPath} was preserved. A local installation cannot share the pre-push hook with another: remove that hook, or use an installation from the project's files, which integrates with it (docs/installation.md#existing-git-hooks).`);
   }
   return { hookPath, hookText: localHookText(launcher), previous: existing };
 }
 
-/** Write a local hook, runnable where the file system keeps modes. */
-export async function writeLocalHook(hookPath, text) {
+/**
+ * Take a hook away only if it is one this installer wrote (`accept` decides),
+ * without ever deleting or overwriting another: the file is moved aside, read
+ * there, and a foreign one is put back with an exclusive link, which fails
+ * rather than replace a hook written in the meantime; the moved one is then
+ * kept beside it and named. Returns `absent`, `taken` or `foreign`.
+ */
+export async function takeOwnHook(hookPath, accept = (text) => localHookLauncher(text) !== null) {
+  const aside = `${hookPath}.rove-sentinel-${process.pid}-${randomUUID().slice(0, 8)}`;
+  try {
+    await rename(hookPath, aside);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { state: 'absent' };
+    throw error;
+  }
+  const text = await readFile(aside, 'utf8');
+  if (accept(text)) {
+    await rm(aside, { force: true });
+    return { state: 'taken', text };
+  }
+  try {
+    await link(aside, hookPath);
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    return { state: 'foreign', kept: aside };
+  }
+  await rm(aside, { force: true });
+  return { state: 'foreign' };
+}
+
+async function createHook(hookPath, text) {
   await mkdir(path.dirname(hookPath), { recursive: true });
-  await writeFile(hookPath, text, { mode: 0o755 });
+  try {
+    await writeFile(hookPath, text, { mode: 0o755, flag: 'wx' });
+  } catch (error) {
+    if (error?.code === 'EEXIST') throw new Error(`Another Git pre-push hook appeared at ${hookPath} during the installation; it was preserved.`);
+    throw error;
+  }
   await chmod(hookPath, 0o755).catch(() => {});
 }
 
-/** Put back what was there before an attempted write: the earlier text, or nothing. */
-export async function restoreLocalHook(hookPath, previous) {
-  if (previous === null) await rm(hookPath, { force: true });
-  else await writeLocalHook(hookPath, previous);
+/**
+ * Write a local hook, runnable where the file system keeps modes, replacing
+ * only an earlier local hook (`previous`) and never another hook, even one
+ * written since the installation looked.
+ */
+export async function writeLocalHook(hookPath, text, previous = null) {
+  if (previous !== null) {
+    const taken = await takeOwnHook(hookPath);
+    if (taken.state === 'foreign') {
+      throw new Error(`The Git pre-push hook at ${hookPath} changed during the installation; it was preserved${taken.kept ? `, and the one it replaced is at ${taken.kept}` : ''}.`);
+    }
+  }
+  await createHook(hookPath, text);
+}
+
+/**
+ * Undo an attempted write: only while the hook is still the one written
+ * (`written`), put back what was there (`previous`) or nothing. A hook changed
+ * since is someone's, and stays.
+ */
+export async function restoreLocalHook(hookPath, written, previous) {
+  const taken = await takeOwnHook(hookPath, (text) => text.replaceAll('\r\n', '\n') === written);
+  if (taken.state !== 'taken' || previous === null) return;
+  await createHook(hookPath, previous);
 }
 
 /** Whether a local hook this installer wrote is at that path. */
@@ -137,13 +236,15 @@ export async function localHookPresent(hookPath) {
   return text !== null && localHookLauncher(text) !== null;
 }
 
-/** Remove the local hook if it is still the one this installer wrote; a changed one is the person's to edit. */
+/** Remove the local hook if it is still one this installer wrote; a changed one is the person's to edit. */
 export async function removeLocalHook(hookPath) {
-  const text = await readOptional(hookPath);
-  if (text === null) return 'absent';
-  if (localHookLauncher(text) === null) return 'manual';
-  await rm(hookPath, { force: true });
-  return 'removed-local-hook';
+  const taken = await takeOwnHook(hookPath);
+  return taken.state === 'absent' ? 'absent' : taken.state === 'taken' ? 'removed-local-hook' : 'manual';
+}
+
+/** Whether two hook paths name the same file: the record's, and this clone's. */
+export function sameHookPath(left, right, { platform = process.platform, realPath = realpathSync.native } = {}) {
+  return fold(realOrSelf(left, realPath), platform) === fold(realOrSelf(right, realPath), platform);
 }
 
 /**

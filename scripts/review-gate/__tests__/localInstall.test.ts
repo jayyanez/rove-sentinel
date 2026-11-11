@@ -1,13 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, writeFileSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { executeInstallTransaction, gateStatus } from '../install.mjs';
+import { assertSameClone, executeInstallTransaction, gateStatus } from '../install.mjs';
 import {
+  assertPolicyOutside,
   defaultHookPath,
   localHookLauncher,
   localHookPresent,
@@ -17,7 +18,11 @@ import {
   readInstallation,
   removeInstallation,
   removeLocalHook,
+  repositoryRoots,
+  restoreLocalHook,
+  takeOwnHook,
   writeInstallation,
+  writeLocalHook,
 } from '../local.mjs';
 import { readReviewPolicy, reviewPolicySnapshot } from '../context.mjs';
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
@@ -315,5 +320,142 @@ describe('installing and uninstalling locally', () => {
     await initializeRepository(repoRoot);
     // The generated project hook is not a local one.
     expect(localHookLauncher(await readFile(path.join(repoRoot, '.githooks/pre-push'), 'utf8'))).toBeNull();
+  });
+});
+
+describe('what a branch cannot reach (gate review of 78b9f7b)', () => {
+  it('counts every worktree of the clone, and its Git directory, as the repository', async () => {
+    const root = await temporary('rove-local-roots-');
+    const repoRoot = await repository(root);
+    const linked = path.join(root, 'linked');
+    git(repoRoot, 'worktree', 'add', '-q', '--detach', linked);
+    const roots = (await repositoryRoots(linked)).map((entry) => realpathSync.native(entry).toLowerCase());
+    for (const expected of [repoRoot, linked, path.join(repoRoot, '.git')]) {
+      expect(roots).toContain(realpathSync.native(expected).toLowerCase());
+    }
+  });
+
+  it('refuses a launcher in another worktree of the clone, which runs the same hook', async () => {
+    const root = await temporary('rove-local-roots-');
+    const repoRoot = await repository(root);
+    const linked = path.join(root, 'linked');
+    git(repoRoot, 'worktree', 'add', '-q', '--detach', linked);
+    const inLinked = await outsideLauncher(linked, 'node_modules');
+    await expect(localLauncher(inLinked, { roots: await repositoryRoots(repoRoot) })).rejects.toThrow('a branch could change its own reviewer');
+  });
+
+  it('refuses a configuration file, or a charter or lessons it names, inside the repository', async () => {
+    const root = await temporary('rove-local-policy-outside-');
+    const repoRoot = await repository(root);
+    const linked = path.join(root, 'linked');
+    git(repoRoot, 'worktree', 'add', '-q', '--detach', linked);
+    const roots = await repositoryRoots(repoRoot);
+    const outside = path.join(root, 'settings', 'sentinel.json');
+    expect(() => assertPolicyOutside({ configFile: path.join(repoRoot, 'sentinel.json'), config: {}, roots })).toThrow('could write the policy');
+    expect(() => assertPolicyOutside({ configFile: path.join(linked, 'sentinel.json'), config: {}, roots })).toThrow('could write the policy');
+    expect(() => assertPolicyOutside({ configFile: path.join(repoRoot, '.git', 'sentinel.json'), config: {}, roots })).toThrow('could write the policy');
+    expect(() => assertPolicyOutside({ configFile: outside, config: { lessons: 'lessons.md' }, roots })).not.toThrow();
+    expect(() => assertPolicyOutside({ configFile: null, config: {}, roots })).not.toThrow();
+  });
+
+  it('says plainly that a local installation cannot share the hook, instead of offering a call that would not install', async () => {
+    const root = await temporary('rove-local-prepare-');
+    const repoRoot = await repository(root);
+    const launcher = await outsideLauncher(root);
+    await expect(prepareLocalHook({ repoRoot, launcher, hooksPath: '.husky' })).rejects.toThrow(/cannot share the pre-push hook/);
+    const hookPath = await defaultHookPath(repoRoot);
+    await mkdir(path.dirname(hookPath), { recursive: true });
+    await writeFile(hookPath, '#!/bin/sh\nmake lint\n');
+    const refusal = await prepareLocalHook({ repoRoot, launcher, hooksPath: '' }).catch((error) => error.message);
+    expect(refusal).toContain('cannot share the pre-push hook');
+    expect(refusal).not.toContain('Add a call');
+  });
+});
+
+describe('another clone of the same remote (gate review of 78b9f7b)', () => {
+  async function twoClones() {
+    const root = await temporary('rove-local-clones-');
+    const first = await repository(root);
+    const second = path.join(root, 'second');
+    execFileSync('git', ['clone', '-q', first, second]);
+    const firstHook = await defaultHookPath(first);
+    await mkdir(path.dirname(firstHook), { recursive: true });
+    await writeFile(firstHook, localHookText('/Users/me/tools/launcher.mjs'));
+    const installation = { mode: 'local', hook: firstHook, launcher: '/Users/me/tools/launcher.mjs', config: null };
+    return { root, first, second, firstHook, installation };
+  }
+
+  it('may not replace or remove a local installation while the other clone\'s hook is there', async () => {
+    const { second, firstHook, installation } = await twoClones();
+    await expect(assertSameClone(installation, await defaultHookPath(second))).rejects.toThrow('from another clone');
+    await expect(assertSameClone(installation, firstHook)).resolves.toBeUndefined();
+    // A clone that was deleted no longer holds the installation.
+    await rm(firstHook);
+    await expect(assertSameClone(installation, await defaultHookPath(second))).resolves.toBeUndefined();
+  });
+
+  it('is not reported as this clone\'s hook in status', async () => {
+    const { root, first, second, installation } = await twoClones();
+    const paths = await ensureState(path.join(root, 'state'));
+    await writeInstallation(paths, installation);
+    const status = (repoRoot: string) => gateStatus({ repoRoot }, {
+      createContext: async () => ({ repoRoot, stateRoot: paths.root, paths }),
+      getHooksPath: async () => '',
+      run: async () => ({ code: 1, stdout: '', stderr: 'ERROR: The system cannot find the file specified.' }),
+      loadUserAccounts: async () => null,
+    });
+    expect(await status(first)).toMatchObject({ hookInstalled: true, installation: { thisClone: true } });
+    expect(await status(second)).toMatchObject({ hookInstalled: false, installation: { thisClone: false } });
+  });
+});
+
+describe('a hook written or removed meanwhile is never lost (gate review of 78b9f7b)', () => {
+  async function hookFixture() {
+    const root = await temporary('rove-local-race-');
+    const repoRoot = await repository(root);
+    const hookPath = await defaultHookPath(repoRoot);
+    await mkdir(path.dirname(hookPath), { recursive: true });
+    return { hookPath };
+  }
+  const ours = localHookText('/Users/me/tools/launcher.mjs');
+  const theirs = '#!/bin/sh\nmake lint\n';
+
+  it('does not overwrite a hook that appeared after the installation looked', async () => {
+    const { hookPath } = await hookFixture();
+    await writeFile(hookPath, theirs);
+    await expect(writeLocalHook(hookPath, ours, null)).rejects.toThrow(/appeared at .* during the installation/);
+    expect(await readFile(hookPath, 'utf8')).toBe(theirs);
+  });
+
+  it('does not replace a hook that changed after the installation looked', async () => {
+    const { hookPath } = await hookFixture();
+    await writeFile(hookPath, theirs);
+    await expect(writeLocalHook(hookPath, ours, localHookText('/Users/me/old/launcher.mjs'))).rejects.toThrow('changed during the installation');
+    expect(await readFile(hookPath, 'utf8')).toBe(theirs);
+  });
+
+  it('leaves a hook changed after the attempted write when rolling back', async () => {
+    const { hookPath } = await hookFixture();
+    await writeFile(hookPath, theirs);
+    await restoreLocalHook(hookPath, ours, null);
+    expect(await readFile(hookPath, 'utf8')).toBe(theirs);
+    await writeFile(hookPath, ours);
+    await restoreLocalHook(hookPath, ours, null);
+    await expect(access(hookPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('puts a foreign hook back, and keeps it beside one written in the meantime', async () => {
+    const { hookPath } = await hookFixture();
+    await writeFile(hookPath, theirs);
+    await expect(takeOwnHook(hookPath)).resolves.toEqual({ state: 'foreign' });
+    expect(await readFile(hookPath, 'utf8')).toBe(theirs);
+    // Another hook is written between the move and the check.
+    const raced = await takeOwnHook(hookPath, (text) => {
+      writeFileSync(hookPath, 'newer');
+      return localHookLauncher(text) !== null;
+    });
+    expect(raced.state).toBe('foreign');
+    expect(await readFile(hookPath, 'utf8')).toBe('newer');
+    expect(await readFile(raced.kept as string, 'utf8')).toBe(theirs);
   });
 });

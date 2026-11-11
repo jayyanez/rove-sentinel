@@ -11,10 +11,14 @@ installations are unchanged and nothing needs doing for them.
   (`git rev-parse --git-path hooks/pre-push`, never committed, shared by every worktree of
   the clone), which calls that Sentinel's launcher by its absolute path. It leaves
   `core.hooksPath` alone, refuses while it is set or while another pre-push hook is there,
-  and refuses a launcher inside the reviewed repository or a managed engine. The policy
-  comes from `--config FILE` outside the repository (its `charter` and `lessons` relative
-  to that file), or the defaults, never from the repository's `.rove-sentinel.json`; a
-  reinstall without `--config` reads the recorded file again. The installation is
+  and refuses a launcher inside the reviewed repository (any of its worktrees, which share
+  the hook) or a managed engine. The policy comes from `--config FILE` outside the
+  repository (its `charter` and `lessons` relative to that file, all refused inside it), or
+  the defaults, never from the repository's `.rove-sentinel.json`; a reinstall without
+  `--config` reads the recorded file again. The hook is written, replaced, rolled back and
+  removed without ever deleting or overwriting a hook Sentinel did not write, even one
+  written meanwhile, and another clone of the same remote cannot replace or remove the
+  installation while its hook is there. The installation is
   recorded in the state folder (`installation.json`): an automatic engine update keeps it
   local, `status` reports `installation.mode`, and `uninstall` removes only the hook it
   wrote. Its watcher leaves pull requests alone unless `--github`. `doctor --config FILE`

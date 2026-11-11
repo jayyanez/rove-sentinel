@@ -17,10 +17,14 @@ import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { hookCallsSentinel, uninstallGeneratedHook } from './init.mjs';
 import { engineRoot } from './engine-store.mjs';
 import {
+  assertPolicyOutside,
+  defaultHookPath,
   localHookLauncher,
   localHookPresent,
   localLauncher,
   prepareLocalHook,
+  repositoryRoots,
+  sameHookPath,
   readInstallation,
   removeInstallation,
   removeLocalHook,
@@ -610,17 +614,21 @@ export async function installGate({
   }
   const current = await currentHooksPath(context.repoRoot);
   let localHook = null;
+  let roots = null;
   let installationRecord = { mode: 'project' };
   if (localMode && preservePolicy) {
     // An engine update: the hook calls the person's own launcher, which picks
     // the active engine, so it stays exactly as it is.
-    if (current || !await localHookPresent(installation.hook)) {
-      throw new Error(`The local Sentinel hook at ${installation.hook} is gone or changed, or core.hooksPath is now set. Run install --local again.`);
+    if (current || !await localHookPresent(installation.hook)
+      || !sameHookPath(installation.hook, await defaultHookPath(context.repoRoot))) {
+      throw new Error(`The local Sentinel hook at ${installation.hook} is gone or changed, belongs to another clone, or core.hooksPath is now set. Run install --local again from the clone it reviews.`);
     }
     installationRecord = installation;
   } else if (localMode) {
-    const launcher = await localLauncher(launcherPath, { repoRoot: context.repoRoot, engineStore: engineRoot() });
+    roots = await repositoryRoots(context.repoRoot);
+    const launcher = await localLauncher(launcherPath, { roots, engineStore: engineRoot() });
     localHook = await prepareLocalHook({ repoRoot: context.repoRoot, launcher, hooksPath: current });
+    await assertSameClone(installation, localHook.hookPath);
     // A reinstall keeps the configuration it was given, unless told another:
     // falling back to the defaults could select a provider the person excluded.
     const config = configFile ? path.resolve(configFile)
@@ -646,6 +654,7 @@ export async function installGate({
     : reviewPolicySnapshot(localMode
       ? await readReviewPolicy(context.repoRoot, installationRecord.config ? { configFile: installationRecord.config } : { defaults: true })
       : await readReviewPolicy(context.repoRoot));
+  if (roots) assertPolicyOutside({ configFile: installationRecord.config, config: policy.config, roots });
   const prerequisites = await installPrerequisites(context.repoRoot, { config: policy.config, accountsFile });
   const hooks = localMode
     ? { hooksPath: null, hook: installationRecord.hook, config: installationRecord.config }
@@ -683,6 +692,18 @@ export async function policyForEngineUpgrade(paths) {
   const charter = previous.config.charter === null
     ? await readFile(new URL('../../templates/charter.md', import.meta.url), 'utf8') : previous.charter;
   return reviewPolicySnapshot({ charter, lessons: previous.lessons, config: previous.config });
+}
+
+/**
+ * Every clone of one remote shares its state folder, and so its installation
+ * record. A local installation's hook is in one clone's Git directory: another
+ * clone may neither replace nor remove that record while its hook is there.
+ */
+export async function assertSameClone(installation, hookPath) {
+  if (installation?.mode !== 'local' || sameHookPath(installation.hook, hookPath)) return;
+  if (await localHookPresent(installation.hook)) {
+    throw new Error(`Sentinel is installed locally for this repository from another clone, with its hook at ${installation.hook}. Run uninstall from that clone first.`);
+  }
 }
 
 export async function assertDefaultHookAbsent(repoRoot) {
@@ -799,7 +820,7 @@ export async function executeInstallTransaction(
     }
     if (localHook) {
       localHookWritten = true;
-      await writeLocalHook(localHook.hookPath, localHook.hookText);
+      await writeLocalHook(localHook.hookPath, localHook.hookText, localHook.previous);
     }
     if (start) {
       await clearDaemonError(context.paths);
@@ -901,7 +922,7 @@ export async function executeInstallTransaction(
     // its own installation recorded.
     await attempt(() => restoreFile(context.paths.watcherAccounts, watcherAccountsBefore, { storedJson: true }));
     await attempt(() => restoreFile(context.paths.installation, installationBefore, { storedJson: true }));
-    if (localHookWritten) await attempt(() => restoreLocalHook(localHook.hookPath, localHook.previous));
+    if (localHookWritten) await attempt(() => restoreLocalHook(localHook.hookPath, localHook.hookText, localHook.previous));
     if (githubFailureBefore) await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
@@ -949,6 +970,7 @@ export async function uninstallGate({ repoRoot = process.cwd(), dryRun = false }
   const installation = await readInstallation(context.paths);
   const mode = installation?.mode ?? 'project';
   const hook = mode === 'local' ? { hook: installation.hook } : {};
+  if (mode === 'local') await assertSameClone(installation, await defaultHookPath(context.repoRoot));
   if (dryRun) return { dryRun: true, mode, ...hook, hooksPath: current, preserveHooksPath: true, plan };
   await executeUninstall({ context, plan, removeHooks: false });
   // A local installation's hook is in Git's own hooks folder: the project's
@@ -1093,6 +1115,9 @@ export async function gateStatus(
   } catch (error) {
     installationError = error?.message || String(error);
   }
+  // The record is shared by every clone of the remote; the hook is in one clone's Git directory.
+  const thisClone = installation?.mode === 'local'
+    && sameHookPath(installation.hook, await defaultHookPath(context.repoRoot).catch(() => ''));
   const localHookInstalled = installation?.mode === 'local' && await localHookPresent(installation.hook);
   const [heartbeatState, lockState, daemonErrorState, githubFailureState, pausedState, queueSubmitLockState] = await Promise.all([
     readStatusState(context.paths.heartbeat),
@@ -1198,11 +1223,11 @@ export async function gateStatus(
     // `local`: the hook is in Git's own hooks folder, and nothing of Sentinel
     // is in the repository's files (1.19.0). No record: a project installation.
     installation: installation?.mode === 'local'
-      ? { mode: 'local', hook: installation.hook, config: installation.config, launcher: installation.launcher }
+      ? { mode: 'local', hook: installation.hook, config: installation.config, launcher: installation.launcher, thisClone }
       : { mode: 'project' },
     ...(installationError ? { installationError } : {}),
     // Git runs a hook in its own folder only while core.hooksPath is unset.
-    hookInstalled: installation?.mode === 'local' ? localHookInstalled && !hooksPath : hooksPathIsOurs(context.repoRoot, hooksPath),
+    hookInstalled: installation?.mode === 'local' ? thisClone && localHookInstalled && !hooksPath : hooksPathIsOurs(context.repoRoot, hooksPath),
     heartbeat,
     // Alive and compatible, which is what an engine update needs: its new engine
     // may be the fix. Healthy also means it is doing its work.

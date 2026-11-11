@@ -139,7 +139,9 @@ no `package.json`, lockfile, `.npmrc`, `.rove-sentinel.json` or `.githooks/`.
    for example `{ "providers": "claude" }` to review with Claude Code only. It
    takes the [configuration](configuration.md) fields; a `charter` or `lessons`
    path is relative to that file's folder. Without a file, the defaults apply.
-   A local installation never reads the repository's `.rove-sentinel.json`.
+   A local installation never reads the repository's `.rove-sentinel.json`, and
+   refuses a configuration file, charter or lessons inside the repository, where
+   a branch could change them.
 3. Check, preview and install, from your ordinary shell:
 
    ```powershell
@@ -153,11 +155,13 @@ no `package.json`, lockfile, `.npmrc`, `.rove-sentinel.json` or `.githooks/`.
 (`.git\hooks\pre-push`, which Git never commits and every worktree of the clone
 shares). The hook calls the Sentinel you ran by its full path, so it needs no
 `node_modules` in the project; Sentinel refuses to call one inside the repository
-it reviews. Git runs that folder's hooks only while `core.hooksPath` is unset, so
-`install --local` refuses when it is set (by a hook manager such as Husky, or by
-an earlier project installation), and when another pre-push hook is already
-there: it preserves both, and you add a call to `node <launcher> pre-push "$@"`
-yourself.
+it reviews or any of its worktrees, which all run that hook. Git runs that
+folder's hooks only while `core.hooksPath` is unset, so `install --local` refuses
+when it is set (by a hook manager such as Husky, or by an earlier project
+installation), and when another pre-push hook is already there, and preserves
+both. A local installation does not share the pre-push hook: in such a repository,
+use the project installation, which [integrates](#existing-git-hooks) with an
+existing hook.
 
 The installed policy, queue, reports and watcher are where they always are,
 outside the repository. `status` shows `installation.mode` as `local`, with the
@@ -173,7 +177,10 @@ C:\src\project` keeps the engine you installed. To move to a newer launcher,
 install the newer release globally as in step 1; the hook keeps calling it. Run `install --local` again to change the configuration: without
 `--config` it reads the same file again, never the defaults. `uninstall` stops
 the watcher and removes the hook it wrote; a hook you edited is left for you.
-To move to a project installation, `uninstall` first.
+To move to a project installation, `uninstall` first. Every clone of one remote
+shares Sentinel's state, so a local installation belongs to the clone it was made
+from: another clone of the same remote can neither replace nor remove it while
+that clone's hook is there.
 
 ## Linter tools
 

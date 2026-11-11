@@ -13,7 +13,12 @@ lessons beside it, the repository's `.rove-sentinel.json` ignored and a missing 
 the installation record; the install transaction writing the hook and the record without
 `core.hooksPath`, and taking both back, or restoring an earlier hook, when the watcher does not
 start; `status`; `uninstall` removing only its own hook; and a detached gate's default log in
-the state folder, with the checkout left clean. 1,001 tests passed on Windows. The package
+the state folder, with the checkout left clean. After the gate's review they also cover every
+worktree and the Git directory as the repository, for the launcher and for a configuration
+file, charter or lessons; another clone of the same remote neither replacing nor removing the
+installation, nor reported as holding it; and a hook written or changed meanwhile never
+overwritten, deleted or lost by an install, a rollback or an uninstall. 1,011 tests passed on
+Windows. The package
 smoke installs the archive outside a consumer repository, writes the local hook with the
 packaged module, and pushes through it to the packaged launcher.
 
