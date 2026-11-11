@@ -20,7 +20,8 @@ removing the installation, nor reported as holding it; and a hook written or cha
 never overwritten, deleted or lost by an install, a rollback (an earlier hook is put back even
 when the replacement could not be created, or was cut short) or an uninstall, since a hook is
 created whole or not at all; a Git directory without hard links refused before anything
-changes; and worktree paths that hold a newline. 1,015 tests passed on Windows. The package smoke installs the archive outside a
+changes, and probed without creating a hooks folder; and worktree paths that hold a newline.
+1,016 tests passed on Windows. The package smoke installs the archive outside a
 consumer repository, writes the local hook with the packaged module, and pushes through it to
 the packaged launcher.
 

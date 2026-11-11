@@ -154,8 +154,15 @@ export function assertPolicyOutside({ configFile, config, roots, platform = proc
  * written nor restorable: it is refused before anything changes.
  */
 export async function assertHardLinks(folder, { linkFile = link } = {}) {
-  await mkdir(folder, { recursive: true });
-  const probe = path.join(folder, `.rove-sentinel-link-probe-${process.pid}-${randomUUID().slice(0, 8)}`);
+  // In the hooks folder, or the Git directory when it has none yet: the same
+  // file system, and nothing is created that outlives the probe.
+  let probeFolder = path.resolve(folder);
+  while (!(await stat(probeFolder).then((info) => info.isDirectory(), () => false))) {
+    const parent = path.dirname(probeFolder);
+    if (parent === probeFolder) break;
+    probeFolder = parent;
+  }
+  const probe = path.join(probeFolder, `.rove-sentinel-link-probe-${process.pid}-${randomUUID().slice(0, 8)}`);
   try {
     await writeFile(probe, '', { flag: 'wx' });
     await linkFile(probe, `${probe}-linked`);

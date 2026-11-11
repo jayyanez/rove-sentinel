@@ -525,3 +525,15 @@ describe('the gate review of 79aea3d', () => {
     await expect(prepareLocalHook({ repoRoot, launcher, hooksPath: '' })).resolves.toMatchObject({ previous: earlier });
   });
 });
+
+describe('the gate review of f21023f', () => {
+  it('checks hard links without creating a hooks folder the clone does not have', async () => {
+    const root = await temporary('rove-local-nohooks-');
+    const repoRoot = await repository(root);
+    await rm(path.join(repoRoot, '.git', 'hooks'), { recursive: true, force: true });
+    const launcher = await outsideLauncher(root);
+    await expect(prepareLocalHook({ repoRoot, launcher, hooksPath: '' })).resolves.toMatchObject({ previous: null });
+    await expect(access(path.join(repoRoot, '.git', 'hooks'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await readdir(path.join(repoRoot, '.git'))).filter((name) => name.includes('rove-sentinel'))).toEqual([]);
+  });
+});
