@@ -6,6 +6,8 @@ Start here:
   rove-sentinel init                   Create configuration and hook adapters
   rove-sentinel install --dry-run      Preview trusted policy installation
   rove-sentinel install                Install and start the local watcher
+  rove-sentinel install --local [--config FILE]
+                                       Install with nothing in the repository's files
   rove-sentinel status                 Inspect health and local records
   rove-sentinel update-check           Check for a newer stable release
   rove-sentinel updates                Inspect automatic engine updates
@@ -27,6 +29,7 @@ Operations:
   recover --reason TEXT
   uninstall [--dry-run]
   install [--dry-run] [--no-start] [--no-github] [--accounts FILE]
+  install --local [--config FILE] [--github] [--dry-run] [--no-start] [--accounts FILE]
   update-check [--force] [--json] [--no-update-check]
   updates [--enable|--disable]         Configure background engine updates
   update                              Retry an update now (normally automatic)
@@ -52,8 +55,15 @@ then install from your trusted stable checkout. doctor --project-config probes
 the desired configuration; plain doctor uses installed policy. The grok author label does
 not enable a Grok provider. Uncommitted changes are not reviewed.
 
---detach starts a hidden background review and returns its PID and log path;
-it does not mean PASS. Read the log's final [review-gate] exit <code> marker.
+A local installation (install --local) keeps nothing in the repository's files: run
+it from a Sentinel installed outside the repository (npm install --global, or a folder
+of its own). Its pre-push hook goes in Git's own hooks folder and calls that Sentinel;
+its configuration is --config FILE (outside the repository) or the defaults, never
+.rove-sentinel.json; its watcher leaves pull requests alone unless --github.
+doctor --config FILE probes that configuration.
+
+--detach starts a hidden background review and returns its PID and log path
+(in the repository's state folder unless --log names one); it does not mean PASS. Read the log's final [review-gate] exit <code> marker.
 Verified P0/P1 always block. Copy the report's complete deferral command for
 eligible findings; a recorded reason is required before pushing advisories.
 

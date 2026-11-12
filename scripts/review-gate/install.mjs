@@ -15,6 +15,25 @@ import { createGateContext } from './gate.mjs';
 import { recoverStaleReviewResources, runGit } from './git.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { hookCallsSentinel, uninstallGeneratedHook } from './init.mjs';
+import { engineRoot } from './engine-store.mjs';
+import {
+  assertPolicyOutside,
+  defaultHookPath,
+  installedHookText,
+  localHookLauncher,
+  localHookPresent,
+  localLauncher,
+  localNode,
+  prepareLocalHook,
+  repositoryRoots,
+  sameHookPath,
+  readInstallation,
+  removeInstallation,
+  removeLocalHook,
+  restoreLocalHook,
+  writeInstallation,
+  writeLocalHook,
+} from './local.mjs';
 import {
   daemonOwnerIsHealthy,
   atomicWriteJson,
@@ -574,17 +593,57 @@ function hooksPathIsOurs(repoRoot, value) {
   return path.resolve(repoRoot, value) === path.join(repoRoot, '.githooks');
 }
 
+/**
+ * Install from the project's files (the default), or locally (`local`): the
+ * hook in Git's own hooks folder, calling `launcherPath` (the Sentinel the
+ * person ran, outside the repository), and the policy from `configFile` or
+ * the defaults, never from the repository. An engine update
+ * (`preservePolicy`) keeps the recorded installation as it is.
+ */
 export async function installGate({
   repoRoot = process.cwd(), dryRun = false, start = true, github, preservePolicy = false, accountsFile,
+  local = false, configFile, launcherPath,
 } = {}) {
   const context = await createGateContext(repoRoot);
   const previousDaemonActive = await assertNoOtherCheckoutDaemon(context);
-  const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
-  await access(hook);
+  const installation = await readInstallation(context.paths);
+  const localMode = preservePolicy ? installation?.mode === 'local' : local;
+  if (!localMode && configFile) {
+    throw new Error('--config names a local installation\'s configuration; an installation from the project\'s files reads its .rove-sentinel.json. Add --local, or move the settings into .rove-sentinel.json.');
+  }
+  if (!preservePolicy && !local && installation?.mode === 'local') {
+    throw new Error(`Sentinel is installed locally in this repository, with its hook at ${installation.hook}. Run install --local again to change it, or uninstall first to install it from the project's files.`);
+  }
   const current = await currentHooksPath(context.repoRoot);
-  if (!current) await assertDefaultHookAbsent(context.repoRoot);
-  if (current && !hooksPathIsOurs(context.repoRoot, current)) {
-    throw new Error(`Refusing to replace existing core.hooksPath=${current}. Integrate the Sentinel pre-push hook deliberately first.`);
+  let localHook = null;
+  let roots = null;
+  let installationRecord = { mode: 'project' };
+  if (localMode && preservePolicy) {
+    // An engine update: the hook calls the person's own launcher, which picks
+    // the active engine, so it stays exactly as it is.
+    if (current || !await localHookPresent(installation.hook, installedHookText(installation))
+      || !sameHookPath(installation.hook, await defaultHookPath(context.repoRoot))) {
+      throw new Error(`The local Sentinel hook at ${installation.hook} is gone or changed, belongs to another clone, or core.hooksPath is now set. Run install --local again from the clone it reviews.`);
+    }
+    installationRecord = installation;
+  } else if (localMode) {
+    roots = await repositoryRoots(context.repoRoot);
+    const launcher = await localLauncher(launcherPath, { roots, engineStore: engineRoot() });
+    const node = localNode(process.execPath, { roots });
+    localHook = await prepareLocalHook({ repoRoot: context.repoRoot, launcher, node, hooksPath: current });
+    await assertSameClone(installation, localHook.hookPath);
+    // A reinstall keeps the configuration it was given, unless told another:
+    // falling back to the defaults could select a provider the person excluded.
+    const config = configFile ? path.resolve(configFile)
+      : installation?.mode === 'local' ? installation.config : null;
+    installationRecord = { mode: 'local', hook: localHook.hookPath, launcher, node, config };
+  } else {
+    const hook = path.join(context.repoRoot, '.githooks', 'pre-push');
+    await access(hook);
+    if (!current) await assertDefaultHookAbsent(context.repoRoot);
+    if (current && !hooksPathIsOurs(context.repoRoot, current)) {
+      throw new Error(`Refusing to replace existing core.hooksPath=${current}. Integrate the Sentinel pre-push hook deliberately first.`);
+    }
   }
   const plan = buildInstallPlan({
     platform: process.platform,
@@ -595,20 +654,32 @@ export async function installGate({
   if (plan.installRefusal) throw new Error(plan.installRefusal);
   const policy = preservePolicy
     ? await policyForEngineUpgrade(context.paths)
-    : reviewPolicySnapshot(await readReviewPolicy(context.repoRoot));
+    : reviewPolicySnapshot(localMode
+      ? await readReviewPolicy(context.repoRoot, installationRecord.config ? { configFile: installationRecord.config } : { defaults: true })
+      : await readReviewPolicy(context.repoRoot));
+  if (roots) assertPolicyOutside({ configFile: installationRecord.config, config: policy.config, roots });
   const prerequisites = await installPrerequisites(context.repoRoot, { config: policy.config, accountsFile });
-  if (dryRun) return { dryRun: true, hooksPath: '.githooks', prerequisites, plan };
+  const hooks = localMode
+    ? { hooksPath: null, hook: installationRecord.hook, config: installationRecord.config }
+    : { hooksPath: '.githooks' };
+  if (dryRun) return { dryRun: true, mode: installationRecord.mode, ...hooks, prerequisites, plan };
 
-  return await executeInstallTransaction({
-    context,
-    plan,
-    policy,
-    currentHooks: current,
-    prerequisites,
-    previousDaemonActive,
-    start,
-    github,
-  });
+  return {
+    mode: installationRecord.mode,
+    ...await executeInstallTransaction({
+      context,
+      plan,
+      policy,
+      currentHooks: current,
+      prerequisites,
+      previousDaemonActive,
+      start,
+      github,
+      installation: installationRecord,
+      localHook,
+    }),
+    ...hooks,
+  };
 }
 
 /** Upgrade executable/bundled policy only; a worktree cannot supply new project rules. */
@@ -626,14 +697,40 @@ export async function policyForEngineUpgrade(paths) {
   return reviewPolicySnapshot({ charter, lessons: previous.lessons, config: previous.config });
 }
 
+/**
+ * Every clone of one remote shares its state folder, and so its installation
+ * record. A local installation's hook is in one clone's Git directory: another
+ * clone may neither replace nor remove that record while its hook is there.
+ */
+export async function assertSameClone(installation, hookPath, { check = access } = {}) {
+  if (installation?.mode !== 'local' || sameHookPath(installation.hook, hookPath)) return;
+  // Ownership, not health: any file at the other clone's recorded hook path
+  // holds the installation, whether or not Git would run it now (an
+  // executable bit lost) or it still reads as Sentinel's (an edit). Only a
+  // clone whose hook is gone (deleted) gives it up.
+  // Only a path proven absent releases it; an error reading it (EACCES, EIO)
+  // proves nothing, and refuses.
+  const present = await check(installation.hook).then(() => true, (error) => {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+    throw new Error(`Could not tell whether another clone's local Sentinel hook is still at ${installation.hook}, so its installation was kept: ${error?.message || String(error)}`, { cause: error });
+  });
+  if (present) {
+    throw new Error(`Sentinel is installed locally for this repository from another clone, with its hook at ${installation.hook}. Run uninstall from that clone first.`);
+  }
+}
+
 export async function assertDefaultHookAbsent(repoRoot) {
   const hookPath = await runGit(repoRoot, ['rev-parse', '--git-path', 'hooks/pre-push']);
   const absolute = path.resolve(repoRoot, hookPath.trim());
+  let text;
   try {
-    await access(absolute);
+    text = await readFile(absolute, 'utf8');
   } catch (error) {
     if (error.code === 'ENOENT') return;
     throw error;
+  }
+  if (localHookLauncher(text) !== null) {
+    throw new Error(`Sentinel is installed locally in this repository, with its hook at ${absolute}. Run uninstall first to install it from the project's files.`);
   }
   throw new Error(`Existing Git pre-push hook at ${absolute} would be shadowed by .githooks. Integrate it before installing Sentinel.`);
 }
@@ -649,6 +746,11 @@ export async function executeInstallTransaction(
     start = true,
     // undefined keeps this machine's choice
     github,
+    // How this repository is installed (recorded in its state folder), and
+    // for a local installation the Git hook to write: { hookPath, hookText,
+    // previous }. An engine update writes no hook.
+    installation = { mode: 'project' },
+    localHook = null,
   },
   {
     run = runProcess,
@@ -678,15 +780,18 @@ export async function executeInstallTransaction(
     : plan.platform === 'darwin'
       ? plan.plistPath
       : null;
-  const [policyBefore, watcherOptionsBefore, artifactBefore, watcherAccountsBefore] = await Promise.all([
+  const [policyBefore, watcherOptionsBefore, artifactBefore, watcherAccountsBefore, installationBefore] = await Promise.all([
     snapshotFile(context.paths.policy),
     snapshotFile(context.paths.watcherOptions),
     artifactPath ? snapshotFile(artifactPath) : Promise.resolve(null),
     snapshotFile(context.paths.watcherAccounts),
+    snapshotFile(context.paths.installation),
   ]);
   // Taken as it is cleared: until the watcher stops, it may be counting.
   let githubFailureBefore = null;
-  const configuredHooks = !currentHooks;
+  // A local installation leaves core.hooksPath alone: Git's own hooks folder is its place.
+  const configuredHooks = installation.mode !== 'local' && !currentHooks;
+  let localHookWritten = false;
   let schedulerCreated = false;
   let schedulerReplaced = false;
   let schedulerLoadedByAttempt = false;
@@ -721,9 +826,14 @@ export async function executeInstallTransaction(
       const before = await readJson(context.paths.watcherOptions, null);
       await atomicWriteJson(context.paths.watcherOptions, { github: before?.github !== false, pending: { github, pid: process.pid, until: Date.now() + LIMITS.installPendingMs } });
     }
+    await writeInstallation(context.paths, installation);
     if (configuredHooks) {
       await git(context.repoRoot, ['config', 'core.hooksPath', '.githooks']);
       hooksConfiguredByAttempt = true;
+    }
+    if (localHook) {
+      localHookWritten = true;
+      await writeLocalHook(localHook.hookPath, localHook.hookText, localHook.previous);
     }
     if (start) {
       await clearDaemonError(context.paths);
@@ -824,6 +934,8 @@ export async function executeInstallTransaction(
     // Before any restart below: a restored watcher reads the accounts file
     // its own installation recorded.
     await attempt(() => restoreFile(context.paths.watcherAccounts, watcherAccountsBefore, { storedJson: true }));
+    await attempt(() => restoreFile(context.paths.installation, installationBefore, { storedJson: true }));
+    if (localHookWritten) await attempt(() => restoreLocalHook(localHook.hookPath, localHook.hookText, localHook.previous));
     if (githubFailureBefore) await attempt(() => restoreFile(context.paths.githubFailure, githubFailureBefore, { storedJson: true }));
     if (artifactPath) await attempt(() => restoreFile(artifactPath, artifactBefore));
 
@@ -868,10 +980,19 @@ export async function uninstallGate({ repoRoot = process.cwd(), dryRun = false }
     stateRoot: context.stateRoot,
   });
   const current = await currentHooksPath(context.repoRoot);
-  if (dryRun) return { dryRun: true, hooksPath: current, preserveHooksPath: true, plan };
+  const installation = await readInstallation(context.paths);
+  const mode = installation?.mode ?? 'project';
+  const hook = mode === 'local' ? { hook: installation.hook } : {};
+  if (mode === 'local') await assertSameClone(installation, await defaultHookPath(context.repoRoot));
+  if (dryRun) return { dryRun: true, mode, ...hook, hooksPath: current, preserveHooksPath: true, plan };
   await executeUninstall({ context, plan, removeHooks: false });
-  const hookCleanup = await uninstallGeneratedHook(context.repoRoot);
-  return { dryRun: false, hookCleanup, preserveHooksPath: true, plan,
+  // A local installation's hook is in Git's own hooks folder: the project's
+  // generated hook is not touched by it, nor the reverse.
+  const hookCleanup = mode === 'local'
+    ? await removeLocalHook(installation.hook, installedHookText(installation))
+    : await uninstallGeneratedHook(context.repoRoot);
+  await removeInstallation(context.paths);
+  return { dryRun: false, mode, ...hook, hookCleanup, preserveHooksPath: true, plan,
     ...(hookCleanup === 'manual' ? { next: 'Remove the Sentinel call from your custom pre-push hook before the next push; it was preserved.' } : {}),
   };
 }
@@ -1000,6 +1121,18 @@ export async function gateStatus(
 ) {
   const context = await createContext(repoRoot);
   const hooksPath = await getHooksPath(context.repoRoot);
+  let installation = null;
+  let installationError = null;
+  try {
+    installation = await readInstallation(context.paths);
+  } catch (error) {
+    installationError = error?.message || String(error);
+  }
+  // The record is shared by every clone of the remote; the hook is in one clone's Git directory.
+  const thisClone = installation?.mode === 'local'
+    && sameHookPath(installation.hook, await defaultHookPath(context.repoRoot).catch(() => ''));
+  const localHookInstalled = installation?.mode === 'local'
+    && await localHookPresent(installation.hook, installedHookText(installation));
   const [heartbeatState, lockState, daemonErrorState, githubFailureState, pausedState, queueSubmitLockState] = await Promise.all([
     readStatusState(context.paths.heartbeat),
     readStatusState(context.paths.lock),
@@ -1087,7 +1220,7 @@ export async function gateStatus(
     stateError: lockState.error ?? heartbeatState.error,
     schedulerError: scheduler.error,
     // Linux has no supported scheduler, so the hook counts as well.
-    installed: Boolean(scheduler.installed || await hookCallsSentinel(context.repoRoot)),
+    installed: Boolean(scheduler.installed || localHookInstalled || await hookCallsSentinel(context.repoRoot)),
   });
   return {
     repoRoot: context.repoRoot,
@@ -1101,7 +1234,14 @@ export async function gateStatus(
     ...await accountsStatus(context, { accountsFile, run, load: loadUserAccounts }).then((accounts) => (accounts ? { accounts } : {})),
     models: installedPolicy ? modelSettings(installedPolicy.config) : null,
     reviewTiming,
-    hookInstalled: hooksPathIsOurs(context.repoRoot, hooksPath),
+    // `local`: the hook is in Git's own hooks folder, and nothing of Sentinel
+    // is in the repository's files (1.19.0). No record: a project installation.
+    installation: installation?.mode === 'local'
+      ? { mode: 'local', hook: installation.hook, config: installation.config, launcher: installation.launcher, node: installation.node, thisClone }
+      : { mode: 'project' },
+    ...(installationError ? { installationError } : {}),
+    // Git runs a hook in its own folder only while core.hooksPath is unset.
+    hookInstalled: installation?.mode === 'local' ? thisClone && localHookInstalled && !hooksPath : hooksPathIsOurs(context.repoRoot, hooksPath),
     heartbeat,
     // Alive and compatible, which is what an engine update needs: its new engine
     // may be the fix. Healthy also means it is doing its work.

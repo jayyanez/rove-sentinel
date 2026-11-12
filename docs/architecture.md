@@ -198,7 +198,7 @@ are not evidence of live platform qualification.
 
 | Modules | Responsibility |
 | --- | --- |
-| `cli`, `init`, `config`, `install` | Entry points, onboarding and trusted installation |
+| `cli`, `init`, `config`, `install`, `local` | Entry points, onboarding and trusted installation, from the project's files or locally |
 | `gate`, `risk`, `shards`, `convergence`, `dispositions` | Review planning and final decisions |
 | `context`, `refmap`, `git` | Committed inputs, isolated checkout and bounded context |
 | `providers`, `process`, `detach`, `cleanup` | CLI adapters and subprocess lifecycle |

@@ -3,7 +3,7 @@
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
 These instructions pin the
-[v1.18.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.18.0)
+[v1.19.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.19.0)
 as an exact dependency. Confirm its archive is listed before installing.
 To work on Sentinel itself, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -41,7 +41,7 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.18.0/rove-sentinel-1.18.0.tgz
+npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.19.0/rove-sentinel-1.19.0.tgz
 ```
 
 From npm 12, npm refuses a dependency given as a URL (`EALLOWREMOTE`)
@@ -53,7 +53,7 @@ Releases before npm 12 install the URL without it.
 Or with pnpm:
 
 ```powershell
-pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.18.0/rove-sentinel-1.18.0.tgz
+pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.19.0/rove-sentinel-1.19.0.tgz
 ```
 
 This is a GitHub Release archive; the instructions do not depend on an npm
@@ -117,6 +117,76 @@ weaken the running review policy.
 `install --no-start` installs the scheduler without starting it immediately;
 it does not mean hooks-only or no background integration. For inspection without
 mutation, use `install --dry-run`.
+
+## Install without changing the repository
+
+The steps above add Sentinel to the project: its dependency, configuration and
+hook are committed, and the whole team uses the same release and policy. When you
+want the push gate for yourself in a repository where you may not, or should not,
+add files, install it locally instead. Nothing goes into the repository's files:
+no `package.json`, lockfile, `.npmrc`, `.rove-sentinel.json` or `.githooks/`.
+
+1. Install Sentinel outside the repository, globally:
+
+   ```powershell
+   npm install --global --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.19.0/rove-sentinel-1.19.0.tgz
+   ```
+
+   or with `npm install` in a folder of its own, and run its
+   `node_modules\rove-sentinel\scripts\review-gate\launcher.mjs` with `node`
+   wherever these steps say `rove-sentinel`.
+2. If the project needs settings, write them to a file outside the repository,
+   for example `{ "providers": "claude" }` to review with Claude Code only. It
+   takes the [configuration](configuration.md) fields; a `charter` or `lessons`
+   path is relative to that file's folder. Without a file, the defaults apply.
+   A local installation never reads the repository's `.rove-sentinel.json`, and
+   refuses a configuration file, charter or lessons inside the repository, where
+   a branch could change them.
+3. Check, preview and install, from your ordinary shell:
+
+   ```powershell
+   rove-sentinel doctor --repo C:\src\project --config C:\sentinel\project.json
+   rove-sentinel install --local --repo C:\src\project --config C:\sentinel\project.json --dry-run
+   rove-sentinel install --local --repo C:\src\project --config C:\sentinel\project.json
+   rove-sentinel status --repo C:\src\project
+   ```
+
+`install --local` writes the pre-push hook into Git's own hooks folder
+(`.git\hooks\pre-push`, which Git never commits and every worktree of the clone
+shares). The hook calls the Sentinel you ran, and the Node that ran it, by their
+full paths, so it needs no `node_modules` in the project and never runs a `node`
+that comes first on `PATH`; Sentinel refuses either inside the repository it
+reviews or any of its worktrees, which all run that hook. Run `install --local`
+again after moving Node or Sentinel to another folder. Git runs that
+folder's hooks only while `core.hooksPath` is unset, so `install --local` refuses
+when it is set (by a hook manager such as Husky, or by an earlier project
+installation), and when another pre-push hook is already there, and preserves
+both. It also refuses a Git directory on a file system without hard links (FAT,
+some network shares), which it needs to change the hook safely. A local
+installation does not share the pre-push hook: in such a repository,
+use the project installation, which [integrates](#existing-git-hooks) with an
+existing hook.
+
+The installed policy, queue, reports and watcher are where they always are,
+outside the repository. `status` shows `installation.mode` as `local`, with the
+hook, the configuration file and the launcher. Inside the clone, Sentinel leaves
+only what Git keeps for itself: the hook and, while a review runs, a temporary
+worktree registered in the Git directory.
+
+A local installation's watcher leaves pull requests alone: it posts no comment
+and reviews only your pushes. Add `--github` to let it review pull requests as a
+project installation does. On Windows, automatic engine updates are on as
+usual and keep the installation local; `rove-sentinel updates --disable --repo
+C:\src\project` keeps the engine you installed. To move to a newer launcher,
+install the newer release globally as in step 1; the hook keeps calling it. Run `install --local` again to change the configuration: without
+`--config` it reads the same file again, never the defaults. `uninstall` stops
+the watcher and removes the hook it wrote, exactly as it wrote it; a hook you
+edited is left for you. `status` counts the hook only while Git would run it:
+unchanged and, outside Windows, executable.
+To move to a project installation, `uninstall` first. Every clone of one remote
+shares Sentinel's state, so a local installation belongs to the clone it was made
+from: another clone of the same remote can neither replace nor remove it while
+that clone's hook is there.
 
 ## Linter tools
 

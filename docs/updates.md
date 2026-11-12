@@ -64,7 +64,9 @@ engine selection. Record the engine version and policy digest from a review when
 reproducing its result. Disable automatic updates where a fixed engine is required.
 
 Automatic upgrades preserve installed project configuration, custom charter, and
-lessons. They do not import rules from a developer's working tree. A project using
+lessons. A [local installation](installation.md#install-without-changing-the-repository)
+stays local: its hook keeps calling the launcher you installed, which selects the
+active engine. They do not import rules from a developer's working tree. A project using
 the bundled charter receives the new release's bundled charter. Intentional
 project-policy changes still require a deliberate `install` from a trusted stable
 checkout. Engine changes invalidate incompatible old attestations.

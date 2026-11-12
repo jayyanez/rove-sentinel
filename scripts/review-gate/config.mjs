@@ -181,11 +181,16 @@ function normalizeLintCommands(input) {
   });
 }
 
-export async function readConfig(repoRoot) {
+/**
+ * A repository's `.rove-sentinel.json`, or the defaults when it has none. A
+ * `file` named explicitly (a local installation's configuration, kept outside
+ * the repository) must exist: a missing one is never read as the defaults.
+ */
+export async function readConfig(repoRoot, { file } = {}) {
   try {
-    return normalizeConfig(JSON.parse(await readFile(path.join(repoRoot, CONFIG_FILE), 'utf8')));
+    return normalizeConfig(JSON.parse(await readFile(file ?? path.join(repoRoot, CONFIG_FILE), 'utf8')));
   } catch (error) {
-    if (error.code === 'ENOENT') return normalizeConfig();
+    if (error.code === 'ENOENT' && !file) return normalizeConfig();
     throw error;
   }
 }

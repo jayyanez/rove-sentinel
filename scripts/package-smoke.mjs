@@ -37,4 +37,33 @@ const policy = JSON.parse((await run(process.execPath, [path.join(scratch, 'read
 assert.match(policy.charter, /Rove Sentinel review charter/);
 assert.equal(policy.config.guiEvidence, 'none');
 assert.equal(policy.config.clippy, false);
+
+// A local installation (1.19.0): the package lives outside the repository it
+// reviews, and Git's own pre-push hook calls its launcher by path. The hook
+// written by the packaged module must reach the packaged launcher on a real
+// push, and leave nothing in the repository's files.
+const consumer = path.join(scratch, 'consumer');
+const remote = path.join(scratch, 'consumer-remote.git');
+await run('git', ['init', '-q', '--bare', remote]);
+await run('git', ['init', '-q', '-b', 'main', consumer]);
+const consumerGit = (args) => run('git', ['-c', 'user.name=Example', '-c', 'user.email=example@example.com', ...args], consumer);
+await consumerGit(['commit', '-q', '--allow-empty', '-m', 'start']);
+await consumerGit(['remote', 'add', 'origin', remote]);
+await consumerGit(['push', '-q', 'origin', 'main', 'main:obsolete']);
+await writeFile(path.join(scratch, 'write-local-hook.mjs'), `import { localLauncher, prepareLocalHook, writeLocalHook } from './node_modules/rove-sentinel/scripts/review-gate/local.mjs';
+const [repoRoot, launcherPath] = process.argv.slice(2);
+const launcher = await localLauncher(launcherPath, { repoRoot });
+const hook = await prepareLocalHook({ repoRoot, launcher, hooksPath: '' });
+await writeLocalHook(hook.hookPath, hook.hookText);
+console.log(JSON.stringify(hook.hookPath));
+`);
+const localHook = JSON.parse((await run(process.execPath, [path.join(scratch, 'write-local-hook.mjs'), consumer, cli])).stdout);
+assert.match(await readFile(localHook, 'utf8'), /launcher\.mjs' pre-push "\$@"/);
+// A deletion needs no review, so the hook's launcher answers at once.
+const pushed = await consumerGit(['push', 'origin', '--delete', 'obsolete']);
+assert.match(`${pushed.stdout}${pushed.stderr}`, /"reviewed": 0/);
+assert.equal((await consumerGit(['status', '--porcelain', '--untracked-files=all', '--ignored'])).stdout, '');
+assert.match((await run(process.execPath, [cli, 'install', '--config', 'x.json', '--repo', consumer], scratch, { allowFailure: true })).stderr,
+  /--config names a local installation/);
+
 process.stdout.write(`Package smoke passed: ${pkg.name}@${pkg.version}. Evidence: ${scratch}\n`);

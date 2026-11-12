@@ -1,5 +1,47 @@
 # Standalone validation record
 
+## 1.19.0 a push gate that leaves the repository as it is — 2026-11-11
+
+Deterministic tests cover the local hook's text and its recognition for any launcher path
+(spaces, quotes, `$`, backslashes, CRLF), and that the project hook, an edited hook or another
+hook is never taken for it; a real `git push` running the hook with the remote, the ref
+updates and the checkout, and leaving no file in the repository; the hook's place in Git's own
+hooks folder, shared by a linked worktree; the refusals under a set `core.hooksPath` and over
+another hook; a launcher inside the reviewed repository (in any letter case on Windows) or in
+the managed engines refused; the policy read from a file outside the repository, with its
+lessons beside it, the repository's `.rove-sentinel.json` ignored and a missing file refused;
+the installation record; the install transaction writing the hook and the record without
+`core.hooksPath`, and taking both back, or restoring an earlier hook, when the watcher does
+not start; `status`; `uninstall` removing only its own hook; and a detached gate's default log
+in the state folder, with the checkout left clean. After the gate's review they also cover
+every worktree and the Git directory as the repository, for the launcher and for a
+configuration file, charter or lessons; another clone of the same remote neither replacing nor
+removing the installation, nor reported as holding it; and a hook written or changed meanwhile
+never overwritten, deleted or lost by an install, a rollback (an earlier hook is put back even
+when the replacement could not be created, or was cut short) or an uninstall, since a hook is
+created whole or not at all; a Git directory without hard links refused before anything
+changes, and probed without creating a hooks folder; and worktree paths that hold a newline.
+After CodeRabbit's review they cover Node run by its absolute path while a planted `node`
+comes first on `PATH`, a Node inside the repository refused, only the exact hook written
+replaced or removed, and a hook without its executable bit not counted outside Windows.
+1,024 tests passed on Windows. The package smoke installs the archive outside a
+consumer repository, writes the local hook with the packaged module, and pushes through it to
+the packaged launcher.
+
+Live on Windows Server 2025, with a throwaway repository whose remote is a local bare
+repository, the packed archive installed with `npm install` in a folder of its own, and `{
+"providers": "claude" }` in a configuration file outside the repository: `doctor --config`
+selected Claude Code only, `install --local --dry-run` probed the same, then `install --local`
+registered and started the watcher (`watcher-options.json` `github: false`), wrote
+`.git/hooks/pre-push` and left `core.hooksPath` unset. A `git push` of a code change ran the
+hook, the watcher reviewed it with Claude Code only and passed it, and the push completed. A
+plain `install` was refused, naming the local hook; `install --local` without `--config` kept
+the recorded file and `providers: claude`; `install --preserve-policy` run by the engine's own
+CLI, as an engine update does, kept the installation local and the hook byte for byte;
+`uninstall` removed the task, the hook and the record. `git status --porcelain --ignored
+--untracked-files=all` stayed empty throughout. Not yet live: a global npm installation,
+macOS, and an automatic update to a newer engine (none newer exists).
+
 ## 1.18.0 review accounts — 2026-11-06
 
 Deterministic tests cover the accounts file and its validation; that no file leaves reviews

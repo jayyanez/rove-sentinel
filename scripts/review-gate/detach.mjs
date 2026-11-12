@@ -26,13 +26,15 @@ export function stripDetachFlags(args) {
 }
 
 /**
- * `<repo>/output/review-gate-<UTC stamp with ms>-<launcher pid>.log` — the
- * worktree's ignored task-log folder. The pid keeps two launches in the same
- * millisecond apart; the default log is also created exclusively.
+ * `<state folder>/logs/review-gate-<UTC stamp with ms>-<launcher pid>.log`:
+ * the repository's state folder, so a detached review writes nothing into the
+ * repository's files (1.19.0; it was the checkout's `output/` before). The pid
+ * keeps two launches in the same millisecond apart; the default log is also
+ * created exclusively.
  */
-export function defaultDetachLogPath(repoRoot, now = new Date(), launcherPid = process.pid) {
+export function defaultDetachLogPath(stateRoot, now = new Date(), launcherPid = process.pid) {
   const stamp = now.toISOString().replace(/[-:]/g, '').replace('.', '-').replace('T', '-');
-  return path.join(repoRoot, 'output', `review-gate-${stamp}-${launcherPid}.log`);
+  return path.join(stateRoot, 'logs', `review-gate-${stamp}-${launcherPid}.log`);
 }
 
 /**
