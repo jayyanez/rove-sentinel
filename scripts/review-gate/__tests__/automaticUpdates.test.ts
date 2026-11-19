@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LONG_PAUSE_MS, automaticUpdate, maybeStartUpdateWorker, reviewNotices, updateInformation } from '../automatic-updates.mjs';
+import { LONG_PAUSE_MS, automaticUpdate, maybeStartUpdateWorker, reviewNotices, updateInformation, watcherHolds } from '../automatic-updates.mjs';
 import { engineCli, engineDirectory, engineStatePath, ensureEngine, publishEngineState, selectedEngine } from '../engine-store.mjs';
 import { acquireReviewLease, acquireUpdateLease, updateMarker } from '../maintenance.mjs';
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
@@ -27,7 +27,7 @@ async function fixture() {
   const run = vi.fn(async (_command, args) => ({ stdout: args.includes('--version') ? '1.11.0'
     : args.includes('status') ? JSON.stringify({ ...health, heartbeat: { ...health.heartbeat, gateVersion: args[0] === 'old-cli' ? '1.10.0' : '1.11.0' } }) : '{}' }));
   const deps = { contextFor: async () => context, check: vi.fn(async () => ({ status: 'available', latestVersion: '1.11.0' })),
-    ensure: vi.fn(async () => {}), status: vi.fn(async () => health), stop: vi.fn(async () => true), run,
+    ensure: vi.fn(async (_version, options) => { await options?.reserve?.(); }), status: vi.fn(async () => health), stop: vi.fn(async () => true), run,
     notify: vi.fn(async () => {}), root: path.join(root, 'engines'), version: '1.10.0', cliPath: 'old-cli', platform: 'win32', env: {}, pauseTimeoutMs: 0 };
   return { root, context, health, deps };
 }
@@ -301,6 +301,19 @@ describe('shared immutable runtime distribution', () => {
     expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
     expect(d.npm).toHaveBeenCalledOnce();
   });
+  it('writes the reservation while it holds the store, and trims a store an interrupted install left over its cap', async () => {
+    const d = await distribution();
+    await ensureEngine('1.11.0', d);
+    const lock = path.join(d.root, 'download.lock');
+    const seen: boolean[] = [];
+    const reserve = vi.fn(async () => { seen.push(await readFile(lock, 'utf8').then(() => true, () => false)); });
+    await ensureEngine('1.11.0', { ...d, reserve });
+    expect(seen).toEqual([true]);
+    await installed(d.root, ['1.7.0', '1.8.0', '1.9.0', '1.10.0']);
+    await project(d.root, 'a', { activeVersion: '1.11.0', previousVersion: '1.10.0' });
+    await ensureEngine('1.11.0', { ...d, maxVersions: 3 });
+    expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.9.0']);
+  });
   it('preserves an interrupted staging directory rather than erasing it', async () => {
     const d = await distribution(); await mkdir(path.join(d.root, 'staging'));
     await writeFile(path.join(d.root, 'staging/evidence.txt'), 'retained');
@@ -390,6 +403,12 @@ describe('an update the watcher keeps waiting is said', () => {
     const [line] = await reviewNotices(f.context.paths, 'example');
     expect(line).toContain('an earlier activation was interrupted');
     expect(line).toContain('Isolation and recovery');
+    // A live process that started after the marker reused its PID: still interrupted.
+    await atomicWriteJson(updateMarker(f.context.paths), { version: '99.0.0', pid: process.pid, startedAt: '2026-11-10T00:00:00.000Z' });
+    const reused = await watcherHolds(f.context.paths, { startedAt: async () => Date.parse('2026-11-12T00:00:00.000Z') });
+    expect(reused.map((hold) => hold.kind)).toEqual(['paused', 'interrupted']);
+    const same = await watcherHolds(f.context.paths, { startedAt: async () => Date.parse('2026-11-09T00:00:00.000Z') });
+    expect(same).toEqual([]);
     // Stopped mid-activation, the phase stays `activating`: the fence is said there too.
     const g = await waiting('activating');
     await atomicWriteJson(updateMarker(g.context.paths), { version: '99.0.0', pid: DEAD_PID });
@@ -408,7 +427,8 @@ describe('an update the watcher keeps waiting is said', () => {
     const f = await waiting(); await liveWatcher(f.context.paths);
     await atomicWriteJson(f.context.paths.queueSubmitLock, { pid: DEAD_PID });
     expect(await kinds(f.context.paths)).toEqual(['queue-lock']);
-    expect((await reviewNotices(f.context.paths, 'example'))[0]).toContain('rove-sentinel recover');
+    const [line] = await reviewNotices(f.context.paths, 'example');
+    expect(line).toContain(`then delete ${f.context.paths.queueSubmitLock}`);
     await atomicWriteJson(f.context.paths.queueSubmitLock, { pid: process.pid });
     expect(await kinds(f.context.paths)).toEqual([]);
   });
@@ -421,6 +441,11 @@ describe('an update the watcher keeps waiting is said', () => {
     const g = await waiting('activating');
     await writeFile(updateMarker(g.context.paths), '{');
     expect(await kinds(g.context.paths)).toEqual(['unreadable']);
+    // After a failed download too: the line says why nothing retries.
+    const h = await waiting('download-failed', { lastError: 'Release download returned HTTP 503.' });
+    await writeFile(path.join(h.context.paths.root, 'update-settings.json'), '{');
+    const lines = await reviewNotices(h.context.paths, 'example');
+    expect(lines[1]).toContain('cannot read the update settings for example');
   });
   it('keeps the last attempt in the line when a hold is named', async () => {
     const f = await waiting('waiting', { lastError: 'Another or interrupted update exists.' });

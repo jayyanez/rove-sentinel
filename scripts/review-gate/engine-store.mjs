@@ -140,7 +140,7 @@ export async function retainedVersions(root) {
  * a version, and has not yet registered, can find that copy gone: it fails to
  * start, and the next command selects the new version.
  */
-async function collectionPlan(root, maxVersions) {
+async function collectionPlan(root, maxVersions, { strict = true } = {}) {
   const versions = (await readdir(path.join(root, 'versions'))).filter(stableVersion).sort(compareVersions);
   const { required, rollback } = await retainedVersions(root);
   const remove = [];
@@ -151,10 +151,15 @@ async function collectionPlan(root, maxVersions) {
     }
   }
   const kept = versions.filter((old) => !remove.includes(old));
-  if (kept.length >= maxVersions) {
+  if (strict && kept.length >= maxVersions) {
     throw new Error(`Runtime storage is full: every installed version (${kept.join(', ')}) is active or pending for a project, or used by a running process. Update or uninstall inactive projects, or end processes that run an old version, before retrying.`);
   }
   return remove;
+}
+
+/** Best effort once the new runtime is in place: a later install finishes what fails. */
+async function removeDisplaced(root, versions) {
+  for (const old of versions) await rm(engineDirectory(old, root), { recursive: true, force: true }).catch(() => {});
 }
 
 // An owner writes its PID right after creating the lock; one that has not after
@@ -196,7 +201,7 @@ async function lockStore(lockFile, version, waitMs) {
  * check sees it gone and downloads the version again.
  */
 export async function ensureEngine(version, { root = engineRoot(), fetchImpl = globalThis.fetch,
-  npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000 } = {}) {
+  npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000, reserve = async () => {} } = {}) {
   const directory = engineDirectory(version, root);
   const lockFile = path.join(root, 'download.lock');
   const isReady = async () => {
@@ -206,12 +211,18 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   await mkdir(root, { recursive: true });
   const lock = await lockStore(lockFile, version, lockWaitMs);
   // A dead owner's lock stops every collection, so a ready copy is safe to reuse.
-  if (lock.stale && await isReady()) return directory;
+  if (lock.stale && await isReady()) { await reserve(); return directory; }
   if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
   const stage = path.join(root, 'staging');
   let createdStage = false;
   try {
-    if (await isReady()) return directory;
+    await reserve();
+    await mkdir(path.join(root, 'versions'), { recursive: true });
+    if (await isReady()) {
+      // Finish a collection an interrupted install left undone.
+      await removeDisplaced(root, (await collectionPlan(root, maxVersions + 1, { strict: false })));
+      return directory;
+    }
     await mkdir(path.join(root, 'versions'), { recursive: true });
     // Refuse before downloading when no slot can be freed; remove nothing yet,
     // so a failed download leaves every rollback copy in place.
@@ -251,7 +262,7 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     // only after it is in place: a failure before then removes nothing.
     const displaced = await collectionPlan(root, maxVersions);
     await rename(stage, directory);
-    for (const old of displaced) await rm(engineDirectory(old, root), { recursive: true, force: true });
+    await removeDisplaced(root, displaced);
     return directory;
   } finally {
     // Only this lock owner created staging. A failed install leaves no selectable runtime.

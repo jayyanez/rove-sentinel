@@ -6,7 +6,7 @@ import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
 import { createGateContext } from './gate.mjs';
 import { gateStatus, stopDaemon } from './install.mjs';
-import { acquireUpdateLease, updateMarker } from './maintenance.mjs';
+import { acquireUpdateLease, processStartedAt, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
 import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
 import { runProcess } from './process.mjs';
@@ -31,17 +31,26 @@ const processAlive = (pid) => {
 };
 
 /**
- * The activation's own pause is no hold while the activation that wrote it
- * still runs: its update marker is there and its process is alive. Any other
- * pause, an update's left behind included, keeps a release waiting. Liveness
- * is by PID, as for the store's process records: a PID the system has reused
- * hides an interrupted activation until that process exits. These reports are
- * diagnostics; activation itself still checks everything it checked before.
+ * Whether the activation that wrote an update marker still runs: its PID is
+ * alive, and where the system reports a start time (Windows), that process
+ * started before the marker was written, so a reused PID does not count.
  */
-async function liftsItself(paused, paths, isAlive) {
+async function activationRuns(marker, { isAlive, startedAt }) {
+  if (!marker || !isAlive(marker.pid)) return false;
+  const written = Date.parse(marker.startedAt);
+  const started = Number.isFinite(written) ? await startedAt(marker.pid) : null;
+  return started === null || started <= written + 1000;
+}
+
+/**
+ * The activation's own pause is no hold while the activation that wrote it
+ * still runs. Any other pause, an update's left behind included, keeps a
+ * release waiting. These reports are diagnostics; activation itself still
+ * checks everything it checked before.
+ */
+async function liftsItself(paused, paths, probes) {
   if (!String(paused?.reason ?? '').startsWith(UPDATE_PAUSE)) return false;
-  const marker = await readJson(updateMarker(paths)).catch(() => null);
-  return Boolean(marker) && isAlive(marker.pid);
+  return activationRuns(await readJson(updateMarker(paths)).catch(() => null), probes);
 }
 
 /**
@@ -52,7 +61,7 @@ async function liftsItself(paused, paths, isAlive) {
  * it waiting for ever. Safety pauses are deliberate: this reports them and
  * never lifts them. Queued and running reviews are not holds: they finish.
  */
-export async function watcherHolds(paths, { isAlive = processAlive, gateVersion = GATE_VERSION, charterVersion = CHARTER_VERSION } = {}) {
+export async function watcherHolds(paths, { isAlive = processAlive, startedAt = processStartedAt, gateVersion = GATE_VERSION, charterVersion = CHARTER_VERSION } = {}) {
   const records = { paused: paths.paused, lock: paths.lock, heartbeat: paths.heartbeat, daemonError: paths.daemonError,
     githubFailure: paths.githubFailure, queueSubmitLock: paths.queueSubmitLock, policy: paths.policy, marker: updateMarker(paths) };
   const read = Object.fromEntries(await Promise.all(Object.entries(records).map(async ([name, file]) => [name, await settle(() => readJson(file))])));
@@ -81,7 +90,7 @@ export async function watcherHolds(paths, { isAlive = processAlive, gateVersion 
       action: 'Run npx --no-install rove-sentinel install from your trusted checkout to restart it.' });
   }
   const paused = read.paused.value;
-  if (paused && !await liftsItself(paused, paths, isAlive)) {
+  if (paused && !await liftsItself(paused, paths, { isAlive, startedAt })) {
     holds.push({ kind: 'paused', since: paused.pausedAt ?? null, reason: String(paused.reason ?? 'no reason recorded'),
       action: String(paused.reason ?? '').startsWith(UPDATE_PAUSE)
         ? 'An interrupted update left this pause: follow Isolation and recovery in the updates guide before running npx --no-install rove-sentinel resume.'
@@ -91,12 +100,12 @@ export async function watcherHolds(paths, { isAlive = processAlive, gateVersion 
   if (Number.isInteger(submitter?.pid) && submitter.pid > 0 && !isAlive(submitter.pid)) {
     holds.push({ kind: 'queue-lock', since: null,
       reason: `the review queue's submission lock belongs to the dead process ${submitter.pid}`,
-      action: 'Inspect npx --no-install rove-sentinel status, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>".' });
+      action: `Confirm no Sentinel process has PID ${submitter.pid} and no submitter replaced the lock, then delete ${paths.queueSubmitLock}; recover removes it only while the watcher is stopped.` });
   }
   const marker = read.marker.value;
-  if (marker && !isAlive(marker.pid)) {
+  if (marker && !await activationRuns(marker, { isAlive, startedAt })) {
     holds.push({ kind: 'interrupted', since: marker.startedAt ?? null,
-      reason: `an update to ${marker.version ?? 'another version'} stopped with its process ${marker.pid} gone, leaving ${updateMarker(paths)}`,
+      reason: `an update to ${marker.version ?? 'another version'} stopped, its process ${marker.pid} gone, leaving ${updateMarker(paths)}`,
       action: 'Follow Isolation and recovery in the updates guide: restore and verify the previous runtime, then remove the marker and its pause.' });
   }
   return holds;
@@ -116,7 +125,7 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
     found.unshift({ kind: 'unreadable', since: null, reason: `update-settings: ${settingsError}`,
       action: 'Run npx --no-install rove-sentinel updates --enable or --disable to rewrite it.' });
   }
-  return { automatic,
+  return { automatic, settingsError,
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
     pendingVersion, phase,
     lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null,
@@ -128,14 +137,17 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
  * state and why it cannot activate, and a pause left longer than LONG_PAUSE_MS,
  * which also refuses pushes that still need a review.
  */
-export async function reviewNotices(paths, project, { now = Date.now(), holds = watcherHolds, isAlive = processAlive } = {}) {
+export async function reviewNotices(paths, project, { now = Date.now(), holds = watcherHolds, isAlive = processAlive, startedAt = processStartedAt } = {}) {
   const information = await updateInformation(paths, { holds });
   const lines = [];
   const update = updateMessage(information, project);
   if (update) lines.push(update);
+  if (information.settingsError && !information.blockedBy.some((hold) => hold.reason.startsWith('update-settings:'))) {
+    lines.push(`Rove Sentinel cannot read the update settings for ${project}: ${information.settingsError} Automatic updates stop until npx --no-install rove-sentinel updates --enable or --disable rewrites them.`);
+  }
   const paused = await readJson(paths.paused).catch(() => null);
   const since = Date.parse(paused?.pausedAt);
-  if (paused && Number.isFinite(since) && now - since > LONG_PAUSE_MS && !await liftsItself(paused, paths, isAlive)) {
+  if (paused && Number.isFinite(since) && now - since > LONG_PAUSE_MS && !await liftsItself(paused, paths, { isAlive, startedAt })) {
     lines.push(longPauseMessage(paused, project));
   }
   return lines;
@@ -184,6 +196,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
   if (platform !== 'win32') return { status: 'unsupported' };
   const releaseWorker = await acquireDispositionLock(paths,
     { repository: context.repository, branch: 'sentinel-runtime-update' }, { maxHoldMs: Infinity });
+  let target = null;
   const save = async (patch) => {
     state = { ...state, repoRoot: context.repoRoot, ...patch };
     await publishEngineState(paths, state, root);
@@ -194,9 +207,11 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
     if (discovery.status !== 'available' || compareVersions(discovery.latestVersion, version) <= 0) return { status: discovery.status };
     const nextVersion = discovery.latestVersion;
     if (!force && state.failedVersion === nextVersion) return { status: 'failed', version: nextVersion, error: state.lastError };
-    // Reserve the runtime globally before installation, so another project's collection cannot remove it.
-    await save({ pendingVersion: nextVersion, phase: 'downloading', lastError: null });
-    await ensure(nextVersion, { root });
+    // Reserve the runtime under the store's lock, so another project's collection
+    // either reads the reservation or has removed the copy before this one looks.
+    target = nextVersion;
+    await save({ phase: 'downloading', lastError: null });
+    await ensure(nextVersion, { root, reserve: () => save({ pendingVersion: nextVersion }) });
     await save({ phase: 'waiting' });
     if (!await enabled(paths, env)) return { status: 'disabled' };
     await notify(context, state).catch(() => {});
@@ -272,7 +287,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       return { status: preserveFence ? 'recovery-required' : 'failed', version: nextVersion, error: state.lastError };
     } finally { if (!preserveFence) await releaseUpdate(); }
   } catch (error) {
-    await save({ phase: 'download-failed', lastError: error.message });
+    await save({ phase: 'download-failed', lastError: error.message, ...(target ? { pendingVersion: target } : {}) });
     return { status: 'download-failed', error: error.message };
   } finally { await releaseWorker(); }
 }

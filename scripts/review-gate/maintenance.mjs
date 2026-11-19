@@ -14,7 +14,7 @@ function alive(pid) {
   catch (error) { return error.code !== 'ESRCH'; }
 }
 
-async function processStartedAt(pid) {
+export async function processStartedAt(pid) {
   if (process.platform !== 'win32' || !Number.isInteger(pid) || pid < 1) return null;
   try {
     const result = await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',

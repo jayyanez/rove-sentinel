@@ -34,8 +34,10 @@ lifts it, and `gate`, `pre-push`, `status` and `doctor` print one line saying so
 Inspect the reason before running `resume`, or fix a stopped watcher's reason and
 run `install` from your trusted checkout; the watcher then activates the release
 within about ten minutes. Those commands also print a line for a pause older than
-a day, with or without an update waiting, for a download that failed, and for a
-release that will not activate because automatic updates are disabled. **Active**
+a day, with or without an update waiting, for a download that failed while its
+release is still newer than the running engine, for update settings they cannot
+read, and for a release that will not activate because automatic updates are
+disabled. **Active**
 means the new watcher passed its health check and new commands select that engine.
 Existing Claude Code and Codex sessions can continue; their next Sentinel command
 uses the selected version. An already running Sentinel review retains its version
@@ -113,9 +115,9 @@ A project's previous version stays available for rollback while there is room:
 when the store is full, a new release removes versions nothing references, then
 copies kept only as some project's rollback, oldest first, once it is downloaded
 and verified, so a failed download removes nothing. A project reusing a version
-already in the store checks it under the store's lock, so a collection either
-sees that project's reservation or has already removed the copy, which is then
-downloaded again. A project record
+already in the store reserves it and checks it while it holds the store's lock,
+so a collection either reads that reservation or has already removed the copy,
+which is then downloaded again. A project record
 whose checkout no longer exists keeps only its active version, since clones of
 one remote share one selection and another clone may still run it. If every slot
 is still required, the download fails with an error naming those versions, and

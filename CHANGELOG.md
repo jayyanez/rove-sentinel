@@ -18,9 +18,10 @@ cannot download.
   one remote share one selection and another clone may still run it. Versions are compared
   as versions, so 1.9.0 is older than 1.10.0. Nothing is removed until the new release is
   downloaded, verified and in place, so a failed download keeps every rollback copy, and a
-  project reusing a version already in the store checks it under the store's lock, so a
-  collection either sees its reservation or has already removed the copy, which is then
-  downloaded again. When only required versions remain, the error names them. On a host already stuck: move one version that no project has active out of
+  project reserves a version and checks for a ready copy while it holds the store's lock, so
+  a collection either reads that reservation or has already removed the copy, which is then
+  downloaded again. A collection an interrupted install left undone is finished by the next
+  one. When only required versions remain, the error names them. On a host already stuck: move one version that no project has active out of
   the store's `versions` folder, then run `update`.
 - **A release the watcher keeps waiting is reported.** Activation waits for the watcher to
   acknowledge an idle pause, so a paused or stopped watcher kept a downloaded release
