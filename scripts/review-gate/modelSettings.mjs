@@ -12,6 +12,13 @@ export const ROLES = Object.freeze({
   coordinator: 'Coordinator',
 });
 const SETTING_KEYS = ['model', 'effort', 'maxEffort'];
+// Codex models that take no `none` or `minimal` effort, each with the first
+// Codex CLI measured to accept it under a ChatGPT login (an older one rejects
+// the identifier as model_not_found).
+export const CODEX_MODEL_CLIENTS = Object.freeze({
+  'gpt-6.1-sol': Object.freeze([0, 159, 0]),
+  'gpt-6.2-sol': Object.freeze([0, 170, 0]),
+});
 
 /**
  * One provider's settings resolved against `defaults`: the omitted fields
@@ -31,7 +38,7 @@ function resolveSettings(provider, settings, defaults, label) {
   // A role inherits its provider's ceiling, whatever model it names.
   const defaultCeiling = legacyClaude ? 'high' : defaults.maxEffort;
   const maxEffort = settings.maxEffort ?? (EFFORTS.indexOf(effort) > EFFORTS.indexOf(defaultCeiling) ? effort : defaultCeiling);
-  const supported = provider === 'claude' || model === 'gpt-6.1-sol'
+  const supported = provider === 'claude' || Object.hasOwn(CODEX_MODEL_CLIENTS, model)
     ? EFFORTS.slice(2) : EFFORTS;
   if (!supported.includes(effort) || !supported.includes(maxEffort)) throw new Error(`Invalid ${label} effort or maxEffort for ${model}.`);
   if (legacyClaude && [effort, maxEffort].includes('xhigh')) {
@@ -118,7 +125,7 @@ export function validateModelClients(config, subscriptions) {
   for (const provider of subscriptions.selected) {
     // Every model a role of this provider can use needs a client that knows it.
     for (const profile of providerProfiles(provider, config)) {
-      const minimum = provider === 'codex' && profile.model === 'gpt-6.1-sol' ? [0, 159, 0]
+      const minimum = provider === 'codex' && Object.hasOwn(CODEX_MODEL_CLIENTS, profile.model) ? CODEX_MODEL_CLIENTS[profile.model]
         : provider === 'claude' && profile.model === 'claude-opus-5-5' ? [2, 1, 280]
         : provider === 'claude' && profile.model === 'claude-sonnet-5-5' ? [2, 1, 284] : null;
       const match = subscriptions.availability[provider]?.version?.match(/\b(\d+)\.(\d+)\.(\d+)\b/);

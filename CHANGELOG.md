@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.20.0 — GPT-6.2 Sol by default
+
+Codex roles default to GPT-6.2 Sol (`gpt-6.2-sol`), released by OpenAI on 2026-11-17, in
+place of GPT-6.1 Sol. Claude roles keep Claude Opus 5.5. Both stay at `high`, with a ceiling
+of `xhigh`. **Update Codex CLI to 0.170.0 or later** on every computer that reviews with
+Codex before this engine runs there.
+
+- **The default Codex model is GPT-6.2 Sol.** A project that omits `models.codex.model`
+  follows the new default once this engine is active; a project that pins a model keeps it.
+- **GPT-6.2 Sol needs Codex CLI 0.170.0 or later.** Codex 0.159.0 rejects the identifier
+  under a ChatGPT login (`model_not_found`); 0.170.0 is the first version verified to accept
+  it (0.160 to 0.169 were not tested). A review or `doctor` that selects Codex with an older
+  client refuses before any model work and names the version, as it did for GPT-6.1 Sol;
+  Sentinel never chooses another model. To stay on an older client, pin
+  `"codex": { "model": "gpt-6.1-sol" }`, which keeps its 0.159.0 floor. See
+  [models](docs/models.md#client-compatibility).
+- **Its efforts are those of GPT-6.1 Sol:** `low`, `medium`, `high`, `xhigh` and `max`;
+  `none` and `minimal` are refused when the policy is read.
+- `rove-sentinel limits` reports the Codex client the default model needs.
+
 ## 1.19.0 — a push gate that leaves the repository as it is
 
 Sentinel can now be installed for one person without adding anything to the repository it

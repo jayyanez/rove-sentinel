@@ -59,7 +59,7 @@ posts status comments. It does not merge PRs or replace GitHub branch protection
 
 Automatic provider selection is enabled by default. With one subscription,
 Sentinel keeps separate review contexts and records the reduced model diversity.
-Defaults are GPT-6.1 Sol and Claude Opus 5.5 at high effort; users can change
+Defaults are GPT-6.2 Sol and Claude Opus 5.5 at high effort; users can change
 models, efforts and provider requirements in [configuration](docs/models.md).
 Sentinel does not include subscriptions or provider binaries. Source context is
 sent through your CLIs to their AI providers; local orchestration is not offline

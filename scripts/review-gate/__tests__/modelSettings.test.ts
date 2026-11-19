@@ -8,7 +8,7 @@ import { validateModelClients } from '../modelSettings.mjs';
 describe('project model profiles and provider requirements', () => {
   it('pins all default roles to the requested models at high effort', () => {
     for (const [role, profile] of Object.entries(PROVIDER_PROFILE)) {
-      expect(profile.model).toBe(role.startsWith('claude') ? 'claude-opus-5-5' : 'gpt-6.1-sol');
+      expect(profile.model).toBe(role.startsWith('claude') ? 'claude-opus-5-5' : 'gpt-6.2-sol');
       expect(profile.effort).toBe('high');
       expect(profile.maxEffort).toBe('xhigh');
     }
@@ -40,6 +40,9 @@ describe('project model profiles and provider requirements', () => {
     { models: { claude: { effort: 'none' } } },
     { models: { codex: { effort: 'high', maxEffort: 'low' } } },
     { models: { codex: { model: 'gpt-6.1-sol', effort: 'none' } } },
+    { models: { codex: { model: 'gpt-6.2-sol', effort: 'none' } } },
+    { models: { codex: { model: 'gpt-6.2-sol', effort: 'minimal', maxEffort: 'minimal' } } },
+    { models: { codex: { effort: 'minimal' } } },
     { models: { claude: { model: 'claude-opus-4-6', maxEffort: 'xhigh' } } },
     { models: { codex: { temperature: 0 } } },
   ])('rejects invalid or incompatible profile settings: %j', (config) => {
@@ -53,10 +56,37 @@ describe('project model profiles and provider requirements', () => {
     expect(plan.useScout).toBe(true);
   });
   it('refuses the measured incompatible Codex client before model work', () => {
+    const pinned = normalizeConfig({ models: { codex: { model: 'gpt-6.1-sol' } } });
     const subscriptions = { selected: ['codex'], availability: { codex: { version: 'codex-cli 0.154.0' } } };
-    expect(() => validateModelClients({}, subscriptions)).toThrow(/0.159.0 or later/);
+    expect(() => validateModelClients(pinned, subscriptions)).toThrow(/0.159.0 or later/);
     expect(() => validateModelClients({ models: { codex: { model: 'gpt-5.6-sol' } } }, subscriptions)).not.toThrow();
-    expect(() => validateModelClients({}, { ...subscriptions, availability: { codex: { version: 'codex-cli 0.159.0' } } })).not.toThrow();
+    expect(() => validateModelClients(pinned, { ...subscriptions, availability: { codex: { version: 'codex-cli 0.159.0' } } })).not.toThrow();
+  });
+
+  it('requires Codex 0.170.0 for the default GPT-6.2 Sol (1.20.0)', () => {
+    // Codex 0.159.0 answers model_not_found for gpt-6.2-sol under a ChatGPT login.
+    const codex = (version: string) => ({ selected: ['codex'], availability: { codex: { version: `codex-cli ${version}` } } });
+    for (const version of ['0.159.0', '0.169.9']) {
+      expect(() => validateModelClients({}, codex(version)))
+        .toThrow(/codex 0\.170\.0 or later is required for gpt-6\.2-sol; detected /);
+    }
+    expect(() => validateModelClients({}, codex('0.170.0'))).not.toThrow();
+    expect(() => validateModelClients({}, codex('0.171.2'))).not.toThrow();
+    // A project that pins GPT-6.1 Sol keeps its own, older minimum.
+    expect(() => validateModelClients(normalizeConfig({ models: { codex: { model: 'gpt-6.1-sol' } } }), codex('0.159.0'))).not.toThrow();
+    // A role that names GPT-6.2 Sol needs the newer client even when the provider pins GPT-6.1 Sol.
+    const role = normalizeConfig({ models: { codex: { model: 'gpt-6.1-sol', roles: { coordinator: { model: 'gpt-6.2-sol' } } } } });
+    expect(() => validateModelClients(role, codex('0.165.0'))).toThrow(/0\.170\.0 or later is required for gpt-6\.2-sol/);
+  });
+
+  it('gives GPT-6.2 Sol the efforts its client lists, without none or minimal', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(normalizeConfig({ models: { codex: { model: 'gpt-6.2-sol', effort } } }).models.codex.effort).toBe(effort);
+    }
+    expect(normalizeConfig({ models: { codex: { effort: 'low' } } }).models.codex)
+      .toEqual({ model: 'gpt-6.2-sol', effort: 'low', maxEffort: 'xhigh' });
+    // A model Sentinel knows nothing of still leaves those efforts to its client.
+    expect(normalizeConfig({ models: { codex: { model: 'gpt-6-sol', effort: 'minimal', maxEffort: 'high' } } }).models.codex.effort).toBe('minimal');
   });
 });
 

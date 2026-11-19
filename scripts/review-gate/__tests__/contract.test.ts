@@ -34,6 +34,8 @@ describe('standalone package contract', () => {
     expect(text).toContain('4 MiB');
     expect(text).toContain('No limit on a changed file');
     expect(text).toContain('A timeout is a note, not a pass');
+    // The default Codex model's client floor (1.20.0).
+    expect(text).toContain('gpt-6.2-sol, needs Codex CLI 0.170.0 or later');
   });
 
   it('keeps incomplete claimed fixes in every reviewer scope', async () => {

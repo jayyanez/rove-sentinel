@@ -277,7 +277,7 @@ describe('subscription-backed provider adapters', () => {
     expect(codex).toContain('--skip-git-repo-check');
     expect(codex).toContain('--ignore-rules');
     expect(codex.slice(codex.indexOf('--model'), codex.indexOf('--model') + 2)).toEqual([
-      '--model', 'gpt-6.1-sol',
+      '--model', 'gpt-6.2-sol',
     ]);
   });
 
