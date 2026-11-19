@@ -61,9 +61,12 @@ describe('automatic engine activation', () => {
     expect(await automaticUpdate({}, f.deps)).toMatchObject({ status: 'download-failed' });
     expect((await record()).pendingVersion ?? null).toBeNull();
     expect(await readJson(engineStatePath(f.context.paths))).toMatchObject({ phase: 'download-failed', attemptedVersion: '1.11.0' });
-    f.deps.ensure.mockImplementation(async (_version, options) => { await options.reserve(); throw new Error('Release download returned HTTP 503.'); });
+    // A reservation the store took back after a failed install stays taken back.
+    f.deps.ensure.mockImplementation(async (_version, options) => {
+      await options.reserve(); await options.unreserve(); throw new Error('Release download returned HTTP 503.');
+    });
     expect(await automaticUpdate({}, f.deps)).toMatchObject({ status: 'download-failed' });
-    expect((await record()).pendingVersion).toBe('1.11.0');
+    expect((await record()).pendingVersion ?? null).toBeNull();
     f.deps.ensure.mockImplementation(async (_version, options) => { await options.reserve(); });
     expect(await automaticUpdate({}, f.deps)).toMatchObject({ status: 'updated' });
     expect(await readJson(engineStatePath(f.context.paths))).toMatchObject({ attemptedVersion: null, pendingVersion: null });
@@ -293,6 +296,12 @@ describe('shared immutable runtime distribution', () => {
     d.fetchImpl.mockResolvedValue(new Response(`${'0'.repeat(64)}  rove-sentinel-1.12.0.tgz\n`));
     await expect(ensureEngine('1.12.0', { ...d, maxVersions: 3 })).rejects.toThrow('checksum mismatch');
     expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.9.0']);
+    // The reservation it made is taken back while it still holds the store.
+    const lock = path.join(d.root, 'download.lock');
+    const calls: string[] = [];
+    const held = async (name: string) => { calls.push(`${name}:${await readFile(lock, 'utf8').then(() => 'locked', () => 'free')}`); };
+    await expect(ensureEngine('1.12.0', { ...d, maxVersions: 3, reserve: () => held('reserve'), unreserve: () => held('unreserve') })).rejects.toThrow();
+    expect(calls).toEqual(['reserve:locked', 'unreserve:locked']);
     // Nor when the verified runtime cannot be put in place.
     d.fetchImpl.mockImplementation(async (url) => new Response(url.endsWith('SHA256SUMS')
       ? `${createHash('sha256').update('synthetic archive').digest('hex')}  rove-sentinel-1.12.0.tgz\n` : Buffer.from('synthetic archive')));

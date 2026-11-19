@@ -197,13 +197,14 @@ async function lockStore(lockFile, version, waitMs) {
 
 /**
  * Shared per OS user; all repository watchers reuse the same verified immutable files.
- * A caller publishes its reservation (pendingVersion) first, and even a ready
- * copy is checked under the store's lock: a collection after that check reads
- * the reservation, and one before it already removed what it would, so the
- * check sees it gone and downloads the version again.
+ * `reserve` writes the caller's reservation (pendingVersion) while the store's
+ * lock is held, before even a ready copy is checked: a collection after that
+ * reads the reservation, and one before it already removed what it would, so
+ * the check sees it gone and downloads the version again. `unreserve` takes it
+ * back, under the same lock, when nothing could be installed.
  */
 export async function ensureEngine(version, { root = engineRoot(), fetchImpl = globalThis.fetch,
-  npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000, reserve = async () => {} } = {}) {
+  npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000, reserve = async () => {}, unreserve = async () => {} } = {}) {
   const directory = engineDirectory(version, root);
   const lockFile = path.join(root, 'download.lock');
   const isReady = async () => {
@@ -218,12 +219,15 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   if (lock.stale) {
     await reserve();
     if (lock.raw !== null && await readFile(lockFile, 'utf8').catch(() => null) === lock.raw && await isReady()) return directory;
+    await unreserve().catch(() => {});
   }
   if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
   const stage = path.join(root, 'staging');
   let createdStage = false;
+  let reserved = false;
   try {
     await reserve();
+    reserved = true;
     await mkdir(path.join(root, 'versions'), { recursive: true });
     if (await isReady()) {
       // Finish, at best effort, a collection an interrupted install left undone.
@@ -274,6 +278,10 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     await rename(stage, directory);
     await removeDisplaced(root, displaced);
     return directory;
+  } catch (error) {
+    // Nothing was installed: take the reservation back while the lock is held.
+    if (reserved) await unreserve().catch(() => {});
+    throw error;
   } finally {
     // Only this lock owner created staging. A failed install leaves no selectable runtime.
     try { if (createdStage) await rm(stage, { recursive: true, force: true }); }

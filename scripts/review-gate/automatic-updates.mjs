@@ -198,9 +198,12 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
   const releaseWorker = await acquireDispositionLock(paths,
     { repository: context.repository, branch: 'sentinel-runtime-update' }, { maxHoldMs: Infinity });
   let target = null;
+  // State changes only once it is published, so a failed write is never
+  // republished later, outside the lock it was meant for.
   const save = async (patch) => {
-    state = { ...state, repoRoot: context.repoRoot, ...patch };
-    await publishEngineState(paths, state, root);
+    const next = { ...state, repoRoot: context.repoRoot, ...patch };
+    await publishEngineState(paths, next, root);
+    state = next;
   };
   try {
     const discovery = await check({ installedVersion: version, enabled: true, force });
@@ -212,7 +215,11 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
     // either reads the reservation or has removed the copy before this one looks.
     target = nextVersion;
     await save({ phase: 'downloading', lastError: null, attemptedVersion: null });
-    await ensure(nextVersion, { root, reserve: () => save({ pendingVersion: nextVersion }) });
+    let reservedBefore = null;
+    await ensure(nextVersion, { root,
+      reserve: async () => { reservedBefore = state.pendingVersion ?? null; await save({ pendingVersion: nextVersion }); },
+      // A failed install leaves no copy of nextVersion; an earlier, other reservation stays.
+      unreserve: () => save({ pendingVersion: reservedBefore === nextVersion ? null : reservedBefore }) });
     await save({ phase: 'waiting' });
     if (!await enabled(paths, env)) return { status: 'disabled' };
     await notify(context, state).catch(() => {});
@@ -288,9 +295,8 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       return { status: preserveFence ? 'recovery-required' : 'failed', version: nextVersion, error: state.lastError };
     } finally { if (!preserveFence) await releaseUpdate(); }
   } catch (error) {
-    // The reservation is left as the store's lock left it: one made there stays
-    // (it protects only a copy that exists), and none is made here, outside
-    // that lock. attemptedVersion only names the attempt for the notice.
+    // The reservation is left as the store's lock left it (ensureEngine takes a
+    // failed one back there); attemptedVersion only names the attempt.
     await save({ phase: 'download-failed', lastError: error.message, ...(target ? { attemptedVersion: target } : {}) });
     return { status: 'download-failed', error: error.message };
   } finally { await releaseWorker(); }
