@@ -1,5 +1,21 @@
 # Standalone validation record
 
+## 1.20.1 updates that cannot proceed say so — 2026-11-18
+
+Deterministic tests cover a full engine store removing copies kept only for a rollback,
+oldest by version rather than by name, before refusing a new release; active, pending and
+running versions never removed, and the refusal naming them; a project record whose checkout
+is gone keeping only its active version; `updates` listing a safety pause (time, reason,
+command) and a stopped watcher (its error) under `blockedBy` without lifting the pause; no
+hold reported for a running watcher, or for the pause an activation writes for itself; the
+review-command line for a pause older than a day and none for a fresh one; and the line for
+a failed download only while its release is newer than the running engine. Eight of these
+tests fail on 1.20.0. 1,037 tests passed on Windows, and the package smoke passed.
+
+Not run live: the fix was not installed on a host with consumer projects, and no full store
+or paused watcher was reproduced outside the tests. The two failures it addresses were read
+from one host's state, not from these tests.
+
 ## 1.20.0 GPT-6.2 Sol by default — 2026-11-18
 
 Deterministic tests cover GPT-6.2 Sol as every Codex role's default; Codex 0.159.0 and

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.20.1 — updates that cannot proceed say so
+
+Two ways automatic updates stopped for days without anyone noticing, seen on a host with
+eight consumer projects. Nothing needs doing to receive the fix: it arrives as an ordinary
+automatic update once the store has room and the watcher can acknowledge it. A host whose
+store is already full needs one manual step (below), because the fix is in the engine that
+cannot download.
+
+- **A full engine store no longer blocks every update.** The store keeps at most five
+  versions, and every project's previous version counted as retained, so five versions kept
+  only as rollbacks filled it, and every project's download failed with "Runtime storage is
+  full". A full store now removes versions nothing uses, then copies kept only as some
+  project's rollback, oldest first: a new release outranks a rollback copy. Versions a
+  project has active or pending, or a running process uses, are never removed. A project
+  record whose checkout no longer exists keeps only its active version, because clones of
+  one remote share one selection and another clone may still run it. Versions are compared
+  as versions, so 1.9.0 is older than 1.10.0. When only required versions remain, the error
+  names them. On a host already stuck: move one version that no project has active out of
+  the store's `versions` folder, then run `update`.
+- **A release the watcher keeps waiting is reported.** Activation waits for the watcher to
+  acknowledge an idle pause, so a paused or stopped watcher kept a downloaded release
+  `waiting` for ever, and `updates` gave no reason. `updates` and `status` now list each hold
+  under `blockedBy` (a pause with its time and reason, a watcher that is not running with
+  its error, or state that cannot be read) with the command that lifts it, and `gate`,
+  `pre-push`, `status` and `doctor` print it in one line. Safety pauses stay deliberate:
+  nothing lifts them on its own.
+- **Long pauses and failed downloads are said where people look.** The same commands print a
+  line for a pause older than a day, with or without an update waiting, and for a download
+  that failed while its release is still newer than the running engine.
+  `ROVE_SENTINEL_UPDATE_NOTIFICATIONS=0` silences these lines as before.
+
 ## 1.20.0 — GPT-6.2 Sol by default
 
 Codex roles default to GPT-6.2 Sol (`gpt-6.2-sol`), released by OpenAI on 2026-11-17, in

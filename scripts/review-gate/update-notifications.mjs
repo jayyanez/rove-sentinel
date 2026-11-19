@@ -1,10 +1,35 @@
 import path from 'node:path';
 import { runProcess } from './process.mjs';
 import { atomicWriteJson, readJson } from './storage.mjs';
+import { compareVersions, stableVersion } from './updates.mjs';
 
-export function updateMessage({ phase, activeVersion, pendingVersion, lastError }, project) {
+const HOLDS = {
+  paused: 'the review watcher is paused',
+  stopped: 'the review watcher is not running',
+  unreadable: 'the review watcher cannot be checked',
+};
+
+/** One hold from `watcherHolds`, as a sentence. */
+export function describeHold({ kind, since, reason, action }) {
+  return `${HOLDS[kind] ?? 'the review watcher holds it'}${since ? ` (since ${since})` : ''}: ${String(reason).replace(/[.\s]+$/, '')}. ${action}`;
+}
+
+export function longPauseMessage({ pausedAt, reason }, project) {
+  return `The review watcher for ${project} has been paused since ${pausedAt}: ${String(reason).replace(/[.\s]+$/, '')}. Pushes without a passing review are refused and no update activates until it resumes. Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.`;
+}
+
+const newer = (pending, running) => stableVersion(pending) && (!stableVersion(running) || compareVersions(pending, running) > 0);
+
+export function updateMessage({ phase, activeVersion, pendingVersion, lastError, blockedBy, runningVersion }, project) {
   if (phase === 'active') return `Rove Sentinel updated to ${activeVersion} for ${project}. New reviews use it; existing agents can continue.`;
+  if (phase === 'waiting' && blockedBy?.length) {
+    return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join(' Also, ')} Once the watcher runs unpaused, it activates within about ten minutes, or at once with npx --no-install rove-sentinel update.`;
+  }
   if (phase === 'waiting') return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.`;
+  if (phase === 'download-failed' && newer(pendingVersion, runningVersion)) {
+    const reason = lastError ? ` ${String(lastError).replace(/\s+/g, ' ').trim()}` : '';
+    return `Rove Sentinel ${pendingVersion} could not be downloaded for ${project}; the running engine is unchanged.${reason} The watcher retries daily; npx --no-install rove-sentinel update retries now.`;
+  }
   if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active. ${lastError || ''}`;
   if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. Run rove-sentinel updates for details.`;
   return null;

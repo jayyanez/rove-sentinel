@@ -1,9 +1,9 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { automaticUpdate, maybeStartUpdateWorker } from '../automatic-updates.mjs';
+import { LONG_PAUSE_MS, automaticUpdate, maybeStartUpdateWorker, reviewNotices, updateInformation } from '../automatic-updates.mjs';
 import { engineCli, engineDirectory, engineStatePath, ensureEngine, publishEngineState, selectedEngine } from '../engine-store.mjs';
 import { acquireReviewLease, acquireUpdateLease, updateMarker } from '../maintenance.mjs';
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
@@ -155,14 +155,14 @@ describe('automatic engine activation', () => {
 });
 
 describe('shared immutable runtime distribution', () => {
-  async function distribution() {
+  async function distribution(version = '1.11.0') {
     const root = await temp(); const archive = Buffer.from('synthetic archive');
     const digest = createHash('sha256').update(archive).digest('hex');
-    const fetchImpl = vi.fn(async (url) => new Response(url.endsWith('SHA256SUMS') ? `${digest}  rove-sentinel-1.11.0.tgz\n` : archive));
+    const fetchImpl = vi.fn(async (url) => new Response(url.endsWith('SHA256SUMS') ? `${digest}  rove-sentinel-${version}.tgz\n` : archive));
     const npm = vi.fn(async (_args, { cwd }) => {
       const packageRoot = path.join(cwd, 'node_modules/rove-sentinel');
       await mkdir(path.join(packageRoot, 'scripts/review-gate'), { recursive: true });
-      await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'rove-sentinel', version: '1.11.0', sentinelEngineProtocol: 1 }));
+      await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'rove-sentinel', version, sentinelEngineProtocol: 1 }));
       await writeFile(path.join(packageRoot, 'scripts/review-gate/cli.mjs'), '');
     });
     return { root, fetchImpl, npm };
@@ -228,6 +228,47 @@ describe('shared immutable runtime distribution', () => {
     await atomicWriteJson(path.join(d.root, 'processes/live.json'), { pid: process.pid, version: '1.10.0' });
     await expect(ensureEngine('1.11.0', { ...d, maxVersions: 1 })).rejects.toThrow('storage is full');
   });
+  // Installed versions, and a project whose checkout is (or is not) still there.
+  async function installed(root: string, versions: string[]) {
+    for (const version of versions) await mkdir(engineDirectory(version, root), { recursive: true });
+  }
+  async function project(root: string, name: string, state: object, { gone = false } = {}) {
+    const repoRoot = path.join(root, 'checkouts', name);
+    if (!gone) await mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    await publishEngineState(await ensureState(path.join(root, 'state', name)), { repoRoot, ...state }, root);
+  }
+  const present = async (root: string) => (await readdir(path.join(root, 'versions'))).sort();
+
+  it('collects rollback-only copies, oldest first, rather than refusing a new release', async () => {
+    const d = await distribution('1.12.0');
+    await installed(d.root, ['1.9.0', '1.10.0', '1.11.0']);
+    await project(d.root, 'a', { activeVersion: '1.11.0', previousVersion: '1.10.0' });
+    await project(d.root, 'b', { activeVersion: '1.11.0', previousVersion: '1.9.0' });
+    expect(await ensureEngine('1.12.0', { ...d, maxVersions: 3 })).toBe(engineDirectory('1.12.0', d.root));
+    // 1.9.0 is older than 1.10.0, though it sorts after it as text.
+    expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.12.0']);
+  });
+  it('never collects an active, pending or running version, even when only those are left', async () => {
+    const d = await distribution('1.12.0');
+    await installed(d.root, ['1.9.0', '1.10.0', '1.11.0']);
+    await project(d.root, 'a', { activeVersion: '1.11.0', previousVersion: '1.9.0', pendingVersion: '1.10.0' });
+    await project(d.root, 'b', { activeVersion: '1.9.0' });
+    await atomicWriteJson(path.join(d.root, 'processes/live.json'), { pid: process.pid, version: '1.10.0' });
+    const error = await ensureEngine('1.12.0', { ...d, maxVersions: 3 }).catch((caught) => caught.message);
+    expect(error).toContain('storage is full');
+    expect(error).toContain('1.9.0, 1.10.0, 1.11.0');
+    expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.9.0']);
+    expect(d.fetchImpl).not.toHaveBeenCalled();
+  });
+  it('lets a project whose checkout is gone keep only its active version', async () => {
+    const d = await distribution('1.12.0');
+    await installed(d.root, ['1.9.0', '1.10.0', '1.11.0']);
+    await project(d.root, 'live', { activeVersion: '1.11.0' });
+    await project(d.root, 'removed-worktree', { activeVersion: '1.9.0', pendingVersion: '1.10.0', previousVersion: '1.10.0' }, { gone: true });
+    await ensureEngine('1.12.0', { ...d, maxVersions: 3 });
+    // Another clone of the same remote may still select 1.9.0; nobody waits for 1.10.0.
+    expect(await present(d.root)).toEqual(['1.11.0', '1.12.0', '1.9.0']);
+  });
   it('preserves an interrupted staging directory rather than erasing it', async () => {
     const d = await distribution(); await mkdir(path.join(d.root, 'staging'));
     await writeFile(path.join(d.root, 'staging/evidence.txt'), 'retained');
@@ -246,5 +287,73 @@ describe('visible update notifications', () => {
     await notifyUpdate(f.context, state, { run, platform: 'win32', env: {} });
     expect(run).toHaveBeenCalledOnce();
     expect(run.mock.calls[0][1]).toContain('-EncodedCommand');
+  });
+});
+
+describe('an update the watcher keeps waiting is said', () => {
+  const HOUR = 60 * 60 * 1000;
+  const SAFETY = 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.';
+  async function waiting(phase = 'waiting', extra: object = {}) {
+    const f = await fixture();
+    await publishEngineState(f.context.paths, { repoRoot: f.context.repoRoot, phase, pendingVersion: '99.0.0', ...extra }, f.deps.root);
+    return f;
+  }
+  async function liveWatcher(paths) {
+    await atomicWriteJson(paths.lock, { ownerToken: 'owner', pid: process.pid });
+    await atomicWriteJson(paths.heartbeat, { ownerToken: 'owner', pid: process.pid, at: new Date().toISOString() });
+  }
+
+  it('names a safety pause, its time and reason, and the command, and never lifts it', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths);
+    const pause = { pausedAt: '2026-11-03T08:00:00.000Z', reason: SAFETY };
+    await atomicWriteJson(f.context.paths.paused, pause);
+    expect((await updateInformation(f.context.paths)).blockedBy).toEqual([
+      expect.objectContaining({ kind: 'paused', since: pause.pausedAt, reason: SAFETY }),
+    ]);
+    const lines = await reviewNotices(f.context.paths, 'example');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('99.0.0 is downloaded for example but cannot activate');
+    expect(lines[0]).toContain(`paused (since ${pause.pausedAt}): ${SAFETY.slice(0, -1)}`);
+    expect(lines[0]).toContain('rove-sentinel resume');
+    expect(lines[0]).not.toContain('after current reviews finish');
+    expect(await readJson(f.context.paths.paused)).toEqual(pause);
+  });
+  it('names a stopped watcher and the error it stopped with', async () => {
+    const f = await waiting();
+    const stopped = 'Review daemon lock belongs to dead PID 4242; refusing automatic removal because another starter may have replaced it.';
+    await atomicWriteJson(f.context.paths.daemonError, { message: stopped, at: '2026-11-05T10:00:00.000Z' });
+    expect((await updateInformation(f.context.paths)).blockedBy).toEqual([
+      expect.objectContaining({ kind: 'stopped', since: '2026-11-05T10:00:00.000Z', reason: stopped }),
+    ]);
+    const [line] = await reviewNotices(f.context.paths, 'example');
+    expect(line).toContain('the review watcher is not running (since 2026-11-05T10:00:00.000Z): Review daemon lock belongs to dead PID 4242');
+    expect(line).toContain('rove-sentinel install');
+  });
+  it('says nothing more while a running watcher simply finishes its reviews, or runs the activation itself', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths);
+    expect((await updateInformation(f.context.paths)).blockedBy).toEqual([]);
+    await atomicWriteJson(f.context.paths.paused, { pausedAt: new Date(Date.now() - 3 * 24 * HOUR).toISOString(), reason: 'Automatic Sentinel update to 99.0.0' });
+    expect((await updateInformation(f.context.paths)).blockedBy).toEqual([]);
+    expect(await reviewNotices(f.context.paths, 'example')).toEqual([expect.stringContaining('It will activate after current reviews finish.')]);
+  });
+  it('reports a pause older than a day with no update waiting, and not a fresh one', async () => {
+    const f = await waiting('active', { activeVersion: '99.0.0', pendingVersion: null }); await liveWatcher(f.context.paths);
+    const now = Date.parse('2026-11-18T12:00:00.000Z');
+    await atomicWriteJson(f.context.paths.paused, { pausedAt: new Date(now - LONG_PAUSE_MS - HOUR).toISOString(), reason: SAFETY });
+    const lines = await reviewNotices(f.context.paths, 'example', { now });
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain('The review watcher for example has been paused since 2026-11-17T11:00:00.000Z');
+    expect(lines[1]).toContain('rove-sentinel resume');
+    expect(await reviewNotices(f.context.paths, 'example', { now: now - 2 * HOUR })).toHaveLength(1);
+  });
+  it('reports a download that failed, with its reason, while it is still newer than the running engine', async () => {
+    const full = 'Runtime storage is full: every installed version (1.15.0, 1.16.0) is active or pending for a project, or used by a running process.';
+    const f = await waiting('download-failed', { lastError: full });
+    const [line] = await reviewNotices(f.context.paths, 'example');
+    expect(line).toContain('99.0.0 could not be downloaded for example');
+    expect(line).toContain(full);
+    expect(line).toContain('rove-sentinel update');
+    const old = await waiting('download-failed', { pendingVersion: '1.0.0', lastError: full });
+    expect(await reviewNotices(old.context.paths, 'example')).toEqual([]);
   });
 });

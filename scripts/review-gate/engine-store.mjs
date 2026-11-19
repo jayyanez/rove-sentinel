@@ -4,7 +4,7 @@ import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile }
 import path from 'node:path';
 import { runProcess } from './process.mjs';
 import { atomicWriteJson, readJson, stateRootFor } from './storage.mjs';
-import { RELEASE_REPOSITORY, releaseUrls, stableVersion } from './updates.mjs';
+import { RELEASE_REPOSITORY, compareVersions, releaseUrls, stableVersion } from './updates.mjs';
 
 export const engineRoot = () => path.join(stateRootFor(`https://github.com/${RELEASE_REPOSITORY}`), 'engines');
 export const engineStatePath = (paths) => path.join(paths.root, 'engine.json');
@@ -91,8 +91,24 @@ async function boundedDownload(url, maximum, { fetchImpl, timeoutMs }) {
   return Buffer.concat(chunks);
 }
 
-async function retainedVersions(root) {
-  const keep = new Set();
+/** True when a project's record names a checkout that is no longer there. */
+async function checkoutGone(repoRoot) {
+  if (typeof repoRoot !== 'string' || !repoRoot) return false;
+  try { await stat(path.join(repoRoot, '.git')); return false; }
+  catch (error) { return error.code === 'ENOENT' || error.code === 'ENOTDIR'; }
+}
+
+/**
+ * What each installed version is kept for. `required`: a live process runs it,
+ * or a project has it active or pending. `rollback`: only some project's
+ * previous version. A record whose checkout is gone keeps only its active
+ * version: the clones of one remote share one selection, and the record names
+ * whichever checkout wrote it last, so another clone may still run that version.
+ */
+export async function retainedVersions(root) {
+  const required = new Set();
+  const rollback = new Set();
+  const keep = (set, version) => { if (stableVersion(version)) set.add(version); };
   for (const folder of ['consumers', 'processes']) {
     const dir = path.join(root, folder);
     const entries = await readdir(dir).catch((error) => { if (error.code === 'ENOENT') return []; throw error; });
@@ -100,13 +116,20 @@ async function retainedVersions(root) {
       const file = path.join(dir, entry);
       const record = await readJson(file);
       if (!record) continue;
-      if (folder === 'processes' && !processAlive(record.pid)) { await rm(file, { force: true }); continue; }
-      for (const version of [record.version, record.activeVersion, record.previousVersion, record.pendingVersion]) {
-        if (stableVersion(version)) keep.add(version);
+      if (folder === 'processes') {
+        if (!processAlive(record.pid)) { await rm(file, { force: true }); continue; }
+        keep(required, record.version);
+        continue;
       }
+      keep(required, record.activeVersion);
+      if (await checkoutGone(record.repoRoot)) continue;
+      keep(required, record.version);
+      keep(required, record.pendingVersion);
+      keep(rollback, record.previousVersion);
     }
   }
-  return keep;
+  for (const version of required) rollback.delete(version);
+  return { required, rollback };
 }
 
 /** Shared per OS user; all repository watchers reuse the same verified immutable files. */
@@ -128,15 +151,24 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   try {
     await lock.writeFile(JSON.stringify({ pid: process.pid, version }));
     await mkdir(path.join(root, 'versions'), { recursive: true });
-    const versions = (await readdir(path.join(root, 'versions'))).filter(stableVersion);
-    const retained = await retainedVersions(root);
-    for (const previous of [...versions]) {
-      if (versions.length < maxVersions) break;
-      if (retained.has(previous)) continue;
-      await rm(engineDirectory(previous, root), { recursive: true, force: true });
-      versions.splice(versions.indexOf(previous), 1);
+    const versions = (await readdir(path.join(root, 'versions'))).filter(stableVersion).sort(compareVersions);
+    const { required, rollback } = await retainedVersions(root);
+    // Oldest first: versions nothing keeps, then copies kept only for a rollback.
+    // A new release outranks a rollback copy; nothing required is ever removed.
+    // A command that read its selection just before its project moved off a
+    // version, and has not yet registered, can find that copy gone: it fails
+    // to start, and the next command selects the new version.
+    for (const collectable of [(old) => !required.has(old) && !rollback.has(old), (old) => !required.has(old)]) {
+      for (const previous of [...versions]) {
+        if (versions.length < maxVersions) break;
+        if (!collectable(previous)) continue;
+        await rm(engineDirectory(previous, root), { recursive: true, force: true });
+        versions.splice(versions.indexOf(previous), 1);
+      }
     }
-    if (versions.length >= maxVersions) throw new Error('Runtime storage is full of versions retained by projects or running processes. Update or unregister inactive projects before retrying.');
+    if (versions.length >= maxVersions) {
+      throw new Error(`Runtime storage is full: every installed version (${versions.join(', ')}) is active or pending for a project, or used by a running process. Update or uninstall inactive projects, or end processes that run an old version, before retrying.`);
+    }
     // A crashed staging directory is deliberately not overwritten.
     await mkdir(stage);
     createdStage = true;

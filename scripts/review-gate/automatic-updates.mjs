@@ -6,10 +6,10 @@ import { createGateContext } from './gate.mjs';
 import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
-import { acquireDispositionLock, atomicWriteJson, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
+import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
 import { runProcess } from './process.mjs';
 import { checkForUpdates, compareVersions } from './updates.mjs';
-import { notifyUpdate } from './update-notifications.mjs';
+import { longPauseMessage, notifyUpdate, updateMessage } from './update-notifications.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
 const RETRY = 10 * 60 * 1000;
@@ -18,12 +18,69 @@ const settingsPath = (paths) => path.join(paths.root, 'update-settings.json');
 const enabled = async (paths, env) => env.ROVE_SENTINEL_AUTO_UPDATE !== '0'
   && (await readJson(settingsPath(paths)))?.enabled === true;
 
-export async function updateInformation(paths) {
+/** A pause older than this is reported by review commands even with no update waiting. */
+export const LONG_PAUSE_MS = DAY;
+// The pause an activation writes for itself, and clears, while it runs.
+const UPDATE_PAUSE = 'Automatic Sentinel update to ';
+const settle = (file) => readJson(file).then((value) => ({ value }), (error) => ({ error: error?.message || String(error) }));
+
+/**
+ * What keeps the watcher from acknowledging an idle pause, from its own records
+ * (no scheduler query, nothing started): a pause somebody must lift, a watcher
+ * that is not running, or state it cannot read. An activation waits for that
+ * acknowledgement, so each of these keeps a downloaded release waiting for ever.
+ * Safety pauses are deliberate: this reports them, it never lifts them.
+ */
+export async function watcherHolds(paths, { isAlive } = {}) {
+  const [paused, lock, heartbeat, daemonError] = await Promise.all(
+    [paths.paused, paths.lock, paths.heartbeat, paths.daemonError].map(settle));
+  const unreadable = [paused, lock, heartbeat].find((entry) => entry.error);
+  if (unreadable) {
+    return [{ kind: 'unreadable', since: null, reason: `the watcher's state is unreadable: ${unreadable.error}`,
+      action: 'Run npx --no-install rove-sentinel status, which names the record, and repair it.' }];
+  }
+  const holds = [];
+  if (!daemonOwnerIsHealthy(lock.value, heartbeat.value, { maxAgeMs: 30_000, ...(isAlive ? { isAlive } : {}) })) {
+    holds.push({ kind: 'stopped', since: daemonError.value?.at ?? heartbeat.value?.at ?? null,
+      reason: daemonError.value?.message ?? (lock.value ? `no fresh heartbeat from the lock's PID ${lock.value.pid}` : 'no watcher is running'),
+      action: 'Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.' });
+  }
+  if (paused.value && !String(paused.value.reason ?? '').startsWith(UPDATE_PAUSE)) {
+    holds.push({ kind: 'paused', since: paused.value.pausedAt ?? null, reason: String(paused.value.reason ?? 'no reason recorded'),
+      action: 'Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.' });
+  }
+  return holds;
+}
+
+export async function updateInformation(paths, { holds = watcherHolds } = {}) {
   const state = await readJson(engineStatePath(paths));
+  const phase = state?.phase || 'idle';
+  const pendingVersion = state?.pendingVersion || null;
   return { automatic: await enabled(paths, process.env),
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
-    pendingVersion: state?.pendingVersion || null, phase: state?.phase || 'idle',
-    lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null };
+    pendingVersion, phase,
+    lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null,
+    // Why a downloaded release is not activating, when the watcher will not let it.
+    blockedBy: phase === 'waiting' && pendingVersion ? await holds(paths) : [] };
+}
+
+/**
+ * The lines review commands print about updates and the watcher: the update's
+ * state, why it cannot activate, and a pause left longer than LONG_PAUSE_MS.
+ */
+export async function reviewNotices(paths, project, { now = Date.now(), holds = watcherHolds } = {}) {
+  const information = await updateInformation(paths, { holds });
+  const lines = [];
+  const update = updateMessage(information, project);
+  if (update) lines.push(update);
+  if (!information.blockedBy.some((hold) => hold.kind === 'paused')) {
+    const paused = await readJson(paths.paused).catch(() => null);
+    const since = Date.parse(paused?.pausedAt);
+    if (paused && !String(paused.reason ?? '').startsWith(UPDATE_PAUSE) && Number.isFinite(since) && now - since > LONG_PAUSE_MS) {
+      lines.push(longPauseMessage(paused, project));
+    }
+  }
+  return lines;
 }
 
 export async function configureAutomaticUpdates(context, value, { onlyIfMissing = false } = {}) {

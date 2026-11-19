@@ -21,7 +21,17 @@ npx --no-install rove-sentinel status
 npx --no-install rove-sentinel --version
 ```
 
-A downloaded release can remain **waiting** while another review runs. **Active**
+A downloaded release can remain **waiting** while another review runs. It
+activates only once the watcher acknowledges an idle pause, so a watcher that is
+**paused** (a safety pause after a provider cleanup that could not be verified is
+deliberate, and nothing lifts it on its own) or **not running** keeps it waiting
+indefinitely. `updates` and `status` then list each hold under `blockedBy`, with
+its time, reason and the command that lifts it, and `gate`, `pre-push`, `status`
+and `doctor` print one line saying so. Inspect the reason before running
+`resume`, or fix a stopped watcher's reason and run `install` from your trusted
+checkout; the release then activates within about ten minutes, or at once with
+`update`. Those commands also print a line for a pause older than a day, with or
+without an update waiting, and for a download that failed. **Active**
 means the new watcher passed its health check and new commands select that engine.
 Existing Claude Code and Codex sessions can continue; their next Sentinel command
 uses the selected version. An already running Sentinel review retains its version
@@ -93,11 +103,16 @@ the previous policy and runtime from the backup, verify watcher health, then rem
 the transaction marker and its update pause. Report incomplete recovery with the
 retained paths. Other projects remain independent.
 
-The shared engine store retains at most five installed versions. References from
-projects and live processes protect versions from collection; the previous managed
-version remains available for rollback. If every slot is retained, downloading
-pauses with an actionable error. Inactive projects may need deliberate state
-retirement before more versions fit. A download interrupted by process termination
+The shared engine store retains at most five installed versions. A version a
+project has active or pending, or that a live process uses, is never collected.
+A project's previous version stays available for rollback while there is room:
+when the store is full, a new release first removes versions nothing references,
+then copies kept only as some project's rollback, oldest first. A project record
+whose checkout no longer exists keeps only its active version, since clones of
+one remote share one selection and another clone may still run it. If every slot
+is still required, the download fails with an error naming those versions, and
+review commands print it; uninstall or update inactive projects, or end processes
+running an old version, before more versions fit. A download interrupted by process termination
 can leave `download.lock` and `staging`; inspect the recorded owner before clearing
 these failed-download artifacts. Never remove a directory used by a live process.
 

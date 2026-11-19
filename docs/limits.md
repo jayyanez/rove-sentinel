@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.20.0
+**Engine version:** 1.20.1
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,7 +28,7 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.20.0
+## Limits of 1.20.1
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
@@ -48,6 +48,7 @@ When a review still fails, read the report's own account of why
 | A provider that fails a round, or reports its usage limit | One restart per review. Held out of `auto` reviews for 1 hour after a failure; until the reported reset after a usage limit (1 hour when none could be read, at most 8 days) | Under `auto` the review restarts once without it; a second failure fails closed. An explicit requirement never falls back, and a usage limit refuses it until the reset |
 | Local installation (`install --local`) | Its hook is in Git's own hooks folder, which Git runs only while `core.hooksPath` is unset, on a file system with hard links | `install --local` refuses while `core.hooksPath` is set or another pre-push hook is there, and preserves both; it refuses a Git directory without hard links before changing anything. See [installation](installation.md#install-without-changing-the-repository) |
 | Codex CLI for the default model | 0.170.0 or later for GPT-6.2 Sol, the default from 1.20.0 (0.159.0 for GPT-6.1 Sol) | A review or `doctor` that selects Codex refuses before model work, naming the version; no other model is chosen. Update Codex, or pin a model it supports ([models](models.md#client-compatibility)) |
+| Managed engines (automatic updates) | 5 installed versions per OS user | A new release first removes versions nothing uses, then copies kept only for a project's rollback, oldest first. Versions a project has active or pending, or a running process uses, stay; when only those remain the download fails and names them. See [updates](updates.md#isolation-and-recovery) |
 | Review accounts | 8 per provider, declared in a per-user file; one restart per account that fails, plus the one provider restart | A failing account is held as a provider would be, and the review restarts with the provider's next account, under any requirement; the provider is dropped (under `auto` only) when none remains. See [models](models.md#accounts) |
 
 The exact values are in `scripts/review-gate/constants.mjs`; the
@@ -65,11 +66,12 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 | Run `recover` and `install` after a restart to bring a watcher back | 1.16.1 | A start replaces a lock when the machine booted after that lock's last heartbeat and its process is gone. Any other dead process's lock still needs both; `status` says why a watcher is stopped |
 | Commit Sentinel's dependency, configuration and hook to use the push gate | 1.19.0 | `install --local` puts the hook in Git's own hooks folder and reads its configuration from a file outside the repository |
 | Ignore `output/` for the logs of `gate --detach` | 1.19.0 | The default log is in the repository's state folder, outside the checkout |
+| Move an old version out of the engine store by hand when updates stop with "Runtime storage is full" | 1.20.1 | A full store removes copies kept only for a project's rollback, oldest first, and a project whose checkout is gone keeps only its active version |
 | Run `install` from an elevated shell on Windows | 1.16.1 | The watcher's task names its own user, so a limited token may create and replace it. A task already registered from an elevated shell stays an administrator's |
 
 ## Limits that remain
 
-These are real in 1.20.0; work within them rather than around them.
+These are real in 1.20.1; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:

@@ -15,9 +15,8 @@ import { checkModels } from './modelCheck.mjs';
 import { describeProviderHold, readProviderHolds } from './usageLimits.mjs';
 import { describeAccountHold, loadAccounts, readAccountState, requesterAccountKeys } from './accounts.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
-import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
+import { automaticUpdate, configureAutomaticUpdates, reviewNotices, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
-import { updateMessage } from './update-notifications.mjs';
 
 import { runWatcher } from './daemon.mjs';
 import {
@@ -212,11 +211,11 @@ async function main() {
     print(options.json ? sentinelLimits() : formatLimits(), Boolean(options.json));
     return;
   }
-  if (['gate', 'pre-push', 'doctor'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {
+  // An update the watcher keeps waiting, and a pause left for days, are said where people look.
+  if (['gate', 'pre-push', 'doctor', 'status'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {
     try {
       const context = await createGateContext(repoRoot);
-      const notice = updateMessage(await updateInformation(context.paths), path.basename(context.repoRoot));
-      if (notice) process.stderr.write(`${notice}\n`);
+      for (const notice of await reviewNotices(context.paths, path.basename(context.repoRoot))) process.stderr.write(`${notice}\n`);
     } catch { /* Notifications cannot change review behavior. */ }
   }
   if (command === 'update-check') {

@@ -1,7 +1,7 @@
 import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
 import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.20.0), from the
+// What this engine version accepts and where it stops (1.20.1), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -90,6 +90,11 @@ export function sentinelLimits() {
         text: 'install --local keeps nothing in the repository\'s files: its pre-push hook is in Git\'s own hooks folder and calls a Sentinel installed outside the repository by its path, and its configuration is a file outside the repository or the defaults. Git runs that folder\'s hooks only while core.hooksPath is unset, so install --local refuses while it is set, or while another pre-push hook is there, and preserves both. It also needs hard links in the Git directory (not FAT or some network shares), and refuses before changing anything without them.',
       },
       {
+        id: 'engine-store',
+        limit: '5 installed versions',
+        text: 'Automatic updates keep at most 5 engine versions per OS user. When the store is full, a new release first removes versions nothing uses, then copies kept only for a project\'s rollback, oldest first; versions a project has active or pending, or a running process uses, are never removed, and the download fails with the versions that hold it. A downloaded release activates only when the watcher is running and not paused: review commands, status and updates say what holds it and the command that lifts it, and review commands report a pause older than a day.',
+      },
+      {
         id: 'review-accounts',
         limit: `${LIMITS.maxAccountsPerProvider} accounts per provider`,
         text: `A user may declare up to ${LIMITS.maxAccountsPerProvider} accounts of each CLI (a CLAUDE_CONFIG_DIR or CODEX_HOME folder and a label) in a per-user accounts file, never in the repository. Reviewers avoid the author's own account while another is usable, and rotate through the rest. An account that fails or reports its usage limit is held, as a provider would be, and the review restarts from scratch with the provider's next account, under any provider requirement: one restart per failing account, plus the one provider restart under auto. Only labels reach reports.`,
@@ -140,6 +145,11 @@ export function sentinelLimits() {
         rule: 'Ignore output/ for the logs of gate --detach',
         unnecessarySince: '1.19.0',
         why: 'The default log is in the repository\'s state folder, outside the checkout.',
+      },
+      {
+        rule: 'Move an old version out of the engine store by hand when updates stop with "Runtime storage is full"',
+        unnecessarySince: '1.20.1',
+        why: 'A full store removes copies kept only for a project\'s rollback, oldest first, and a project whose checkout is gone keeps only its active version. Active, pending and running versions are never removed.',
       },
       {
         rule: 'Run install from an elevated shell on Windows',
