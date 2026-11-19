@@ -7,7 +7,7 @@ oldest by version rather than by name, before refusing a new release, and none w
 download fails; active, pending and running versions never removed, and the refusal naming
 them; nothing removed when the verified runtime cannot be put in place; a project record
 whose checkout is gone keeping only its active version; reuse of a ready copy waiting for a
-live download lock, and not for a dead or never-written one; no reservation written outside the store's lock, and a failed install's taken back under it; the reservation written while
+download lock, and refused at once under a dead or never-written one; no reservation written outside the store's lock, and a failed install's taken back under it; the reservation written while
 the store's lock is held, and a store left over its cap trimmed on the next install; `updates` listing a safety pause
 (time, reason, command), a stopped watcher (its error), a live watcher of another engine or
 policy, a dead submitter's queue lock, an interrupted activation's pause and fence (a reused

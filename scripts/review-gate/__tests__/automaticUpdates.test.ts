@@ -310,24 +310,24 @@ describe('shared immutable runtime distribution', () => {
     await expect(ensureEngine('1.12.0', { ...d, maxVersions: 4 })).rejects.toThrow();
     expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.12.0', '1.9.0']);
   });
-  it('reuses a ready copy only once no live process holds the store, which may be collecting it', async () => {
+  it('neither reserves nor reuses a ready copy while another process\'s lock, live or left behind, holds the store', async () => {
     const d = await distribution();
     await ensureEngine('1.11.0', d);
     const lock = path.join(d.root, 'download.lock');
+    const reserve = vi.fn(async () => {});
     await writeFile(lock, JSON.stringify({ pid: process.pid, version: '1.12.0' }));
-    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).rejects.toThrow('owns');
+    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300, reserve })).rejects.toThrow('owns');
+    // A dead owner's lock, or one it never wrote its PID into, is refused at once.
     await writeFile(lock, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
-    expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
-    // Under that dead lock a version with no copy is not left reserved.
-    const reserve = vi.fn(async () => {}); const unreserve = vi.fn(async () => {});
-    await expect(ensureEngine('1.13.0', { ...d, lockWaitMs: 300, reserve, unreserve })).rejects.toThrow('owns');
-    expect(reserve).toHaveBeenCalledOnce();
-    expect(unreserve).toHaveBeenCalledOnce();
-    // A lock its owner never wrote its PID into, left long ago, is as stale.
+    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 60_000, reserve })).rejects.toThrow('owns');
     await writeFile(lock, '');
     const old = new Date(Date.now() - 60_000);
     await utimes(lock, old, old);
-    expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
+    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 60_000, reserve })).rejects.toThrow('owns');
+    expect(reserve).not.toHaveBeenCalled();
+    await rm(lock);
+    expect(await ensureEngine('1.11.0', { ...d, reserve })).toBe(engineDirectory('1.11.0', d.root));
+    expect(reserve).toHaveBeenCalledOnce();
     expect(d.npm).toHaveBeenCalledOnce();
   });
   it('writes the reservation while it holds the store, and trims a store an interrupted install left over its cap', async () => {

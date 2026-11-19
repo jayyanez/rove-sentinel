@@ -167,9 +167,10 @@ async function removeDisplaced(root, versions) {
 const UNWRITTEN_LOCK_MS = 10_000;
 
 /**
- * The store's lock, which every collection holds. Waits up to `waitMs` while
- * a live process holds it. `stale` when its owner is gone: nothing can collect
- * while that lock stays, and a person inspects it before downloads resume.
+ * The store's lock, which every collection and reservation holds. Waits up to
+ * `waitMs` while a live process holds it; returns `stale` at once when its owner
+ * is gone, since waiting cannot help: a person inspects it before the store is
+ * used again.
  */
 async function lockStore(lockFile, version, waitMs) {
   const deadline = Date.now() + waitMs;
@@ -182,14 +183,12 @@ async function lockStore(lockFile, version, waitMs) {
       return { release };
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
     let owner = null;
-    let raw = null;
     let modified = Date.now();
     try {
       modified = (await stat(lockFile)).mtimeMs;
-      raw = await readFile(lockFile, 'utf8');
-      owner = JSON.parse(raw);
+      owner = JSON.parse(await readFile(lockFile, 'utf8'));
     } catch (error) { if (error.code === 'ENOENT') continue; }
-    if (Number.isInteger(owner?.pid) ? !processAlive(owner.pid) : Date.now() - modified > UNWRITTEN_LOCK_MS) return { stale: true, raw };
+    if (Number.isInteger(owner?.pid) ? !processAlive(owner.pid) : Date.now() - modified > UNWRITTEN_LOCK_MS) return { stale: true };
     if (Date.now() >= deadline) return { busy: true };
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -202,6 +201,7 @@ async function lockStore(lockFile, version, waitMs) {
  * reads the reservation, and one before it already removed what it would, so
  * the check sees it gone and downloads the version again. `unreserve` takes it
  * back, under the same lock, when no copy existed and none could be installed.
+ * Unlike 1.20.0, a ready copy is not reused while a dead owner's lock remains.
  */
 export async function ensureEngine(version, { root = engineRoot(), fetchImpl = globalThis.fetch,
   npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000, reserve = async () => {}, unreserve = async () => {} } = {}) {
@@ -217,17 +217,8 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   };
   await mkdir(root, { recursive: true });
   const lock = await lockStore(lockFile, version, lockWaitMs);
-  // A dead owner's lock stops every collection. Reserve, then check that same
-  // lock is still there: no collection can have started since, so a ready
-  // copy is safe to reuse.
-  if (lock.stale) {
-    await reserve();
-    if (lock.raw !== null && await readFile(lockFile, 'utf8').catch(() => null) === lock.raw) {
-      if (await isReady()) return directory;
-      // Still no collection can run, and no copy exists for it to protect.
-      await unreserve().catch(() => {});
-    }
-  }
+  // Nothing is reserved or reused without the lock: a lock left by a dead
+  // owner holds the store until a person inspects and removes it.
   if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
   const stage = path.join(root, 'staging');
   let createdStage = false;

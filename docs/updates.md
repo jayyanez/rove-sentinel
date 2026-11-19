@@ -117,7 +117,8 @@ copies kept only as some project's rollback, oldest first, once it is downloaded
 and verified, so a failed download removes nothing. A project reusing a version
 already in the store reserves it and checks it while it holds the store's lock,
 so a collection either reads that reservation or has already removed the copy,
-which is then downloaded again. A project record
+which is then downloaded again. A lock left by a process that is gone holds the
+store, reuse included, until a person inspects and removes it. A project record
 whose checkout no longer exists keeps only its active version, since clones of
 one remote share one selection and another clone may still run it. If every slot
 is still required, the download fails with an error naming those versions, and
