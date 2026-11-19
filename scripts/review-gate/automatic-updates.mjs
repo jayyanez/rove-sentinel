@@ -33,7 +33,10 @@ const processAlive = (pid) => {
 /**
  * The activation's own pause is no hold while the activation that wrote it
  * still runs: its update marker is there and its process is alive. Any other
- * pause, an update's left behind included, keeps a release waiting.
+ * pause, an update's left behind included, keeps a release waiting. Liveness
+ * is by PID, as for the store's process records: a PID the system has reused
+ * hides an interrupted activation until that process exits. These reports are
+ * diagnostics; activation itself still checks everything it checked before.
  */
 async function liftsItself(paused, paths, isAlive) {
   if (!String(paused?.reason ?? '').startsWith(UPDATE_PAUSE)) return false;
@@ -84,6 +87,12 @@ export async function watcherHolds(paths, { isAlive = processAlive, gateVersion 
         ? 'An interrupted update left this pause: follow Isolation and recovery in the updates guide before running npx --no-install rove-sentinel resume.'
         : 'Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.' });
   }
+  const submitter = read.queueSubmitLock.value;
+  if (Number.isInteger(submitter?.pid) && submitter.pid > 0 && !isAlive(submitter.pid)) {
+    holds.push({ kind: 'queue-lock', since: null,
+      reason: `the review queue's submission lock belongs to the dead process ${submitter.pid}`,
+      action: 'Inspect npx --no-install rove-sentinel status, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>".' });
+  }
   const marker = read.marker.value;
   if (marker && !isAlive(marker.pid)) {
     holds.push({ kind: 'interrupted', since: marker.startedAt ?? null,
@@ -97,14 +106,21 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
   const state = await readJson(engineStatePath(paths));
   const phase = state?.phase || 'idle';
   const pendingVersion = state?.pendingVersion || null;
+  let settingsError = null;
+  const automatic = await enabled(paths, process.env).catch((error) => { settingsError = error?.message || String(error); return null; });
   // Waiting: whatever keeps the release waiting. Activating: only what shows
-  // the activation is gone; a live one stops its watcher and pauses on purpose.
+  // the activation is gone or cannot be checked; a live one stops its watcher
+  // and pauses on purpose.
   const found = ['waiting', 'activating'].includes(phase) && pendingVersion ? await holds(paths) : [];
-  return { automatic: await enabled(paths, process.env),
+  if (settingsError && ['waiting', 'activating'].includes(phase) && pendingVersion) {
+    found.unshift({ kind: 'unreadable', since: null, reason: `update-settings: ${settingsError}`,
+      action: 'Run npx --no-install rove-sentinel updates --enable or --disable to rewrite it.' });
+  }
+  return { automatic,
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
     pendingVersion, phase,
     lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null,
-    blockedBy: phase === 'waiting' ? found : found.filter((hold) => hold.kind === 'interrupted') };
+    blockedBy: phase === 'waiting' ? found : found.filter((hold) => ['interrupted', 'unreadable'].includes(hold.kind)) };
 }
 
 /**

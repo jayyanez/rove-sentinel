@@ -214,8 +214,8 @@ async function main() {
   // An update the watcher keeps waiting, and a pause left for days, are said where people look.
   if (['gate', 'pre-push', 'doctor', 'status'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {
     try {
-      // The state the command itself uses: --state-root selects another one.
-      const context = await createGateContext(repoRoot, { stateRoot: options['state-root'] });
+      // The state the command itself uses: a review's --state-root selects another one.
+      const context = await createGateContext(repoRoot, { stateRoot: ['gate', 'pre-push'].includes(command) ? options['state-root'] : undefined });
       for (const notice of await reviewNotices(context.paths, path.basename(context.repoRoot))) process.stderr.write(`${notice}\n`);
     } catch { /* Notifications cannot change review behavior. */ }
   }

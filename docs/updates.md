@@ -26,7 +26,8 @@ activates only once a running watcher of the active engine and the installed
 policy acknowledges an idle pause, with its state readable and no earlier
 activation's fence left. So a watcher that is **paused** (a safety pause after a
 provider cleanup that could not be verified is deliberate, and nothing lifts it
-on its own), **not running**, running **another engine or policy**, or an
+on its own), **not running**, running **another engine or policy**, a queue
+**submission lock** left by a dead process, unreadable state, or an
 **interrupted** activation keeps it waiting indefinitely. `updates` and `status`
 then list each hold under `blockedBy`, with its time, reason and the command that
 lifts it, and `gate`, `pre-push`, `status` and `doctor` print one line saying so.
@@ -112,8 +113,9 @@ A project's previous version stays available for rollback while there is room:
 when the store is full, a new release removes versions nothing references, then
 copies kept only as some project's rollback, oldest first, once it is downloaded
 and verified, so a failed download removes nothing. A project reusing a version
-already in the store waits for a download in progress, whose collection may be
-removing it. A project record
+already in the store checks it under the store's lock, so a collection either
+sees that project's reservation or has already removed the copy, which is then
+downloaded again. A project record
 whose checkout no longer exists keeps only its active version, since clones of
 one remote share one selection and another clone may still run it. If every slot
 is still required, the download fails with an error naming those versions, and

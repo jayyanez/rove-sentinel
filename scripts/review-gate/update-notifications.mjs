@@ -8,6 +8,7 @@ const HOLDS = {
   stopped: 'the review watcher is not running',
   unreadable: 'the review watcher cannot be checked',
   outdated: 'the review watcher runs another engine or policy',
+  'queue-lock': 'the review queue is locked',
   interrupted: 'an earlier activation was interrupted',
 };
 
@@ -28,10 +29,10 @@ export function updateMessage({ phase, activeVersion, pendingVersion, lastError,
   if (phase === 'active') return `Rove Sentinel updated to ${activeVersion} for ${project}. New reviews use it; existing agents can continue.`;
   // `automatic` is false only where updates are switched off; a notification's state has no such field.
   if (automatic === false && ['waiting', 'download-failed'].includes(phase) && newer(pendingVersion, runningVersion)) {
-    return `Rove Sentinel ${pendingVersion} was downloading or downloaded for ${project}, but automatic updates are disabled here, so it will not activate. npx --no-install rove-sentinel updates --enable turns them back on.`;
+    return `Rove Sentinel ${pendingVersion} was downloading or downloaded for ${project}, but automatic updates are disabled here (updates --disable, or ROVE_SENTINEL_AUTO_UPDATE=0), so it will not activate. npx --no-install rove-sentinel updates --enable turns them back on where the variable is not set.`;
   }
   if (['waiting', 'activating'].includes(phase) && blockedBy?.length) {
-    return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join(' Also, ')} Once that is resolved, the watcher activates it within about ten minutes.`;
+    return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join(' Also, ')} Once that is resolved, the watcher activates it within about ten minutes.${lastError ? ` Last attempt: ${oneLine(lastError)}` : ''}`;
   }
   if (phase === 'waiting') {
     return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.${lastError ? ` Last attempt: ${oneLine(lastError)}` : ''}`;

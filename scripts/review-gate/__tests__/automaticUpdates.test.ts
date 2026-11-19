@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -278,6 +278,13 @@ describe('shared immutable runtime distribution', () => {
     d.fetchImpl.mockResolvedValue(new Response(`${'0'.repeat(64)}  rove-sentinel-1.12.0.tgz\n`));
     await expect(ensureEngine('1.12.0', { ...d, maxVersions: 3 })).rejects.toThrow('checksum mismatch');
     expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.9.0']);
+    // Nor when the verified runtime cannot be put in place.
+    d.fetchImpl.mockImplementation(async (url) => new Response(url.endsWith('SHA256SUMS')
+      ? `${createHash('sha256').update('synthetic archive').digest('hex')}  rove-sentinel-1.12.0.tgz\n` : Buffer.from('synthetic archive')));
+    await mkdir(engineDirectory('1.12.0', d.root), { recursive: true });
+    await writeFile(path.join(engineDirectory('1.12.0', d.root), 'left-behind'), '');
+    await expect(ensureEngine('1.12.0', { ...d, maxVersions: 4 })).rejects.toThrow();
+    expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.12.0', '1.9.0']);
   });
   it('reuses a ready copy only once no live process holds the store, which may be collecting it', async () => {
     const d = await distribution();
@@ -286,6 +293,11 @@ describe('shared immutable runtime distribution', () => {
     await writeFile(lock, JSON.stringify({ pid: process.pid, version: '1.12.0' }));
     await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).rejects.toThrow('owns');
     await writeFile(lock, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
+    // A lock its owner never wrote its PID into, left long ago, is as stale.
+    await writeFile(lock, '');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
     expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
     expect(d.npm).toHaveBeenCalledOnce();
   });
@@ -391,6 +403,28 @@ describe('an update the watcher keeps waiting is said', () => {
     const holds = (await updateInformation(f.context.paths)).blockedBy;
     expect(holds.map((hold) => hold.kind)).toEqual(['unreadable', 'paused']);
     expect(holds[0].reason).toMatch(/githubFailure: .*; queueSubmitLock: /);
+  });
+  it('names a queue submission lock its dead owner left, which activation also waits out', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths);
+    await atomicWriteJson(f.context.paths.queueSubmitLock, { pid: DEAD_PID });
+    expect(await kinds(f.context.paths)).toEqual(['queue-lock']);
+    expect((await reviewNotices(f.context.paths, 'example'))[0]).toContain('rove-sentinel recover');
+    await atomicWriteJson(f.context.paths.queueSubmitLock, { pid: process.pid });
+    expect(await kinds(f.context.paths)).toEqual([]);
+  });
+  it('still reports when the update settings or an activation fence cannot be read', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths);
+    await writeFile(path.join(f.context.paths.root, 'update-settings.json'), '{');
+    const information = await updateInformation(f.context.paths);
+    expect(information.automatic).toBeNull();
+    expect(information.blockedBy).toEqual([expect.objectContaining({ kind: 'unreadable', reason: expect.stringContaining('update-settings') })]);
+    const g = await waiting('activating');
+    await writeFile(updateMarker(g.context.paths), '{');
+    expect(await kinds(g.context.paths)).toEqual(['unreadable']);
+  });
+  it('keeps the last attempt in the line when a hold is named', async () => {
+    const f = await waiting('waiting', { lastError: 'Another or interrupted update exists.' });
+    expect((await reviewNotices(f.context.paths, 'example'))[0]).toMatch(/not running.*Last attempt: Another or interrupted update exists\./);
   });
   it('says when updates are disabled rather than promising an activation, and shows the last attempt', async () => {
     const f = await waiting('waiting', { lastError: 'A foreground or watcher review is active. Let it finish before updating.' });

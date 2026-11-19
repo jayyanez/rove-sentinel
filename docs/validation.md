@@ -5,14 +5,16 @@
 Deterministic tests cover a full engine store removing copies kept only for a rollback,
 oldest by version rather than by name, before refusing a new release, and none when the
 download fails; active, pending and running versions never removed, and the refusal naming
-them; a project record whose checkout is gone keeping only its active version; reuse of a
-ready copy waiting for a live download lock; `updates` listing a safety pause (time, reason,
-command), a stopped watcher (its error), a live watcher of another engine or policy, an
-interrupted activation's pause and fence, and every unreadable record without hiding a pause,
+them; nothing removed when the verified runtime cannot be put in place; a project record
+whose checkout is gone keeping only its active version; reuse of a ready copy waiting for a
+live download lock, and not for a dead or never-written one; `updates` listing a safety pause
+(time, reason, command), a stopped watcher (its error), a live watcher of another engine or
+policy, a dead submitter's queue lock, an interrupted activation's pause and fence, and every
+unreadable record, update settings and fence included, without hiding a pause,
 under `blockedBy` and without lifting anything; no hold for a running watcher, or for the
 pause a live activation writes for itself; the review-command line for a pause older than a
 day and none for a fresh one; the line for a failed download only while its release is newer
-than the running engine; and disabled updates said as such. The 14 new tests fail on 1.20.0. 1,043 tests passed on Windows, and the package smoke passed.
+than the running engine; and disabled updates said as such. The 17 new tests fail on 1.20.0. 1,046 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store
 or paused watcher was reproduced outside the tests. The two failures it addresses were read

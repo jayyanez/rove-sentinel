@@ -17,16 +17,18 @@ cannot download.
   record whose checkout no longer exists keeps only its active version, because clones of
   one remote share one selection and another clone may still run it. Versions are compared
   as versions, so 1.9.0 is older than 1.10.0. Nothing is removed until the new release is
-  downloaded and verified, so a failed download keeps every rollback copy, and a project
-  reusing a version already in the store waits for a download in progress, whose collection
-  may be removing it. When only required versions remain, the error names them. On a host already stuck: move one version that no project has active out of
+  downloaded, verified and in place, so a failed download keeps every rollback copy, and a
+  project reusing a version already in the store checks it under the store's lock, so a
+  collection either sees its reservation or has already removed the copy, which is then
+  downloaded again. When only required versions remain, the error names them. On a host already stuck: move one version that no project has active out of
   the store's `versions` folder, then run `update`.
 - **A release the watcher keeps waiting is reported.** Activation waits for the watcher to
   acknowledge an idle pause, so a paused or stopped watcher kept a downloaded release
   `waiting` for ever, and `updates` gave no reason. `updates` and `status` now list each hold
   under `blockedBy` (a pause with its time and reason, a watcher that is not running with
-  its error, a live watcher of another engine or policy, an earlier activation's pause and
-  fence left by a process that is gone, or records that cannot be read) with the command
+  its error, a live watcher of another engine or policy, a queue submission lock or an
+  earlier activation's pause and fence left by a process that is gone, or records that
+  cannot be read, update settings included) with the command
   that lifts it, and `gate`, `pre-push`, `status` and `doctor` print it in one line. A
   waiting release also shows its last attempt's error. Safety pauses stay deliberate:
   nothing lifts them on its own.

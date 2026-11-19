@@ -135,8 +135,8 @@ export async function retainedVersions(root) {
 /**
  * Which installed versions a new one would displace, oldest first: versions
  * nothing keeps, then copies kept only for a rollback. A new release outranks
- * a rollback copy; nothing required is ever removed. `full` when that is not
- * enough. A command that read its selection just before its project moved off
+ * a rollback copy; nothing required is ever removed. Throws when that frees no
+ * slot. A command that read its selection just before its project moved off
  * a version, and has not yet registered, can find that copy gone: it fails to
  * start, and the next command selects the new version.
  */
@@ -157,28 +157,43 @@ async function collectionPlan(root, maxVersions) {
   return remove;
 }
 
+// An owner writes its PID right after creating the lock; one that has not after
+// this long was interrupted between the two.
+const UNWRITTEN_LOCK_MS = 10_000;
+
 /**
- * True once no live process holds the download lock, waiting up to `waitMs`.
- * A lock's owner may be collecting versions from a snapshot of the records.
+ * The store's lock, which every collection holds. Waits up to `waitMs` while
+ * a live process holds it. `stale` when its owner is gone: nothing can collect
+ * while that lock stays, and a person inspects it before downloads resume.
  */
-async function storeSettled(lockFile, waitMs) {
+async function lockStore(lockFile, version, waitMs) {
   const deadline = Date.now() + waitMs;
   while (true) {
+    try {
+      const handle = await open(lockFile, 'wx', 0o600);
+      try { await handle.writeFile(JSON.stringify({ pid: process.pid, version })); }
+      catch (error) { await handle.close(); await rm(lockFile, { force: true }); throw error; }
+      const release = async () => { try { await handle.close(); } finally { await rm(lockFile, { force: true }); } };
+      return { release };
+    } catch (error) { if (error.code !== 'EEXIST') throw error; }
     let owner = null;
-    try { owner = JSON.parse(await readFile(lockFile, 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') return true; }
-    if (Number.isInteger(owner?.pid) && !processAlive(owner.pid)) return true;
-    if (Date.now() >= deadline) return false;
+    let modified = Date.now();
+    try {
+      modified = (await stat(lockFile)).mtimeMs;
+      owner = JSON.parse(await readFile(lockFile, 'utf8'));
+    } catch (error) { if (error.code === 'ENOENT') continue; }
+    if (Number.isInteger(owner?.pid) ? !processAlive(owner.pid) : Date.now() - modified > UNWRITTEN_LOCK_MS) return { stale: true };
+    if (Date.now() >= deadline) return { busy: true };
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
 /**
  * Shared per OS user; all repository watchers reuse the same verified immutable files.
- * A caller publishes its reservation (pendingVersion) first. Reusing a ready
- * copy then waits out a collection in progress: a collection that starts after
- * that check reads the reservation, and one that ran before it already removed
- * what it would, which the readiness check then sees.
+ * A caller publishes its reservation (pendingVersion) first, and even a ready
+ * copy is checked under the store's lock: a collection after that check reads
+ * the reservation, and one before it already removed what it would, so the
+ * check sees it gone and downloads the version again.
  */
 export async function ensureEngine(version, { root = engineRoot(), fetchImpl = globalThis.fetch,
   npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000 } = {}) {
@@ -188,18 +203,15 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     const ready = await readJson(path.join(directory, 'ready.json'));
     return ready?.version === version && ready?.schemaVersion === 1 && existsSync(engineCli(version, root));
   };
-  if (await storeSettled(lockFile, lockWaitMs) && await isReady()) return directory;
   await mkdir(root, { recursive: true });
-  let lock;
-  try { lock = await open(lockFile, 'wx', 0o600); }
-  catch (error) {
-    if (error.code === 'EEXIST') throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
-    throw error;
-  }
+  const lock = await lockStore(lockFile, version, lockWaitMs);
+  // A dead owner's lock stops every collection, so a ready copy is safe to reuse.
+  if (lock.stale && await isReady()) return directory;
+  if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
   const stage = path.join(root, 'staging');
   let createdStage = false;
   try {
-    await lock.writeFile(JSON.stringify({ pid: process.pid, version }));
+    if (await isReady()) return directory;
     await mkdir(path.join(root, 'versions'), { recursive: true });
     // Refuse before downloading when no slot can be freed; remove nothing yet,
     // so a failed download leaves every rollback copy in place.
@@ -235,14 +247,15 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     await rm(path.join(stage, '.npm-cache'), { recursive: true, force: true });
     await rm(archivePath);
     await atomicWriteJson(path.join(stage, 'ready.json'), { schemaVersion: 1, version, sha256: digest, ...urls });
-    // Collect from fresh records only once the new runtime is complete.
-    for (const old of await collectionPlan(root, maxVersions)) await rm(engineDirectory(old, root), { recursive: true, force: true });
+    // Plan from fresh records once the new runtime is complete, and remove
+    // only after it is in place: a failure before then removes nothing.
+    const displaced = await collectionPlan(root, maxVersions);
     await rename(stage, directory);
+    for (const old of displaced) await rm(engineDirectory(old, root), { recursive: true, force: true });
     return directory;
   } finally {
-    await lock.close();
     // Only this lock owner created staging. A failed install leaves no selectable runtime.
     try { if (createdStage) await rm(stage, { recursive: true, force: true }); }
-    finally { await rm(lockFile, { force: true }); }
+    finally { await lock.release(); }
   }
 }
