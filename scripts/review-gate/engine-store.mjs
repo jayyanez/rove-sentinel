@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runProcess } from './process.mjs';
@@ -207,9 +207,13 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000, reserve = async () => {}, unreserve = async () => {} } = {}) {
   const directory = engineDirectory(version, root);
   const lockFile = path.join(root, 'download.lock');
+  // False only when the copy is known to be absent or incomplete; an error
+  // that leaves it unknown is thrown.
   const isReady = async () => {
     const ready = await readJson(path.join(directory, 'ready.json'));
-    return ready?.version === version && ready?.schemaVersion === 1 && existsSync(engineCli(version, root));
+    if (ready?.version !== version || ready?.schemaVersion !== 1) return false;
+    try { await stat(engineCli(version, root)); return true; }
+    catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false; throw error; }
   };
   await mkdir(root, { recursive: true });
   const lock = await lockStore(lockFile, version, lockWaitMs);
@@ -218,7 +222,11 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   // copy is safe to reuse.
   if (lock.stale) {
     await reserve();
-    if (lock.raw !== null && await readFile(lockFile, 'utf8').catch(() => null) === lock.raw && await isReady()) return directory;
+    if (lock.raw !== null && await readFile(lockFile, 'utf8').catch(() => null) === lock.raw) {
+      if (await isReady()) return directory;
+      // Still no collection can run, and no copy exists for it to protect.
+      await unreserve().catch(() => {});
+    }
   }
   if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
   const stage = path.join(root, 'staging');

@@ -318,6 +318,11 @@ describe('shared immutable runtime distribution', () => {
     await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).rejects.toThrow('owns');
     await writeFile(lock, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
     expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
+    // Under that dead lock a version with no copy is not left reserved.
+    const reserve = vi.fn(async () => {}); const unreserve = vi.fn(async () => {});
+    await expect(ensureEngine('1.13.0', { ...d, lockWaitMs: 300, reserve, unreserve })).rejects.toThrow('owns');
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(unreserve).toHaveBeenCalledOnce();
     // A lock its owner never wrote its PID into, left long ago, is as stale.
     await writeFile(lock, '');
     const old = new Date(Date.now() - 60_000);
