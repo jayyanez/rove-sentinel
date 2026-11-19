@@ -25,11 +25,11 @@ const newer = (pending, running) => stableVersion(pending) && (!stableVersion(ru
 
 const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim();
 
-export function updateMessage({ phase, activeVersion, pendingVersion, lastError, blockedBy, runningVersion, automatic }, project) {
+export function updateMessage({ phase, activeVersion, pendingVersion, attemptedVersion, lastError, blockedBy, runningVersion, automatic, settingsError }, project) {
   if (phase === 'active') return `Rove Sentinel updated to ${activeVersion} for ${project}. New reviews use it; existing agents can continue.`;
   // `automatic` is false only where updates are switched off; a notification's state has no such field.
-  if (automatic === false && ['waiting', 'download-failed'].includes(phase) && newer(pendingVersion, runningVersion)) {
-    return `Rove Sentinel ${pendingVersion} was downloading or downloaded for ${project}, but automatic updates are disabled here (updates --disable, or ROVE_SENTINEL_AUTO_UPDATE=0), so it will not activate. npx --no-install rove-sentinel updates --enable turns them back on where the variable is not set.`;
+  if (automatic === false && ['waiting', 'download-failed'].includes(phase) && newer(attemptedVersion || pendingVersion, runningVersion)) {
+    return `Rove Sentinel ${attemptedVersion || pendingVersion} was downloading or downloaded for ${project}, but automatic updates are disabled here (updates --disable, or ROVE_SENTINEL_AUTO_UPDATE=0), so it will not activate. npx --no-install rove-sentinel updates --enable turns them back on where the variable is not set.`;
   }
   if (['waiting', 'activating'].includes(phase) && blockedBy?.length) {
     return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join(' Also, ')} Once that is resolved, the watcher activates it within about ten minutes.${lastError ? ` Last attempt: ${oneLine(lastError)}` : ''}`;
@@ -37,8 +37,10 @@ export function updateMessage({ phase, activeVersion, pendingVersion, lastError,
   if (phase === 'waiting') {
     return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.${lastError ? ` Last attempt: ${oneLine(lastError)}` : ''}`;
   }
-  if (phase === 'download-failed' && newer(pendingVersion, runningVersion)) {
-    return `Rove Sentinel ${pendingVersion} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${oneLine(lastError)}` : ''} The watcher retries daily; npx --no-install rove-sentinel update retries now.`;
+  const attempted = phase === 'download-failed' ? attemptedVersion || pendingVersion : null;
+  if (attempted && newer(attempted, runningVersion)) {
+    // Unreadable settings stop every retry; their own line says how to repair them.
+    return `Rove Sentinel ${attempted} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${oneLine(lastError)}` : ''}${settingsError ? '' : ' The watcher retries daily; npx --no-install rove-sentinel update retries now.'}`;
   }
   if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active. ${lastError || ''}`;
   if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. Run rove-sentinel updates for details.`;

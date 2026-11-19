@@ -140,14 +140,14 @@ export async function retainedVersions(root) {
  * a version, and has not yet registered, can find that copy gone: it fails to
  * start, and the next command selects the new version.
  */
-async function collectionPlan(root, maxVersions, { strict = true } = {}) {
+async function collectionPlan(root, maxVersions, { strict = true, protect = null } = {}) {
   const versions = (await readdir(path.join(root, 'versions'))).filter(stableVersion).sort(compareVersions);
   const { required, rollback } = await retainedVersions(root);
   const remove = [];
   for (const collectable of [(old) => !required.has(old) && !rollback.has(old), (old) => !required.has(old)]) {
     for (const old of versions) {
       if (versions.length - remove.length < maxVersions) break;
-      if (collectable(old) && !remove.includes(old)) remove.push(old);
+      if (old !== protect && collectable(old) && !remove.includes(old)) remove.push(old);
     }
   }
   const kept = versions.filter((old) => !remove.includes(old));
@@ -182,12 +182,14 @@ async function lockStore(lockFile, version, waitMs) {
       return { release };
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
     let owner = null;
+    let raw = null;
     let modified = Date.now();
     try {
       modified = (await stat(lockFile)).mtimeMs;
-      owner = JSON.parse(await readFile(lockFile, 'utf8'));
+      raw = await readFile(lockFile, 'utf8');
+      owner = JSON.parse(raw);
     } catch (error) { if (error.code === 'ENOENT') continue; }
-    if (Number.isInteger(owner?.pid) ? !processAlive(owner.pid) : Date.now() - modified > UNWRITTEN_LOCK_MS) return { stale: true };
+    if (Number.isInteger(owner?.pid) ? !processAlive(owner.pid) : Date.now() - modified > UNWRITTEN_LOCK_MS) return { stale: true, raw };
     if (Date.now() >= deadline) return { busy: true };
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -210,8 +212,13 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   };
   await mkdir(root, { recursive: true });
   const lock = await lockStore(lockFile, version, lockWaitMs);
-  // A dead owner's lock stops every collection, so a ready copy is safe to reuse.
-  if (lock.stale && await isReady()) { await reserve(); return directory; }
+  // A dead owner's lock stops every collection. Reserve, then check that same
+  // lock is still there: no collection can have started since, so a ready
+  // copy is safe to reuse.
+  if (lock.stale) {
+    await reserve();
+    if (lock.raw !== null && await readFile(lockFile, 'utf8').catch(() => null) === lock.raw && await isReady()) return directory;
+  }
   if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
   const stage = path.join(root, 'staging');
   let createdStage = false;
@@ -219,11 +226,13 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     await reserve();
     await mkdir(path.join(root, 'versions'), { recursive: true });
     if (await isReady()) {
-      // Finish a collection an interrupted install left undone.
-      await removeDisplaced(root, (await collectionPlan(root, maxVersions + 1, { strict: false })));
+      // Finish, at best effort, a collection an interrupted install left undone.
+      if ((await readdir(path.join(root, 'versions'))).filter(stableVersion).length > maxVersions) {
+        await collectionPlan(root, maxVersions + 1, { strict: false, protect: version })
+          .then((displaced) => removeDisplaced(root, displaced), () => {});
+      }
       return directory;
     }
-    await mkdir(path.join(root, 'versions'), { recursive: true });
     // Refuse before downloading when no slot can be freed; remove nothing yet,
     // so a failed download leaves every rollback copy in place.
     await collectionPlan(root, maxVersions);

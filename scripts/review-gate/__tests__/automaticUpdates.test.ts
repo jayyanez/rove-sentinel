@@ -309,6 +309,11 @@ describe('shared immutable runtime distribution', () => {
     const reserve = vi.fn(async () => { seen.push(await readFile(lock, 'utf8').then(() => true, () => false)); });
     await ensureEngine('1.11.0', { ...d, reserve });
     expect(seen).toEqual([true]);
+    // Under the cap nothing is collected, so a record nobody can read does not matter.
+    await mkdir(path.join(d.root, 'consumers'), { recursive: true });
+    await writeFile(path.join(d.root, 'consumers/unreadable.json'), '{');
+    expect(await ensureEngine('1.11.0', d)).toBe(engineDirectory('1.11.0', d.root));
+    await rm(path.join(d.root, 'consumers/unreadable.json'));
     await installed(d.root, ['1.7.0', '1.8.0', '1.9.0', '1.10.0']);
     await project(d.root, 'a', { activeVersion: '1.11.0', previousVersion: '1.10.0' });
     await ensureEngine('1.11.0', { ...d, maxVersions: 3 });
@@ -445,6 +450,7 @@ describe('an update the watcher keeps waiting is said', () => {
     const h = await waiting('download-failed', { lastError: 'Release download returned HTTP 503.' });
     await writeFile(path.join(h.context.paths.root, 'update-settings.json'), '{');
     const lines = await reviewNotices(h.context.paths, 'example');
+    expect(lines[0]).not.toContain('retries');
     expect(lines[1]).toContain('cannot read the update settings for example');
   });
   it('keeps the last attempt in the line when a hold is named', async () => {
@@ -479,5 +485,8 @@ describe('an update the watcher keeps waiting is said', () => {
     expect(line).toContain('rove-sentinel update');
     const old = await waiting('download-failed', { pendingVersion: '1.0.0', lastError: full });
     expect(await reviewNotices(old.context.paths, 'example')).toEqual([]);
+    // A failed attempt names its version without reserving it.
+    const attempt = await waiting('download-failed', { pendingVersion: null, attemptedVersion: '99.0.0', lastError: full });
+    expect((await reviewNotices(attempt.context.paths, 'example'))[0]).toContain('99.0.0 could not be downloaded');
   });
 });

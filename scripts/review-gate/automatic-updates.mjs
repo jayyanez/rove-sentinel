@@ -39,7 +39,8 @@ async function activationRuns(marker, { isAlive, startedAt }) {
   if (!marker || !isAlive(marker.pid)) return false;
   const written = Date.parse(marker.startedAt);
   const started = Number.isFinite(written) ? await startedAt(marker.pid) : null;
-  return started === null || started <= written + 1000;
+  // The marker is written by that process, so it started before the marker's time.
+  return started === null || started <= written;
 }
 
 /**
@@ -127,7 +128,7 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
   }
   return { automatic, settingsError,
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
-    pendingVersion, phase,
+    pendingVersion, attemptedVersion: state?.attemptedVersion || null, phase,
     lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null,
     blockedBy: phase === 'waiting' ? found : found.filter((hold) => ['interrupted', 'unreadable'].includes(hold.kind)) };
 }
@@ -287,7 +288,8 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       return { status: preserveFence ? 'recovery-required' : 'failed', version: nextVersion, error: state.lastError };
     } finally { if (!preserveFence) await releaseUpdate(); }
   } catch (error) {
-    await save({ phase: 'download-failed', lastError: error.message, ...(target ? { pendingVersion: target } : {}) });
+    // Not a reservation: written outside the store's lock, it names the attempt only.
+    await save({ phase: 'download-failed', lastError: error.message, ...(target ? { attemptedVersion: target } : {}) });
     return { status: 'download-failed', error: error.message };
   } finally { await releaseWorker(); }
 }
