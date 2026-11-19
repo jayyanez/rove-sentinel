@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { GATE_VERSION } from './constants.mjs';
+import { readdir } from 'node:fs/promises';
+import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
+import { reviewPolicySnapshot } from './context.mjs';
 import { createGateContext } from './gate.mjs';
 import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, updateMarker } from './maintenance.mjs';
@@ -22,32 +24,71 @@ const enabled = async (paths, env) => env.ROVE_SENTINEL_AUTO_UPDATE !== '0'
 export const LONG_PAUSE_MS = DAY;
 // The pause an activation writes for itself, and clears, while it runs.
 const UPDATE_PAUSE = 'Automatic Sentinel update to ';
-const settle = (file) => readJson(file).then((value) => ({ value }), (error) => ({ error: error?.message || String(error) }));
+const settle = (read) => read().then((value) => ({ value }), (error) => ({ error: error?.message || String(error) }));
+const processAlive = (pid) => {
+  if (!Number.isInteger(pid) || pid < 1) return true;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
+};
 
 /**
- * What keeps the watcher from acknowledging an idle pause, from its own records
- * (no scheduler query, nothing started): a pause somebody must lift, a watcher
- * that is not running, or state it cannot read. An activation waits for that
- * acknowledgement, so each of these keeps a downloaded release waiting for ever.
- * Safety pauses are deliberate: this reports them, it never lifts them.
+ * The activation's own pause is no hold while the activation that wrote it
+ * still runs: its update marker is there and its process is alive. Any other
+ * pause, an update's left behind included, keeps a release waiting.
  */
-export async function watcherHolds(paths, { isAlive } = {}) {
-  const [paused, lock, heartbeat, daemonError] = await Promise.all(
-    [paths.paused, paths.lock, paths.heartbeat, paths.daemonError].map(settle));
-  const unreadable = [paused, lock, heartbeat].find((entry) => entry.error);
-  if (unreadable) {
-    return [{ kind: 'unreadable', since: null, reason: `the watcher's state is unreadable: ${unreadable.error}`,
-      action: 'Run npx --no-install rove-sentinel status, which names the record, and repair it.' }];
+async function liftsItself(paused, paths, isAlive) {
+  if (!String(paused?.reason ?? '').startsWith(UPDATE_PAUSE)) return false;
+  const marker = await readJson(updateMarker(paths)).catch(() => null);
+  return Boolean(marker) && isAlive(marker.pid);
+}
+
+/**
+ * What keeps a downloaded release from activating, from the watcher's own
+ * records (no scheduler query, nothing started). Activation waits for a live
+ * watcher of this engine and installed policy to acknowledge an idle pause, with
+ * every state record readable and no update fence left; each hold here keeps
+ * it waiting for ever. Safety pauses are deliberate: this reports them and
+ * never lifts them. Queued and running reviews are not holds: they finish.
+ */
+export async function watcherHolds(paths, { isAlive = processAlive, gateVersion = GATE_VERSION, charterVersion = CHARTER_VERSION } = {}) {
+  const records = { paused: paths.paused, lock: paths.lock, heartbeat: paths.heartbeat, daemonError: paths.daemonError,
+    githubFailure: paths.githubFailure, queueSubmitLock: paths.queueSubmitLock, policy: paths.policy, marker: updateMarker(paths) };
+  const read = Object.fromEntries(await Promise.all(Object.entries(records).map(async ([name, file]) => [name, await settle(() => readJson(file))])));
+  read.queue = await settle(() => readdir(paths.requests).catch((error) => { if (error.code === 'ENOENT') return []; throw error; }));
+  let digest = null;
+  if (read.policy.value) {
+    try { digest = reviewPolicySnapshot(read.policy.value).policyDigest; }
+    catch (error) { read.policy = { error: error?.message || String(error) }; }
   }
   const holds = [];
-  if (!daemonOwnerIsHealthy(lock.value, heartbeat.value, { maxAgeMs: 30_000, ...(isAlive ? { isAlive } : {}) })) {
-    holds.push({ kind: 'stopped', since: daemonError.value?.at ?? heartbeat.value?.at ?? null,
-      reason: daemonError.value?.message ?? (lock.value ? `no fresh heartbeat from the lock's PID ${lock.value.pid}` : 'no watcher is running'),
-      action: 'Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.' });
+  const unreadable = Object.entries(read).filter(([, entry]) => entry.error);
+  if (unreadable.length) {
+    holds.push({ kind: 'unreadable', since: null,
+      reason: unreadable.map(([name, entry]) => `${name}: ${entry.error}`).join('; '),
+      action: 'Run npx --no-install rove-sentinel status, which names each record, and repair it.' });
   }
-  if (paused.value && !String(paused.value.reason ?? '').startsWith(UPDATE_PAUSE)) {
-    holds.push({ kind: 'paused', since: paused.value.pausedAt ?? null, reason: String(paused.value.reason ?? 'no reason recorded'),
-      action: 'Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.' });
+  const lock = read.lock.value;
+  const heartbeat = read.heartbeat.value;
+  if (!daemonOwnerIsHealthy(lock, heartbeat, { maxAgeMs: 30_000, isAlive })) {
+    holds.push({ kind: 'stopped', since: read.daemonError.value?.at ?? heartbeat?.at ?? null,
+      reason: read.daemonError.value?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
+      action: 'Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.' });
+  } else if (!read.policy.error && (heartbeat.gateVersion !== gateVersion || heartbeat.charterVersion !== charterVersion || !digest || heartbeat.policyDigest !== digest)) {
+    holds.push({ kind: 'outdated', since: null,
+      reason: `it runs ${heartbeat.gateVersion ?? 'an unknown version'} with ${digest && heartbeat.policyDigest === digest ? 'the installed policy' : 'another policy than the installed one'}, and this engine is ${gateVersion}`,
+      action: 'Run npx --no-install rove-sentinel install from your trusted checkout to restart it.' });
+  }
+  const paused = read.paused.value;
+  if (paused && !await liftsItself(paused, paths, isAlive)) {
+    holds.push({ kind: 'paused', since: paused.pausedAt ?? null, reason: String(paused.reason ?? 'no reason recorded'),
+      action: String(paused.reason ?? '').startsWith(UPDATE_PAUSE)
+        ? 'An interrupted update left this pause: follow Isolation and recovery in the updates guide before running npx --no-install rove-sentinel resume.'
+        : 'Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.' });
+  }
+  const marker = read.marker.value;
+  if (marker && !isAlive(marker.pid)) {
+    holds.push({ kind: 'interrupted', since: marker.startedAt ?? null,
+      reason: `an update to ${marker.version ?? 'another version'} stopped with its process ${marker.pid} gone, leaving ${updateMarker(paths)}`,
+      action: 'Follow Isolation and recovery in the updates guide: restore and verify the previous runtime, then remove the marker and its pause.' });
   }
   return holds;
 }
@@ -56,29 +97,30 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
   const state = await readJson(engineStatePath(paths));
   const phase = state?.phase || 'idle';
   const pendingVersion = state?.pendingVersion || null;
+  // Waiting: whatever keeps the release waiting. Activating: only what shows
+  // the activation is gone; a live one stops its watcher and pauses on purpose.
+  const found = ['waiting', 'activating'].includes(phase) && pendingVersion ? await holds(paths) : [];
   return { automatic: await enabled(paths, process.env),
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
     pendingVersion, phase,
     lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null,
-    // Why a downloaded release is not activating, when the watcher will not let it.
-    blockedBy: phase === 'waiting' && pendingVersion ? await holds(paths) : [] };
+    blockedBy: phase === 'waiting' ? found : found.filter((hold) => hold.kind === 'interrupted') };
 }
 
 /**
  * The lines review commands print about updates and the watcher: the update's
- * state, why it cannot activate, and a pause left longer than LONG_PAUSE_MS.
+ * state and why it cannot activate, and a pause left longer than LONG_PAUSE_MS,
+ * which also refuses pushes that still need a review.
  */
-export async function reviewNotices(paths, project, { now = Date.now(), holds = watcherHolds } = {}) {
+export async function reviewNotices(paths, project, { now = Date.now(), holds = watcherHolds, isAlive = processAlive } = {}) {
   const information = await updateInformation(paths, { holds });
   const lines = [];
   const update = updateMessage(information, project);
   if (update) lines.push(update);
-  if (!information.blockedBy.some((hold) => hold.kind === 'paused')) {
-    const paused = await readJson(paths.paused).catch(() => null);
-    const since = Date.parse(paused?.pausedAt);
-    if (paused && !String(paused.reason ?? '').startsWith(UPDATE_PAUSE) && Number.isFinite(since) && now - since > LONG_PAUSE_MS) {
-      lines.push(longPauseMessage(paused, project));
-    }
+  const paused = await readJson(paths.paused).catch(() => null);
+  const since = Date.parse(paused?.pausedAt);
+  if (paused && Number.isFinite(since) && now - since > LONG_PAUSE_MS && !await liftsItself(paused, paths, isAlive)) {
+    lines.push(longPauseMessage(paused, project));
   }
   return lines;
 }

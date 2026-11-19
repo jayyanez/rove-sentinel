@@ -132,14 +132,64 @@ export async function retainedVersions(root) {
   return { required, rollback };
 }
 
-/** Shared per OS user; all repository watchers reuse the same verified immutable files. */
+/**
+ * Which installed versions a new one would displace, oldest first: versions
+ * nothing keeps, then copies kept only for a rollback. A new release outranks
+ * a rollback copy; nothing required is ever removed. `full` when that is not
+ * enough. A command that read its selection just before its project moved off
+ * a version, and has not yet registered, can find that copy gone: it fails to
+ * start, and the next command selects the new version.
+ */
+async function collectionPlan(root, maxVersions) {
+  const versions = (await readdir(path.join(root, 'versions'))).filter(stableVersion).sort(compareVersions);
+  const { required, rollback } = await retainedVersions(root);
+  const remove = [];
+  for (const collectable of [(old) => !required.has(old) && !rollback.has(old), (old) => !required.has(old)]) {
+    for (const old of versions) {
+      if (versions.length - remove.length < maxVersions) break;
+      if (collectable(old) && !remove.includes(old)) remove.push(old);
+    }
+  }
+  const kept = versions.filter((old) => !remove.includes(old));
+  if (kept.length >= maxVersions) {
+    throw new Error(`Runtime storage is full: every installed version (${kept.join(', ')}) is active or pending for a project, or used by a running process. Update or uninstall inactive projects, or end processes that run an old version, before retrying.`);
+  }
+  return remove;
+}
+
+/**
+ * True once no live process holds the download lock, waiting up to `waitMs`.
+ * A lock's owner may be collecting versions from a snapshot of the records.
+ */
+async function storeSettled(lockFile, waitMs) {
+  const deadline = Date.now() + waitMs;
+  while (true) {
+    let owner = null;
+    try { owner = JSON.parse(await readFile(lockFile, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return true; }
+    if (Number.isInteger(owner?.pid) && !processAlive(owner.pid)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/**
+ * Shared per OS user; all repository watchers reuse the same verified immutable files.
+ * A caller publishes its reservation (pendingVersion) first. Reusing a ready
+ * copy then waits out a collection in progress: a collection that starts after
+ * that check reads the reservation, and one that ran before it already removed
+ * what it would, which the readiness check then sees.
+ */
 export async function ensureEngine(version, { root = engineRoot(), fetchImpl = globalThis.fetch,
-  npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5 } = {}) {
+  npm = runNpm, env = process.env, timeoutMs = 60_000, maxVersions = 5, lockWaitMs = 600_000 } = {}) {
   const directory = engineDirectory(version, root);
-  const ready = await readJson(path.join(directory, 'ready.json'));
-  if (ready?.version === version && ready?.schemaVersion === 1 && existsSync(engineCli(version, root))) return directory;
-  await mkdir(root, { recursive: true });
   const lockFile = path.join(root, 'download.lock');
+  const isReady = async () => {
+    const ready = await readJson(path.join(directory, 'ready.json'));
+    return ready?.version === version && ready?.schemaVersion === 1 && existsSync(engineCli(version, root));
+  };
+  if (await storeSettled(lockFile, lockWaitMs) && await isReady()) return directory;
+  await mkdir(root, { recursive: true });
   let lock;
   try { lock = await open(lockFile, 'wx', 0o600); }
   catch (error) {
@@ -151,24 +201,9 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
   try {
     await lock.writeFile(JSON.stringify({ pid: process.pid, version }));
     await mkdir(path.join(root, 'versions'), { recursive: true });
-    const versions = (await readdir(path.join(root, 'versions'))).filter(stableVersion).sort(compareVersions);
-    const { required, rollback } = await retainedVersions(root);
-    // Oldest first: versions nothing keeps, then copies kept only for a rollback.
-    // A new release outranks a rollback copy; nothing required is ever removed.
-    // A command that read its selection just before its project moved off a
-    // version, and has not yet registered, can find that copy gone: it fails
-    // to start, and the next command selects the new version.
-    for (const collectable of [(old) => !required.has(old) && !rollback.has(old), (old) => !required.has(old)]) {
-      for (const previous of [...versions]) {
-        if (versions.length < maxVersions) break;
-        if (!collectable(previous)) continue;
-        await rm(engineDirectory(previous, root), { recursive: true, force: true });
-        versions.splice(versions.indexOf(previous), 1);
-      }
-    }
-    if (versions.length >= maxVersions) {
-      throw new Error(`Runtime storage is full: every installed version (${versions.join(', ')}) is active or pending for a project, or used by a running process. Update or uninstall inactive projects, or end processes that run an old version, before retrying.`);
-    }
+    // Refuse before downloading when no slot can be freed; remove nothing yet,
+    // so a failed download leaves every rollback copy in place.
+    await collectionPlan(root, maxVersions);
     // A crashed staging directory is deliberately not overwritten.
     await mkdir(stage);
     createdStage = true;
@@ -200,6 +235,8 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     await rm(path.join(stage, '.npm-cache'), { recursive: true, force: true });
     await rm(archivePath);
     await atomicWriteJson(path.join(stage, 'ready.json'), { schemaVersion: 1, version, sha256: digest, ...urls });
+    // Collect from fresh records only once the new runtime is complete.
+    for (const old of await collectionPlan(root, maxVersions)) await rm(engineDirectory(old, root), { recursive: true, force: true });
     await rename(stage, directory);
     return directory;
   } finally {

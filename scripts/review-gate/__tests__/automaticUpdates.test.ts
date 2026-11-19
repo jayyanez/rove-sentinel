@@ -9,6 +9,7 @@ import { acquireReviewLease, acquireUpdateLease, updateMarker } from '../mainten
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
 import { policyForEngineUpgrade } from '../install.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
+import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { notifyUpdate, updateMessage } from '../update-notifications.mjs';
 
 const dirs: string[] = [];
@@ -269,6 +270,25 @@ describe('shared immutable runtime distribution', () => {
     // Another clone of the same remote may still select 1.9.0; nobody waits for 1.10.0.
     expect(await present(d.root)).toEqual(['1.11.0', '1.12.0', '1.9.0']);
   });
+  it('keeps every rollback copy when the new release fails to download', async () => {
+    const d = await distribution('1.12.0');
+    await installed(d.root, ['1.9.0', '1.10.0', '1.11.0']);
+    await project(d.root, 'a', { activeVersion: '1.11.0', previousVersion: '1.10.0' });
+    await project(d.root, 'b', { activeVersion: '1.11.0', previousVersion: '1.9.0' });
+    d.fetchImpl.mockResolvedValue(new Response(`${'0'.repeat(64)}  rove-sentinel-1.12.0.tgz\n`));
+    await expect(ensureEngine('1.12.0', { ...d, maxVersions: 3 })).rejects.toThrow('checksum mismatch');
+    expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.9.0']);
+  });
+  it('reuses a ready copy only once no live process holds the store, which may be collecting it', async () => {
+    const d = await distribution();
+    await ensureEngine('1.11.0', d);
+    const lock = path.join(d.root, 'download.lock');
+    await writeFile(lock, JSON.stringify({ pid: process.pid, version: '1.12.0' }));
+    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).rejects.toThrow('owns');
+    await writeFile(lock, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300 })).toBe(engineDirectory('1.11.0', d.root));
+    expect(d.npm).toHaveBeenCalledOnce();
+  });
   it('preserves an interrupted staging directory rather than erasing it', async () => {
     const d = await distribution(); await mkdir(path.join(d.root, 'staging'));
     await writeFile(path.join(d.root, 'staging/evidence.txt'), 'retained');
@@ -293,15 +313,20 @@ describe('visible update notifications', () => {
 describe('an update the watcher keeps waiting is said', () => {
   const HOUR = 60 * 60 * 1000;
   const SAFETY = 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.';
+  const DEAD_PID = 2 ** 31 - 2;
   async function waiting(phase = 'waiting', extra: object = {}) {
     const f = await fixture();
     await publishEngineState(f.context.paths, { repoRoot: f.context.repoRoot, phase, pendingVersion: '99.0.0', ...extra }, f.deps.root);
     return f;
   }
-  async function liveWatcher(paths) {
+  // A watcher of this engine and the installed policy, alive and beating.
+  async function liveWatcher(paths, heartbeat: object = {}) {
+    const { policyDigest } = await readJson(paths.policy);
     await atomicWriteJson(paths.lock, { ownerToken: 'owner', pid: process.pid });
-    await atomicWriteJson(paths.heartbeat, { ownerToken: 'owner', pid: process.pid, at: new Date().toISOString() });
+    await atomicWriteJson(paths.heartbeat, { ownerToken: 'owner', pid: process.pid, at: new Date().toISOString(),
+      gateVersion: GATE_VERSION, charterVersion: CHARTER_VERSION, policyDigest, ...heartbeat });
   }
+  const kinds = async (paths) => (await updateInformation(paths)).blockedBy.map((hold) => hold.kind);
 
   it('names a safety pause, its time and reason, and the command, and never lifts it', async () => {
     const f = await waiting(); await liveWatcher(f.context.paths);
@@ -311,11 +336,12 @@ describe('an update the watcher keeps waiting is said', () => {
       expect.objectContaining({ kind: 'paused', since: pause.pausedAt, reason: SAFETY }),
     ]);
     const lines = await reviewNotices(f.context.paths, 'example');
-    expect(lines).toHaveLength(1);
     expect(lines[0]).toContain('99.0.0 is downloaded for example but cannot activate');
     expect(lines[0]).toContain(`paused (since ${pause.pausedAt}): ${SAFETY.slice(0, -1)}`);
     expect(lines[0]).toContain('rove-sentinel resume');
     expect(lines[0]).not.toContain('after current reviews finish');
+    // Days old, so the pushes it refuses are said too.
+    expect(lines[1]).toContain('Pushes without a passing review are refused');
     expect(await readJson(f.context.paths.paused)).toEqual(pause);
   });
   it('names a stopped watcher and the error it stopped with', async () => {
@@ -329,12 +355,51 @@ describe('an update the watcher keeps waiting is said', () => {
     expect(line).toContain('the review watcher is not running (since 2026-11-05T10:00:00.000Z): Review daemon lock belongs to dead PID 4242');
     expect(line).toContain('rove-sentinel install');
   });
+  it('names a live watcher of another engine or policy, which activation also waits out', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths, { policyDigest: 'another' });
+    expect(await kinds(f.context.paths)).toEqual(['outdated']);
+    await liveWatcher(f.context.paths, { gateVersion: '1.0.0' });
+    expect((await reviewNotices(f.context.paths, 'example'))[0]).toContain('runs another engine or policy');
+  });
   it('says nothing more while a running watcher simply finishes its reviews, or runs the activation itself', async () => {
     const f = await waiting(); await liveWatcher(f.context.paths);
-    expect((await updateInformation(f.context.paths)).blockedBy).toEqual([]);
+    expect(await kinds(f.context.paths)).toEqual([]);
     await atomicWriteJson(f.context.paths.paused, { pausedAt: new Date(Date.now() - 3 * 24 * HOUR).toISOString(), reason: 'Automatic Sentinel update to 99.0.0' });
-    expect((await updateInformation(f.context.paths)).blockedBy).toEqual([]);
+    await atomicWriteJson(updateMarker(f.context.paths), { version: '99.0.0', pid: process.pid, startedAt: new Date().toISOString() });
+    expect(await kinds(f.context.paths)).toEqual([]);
     expect(await reviewNotices(f.context.paths, 'example')).toEqual([expect.stringContaining('It will activate after current reviews finish.')]);
+  });
+  it('names the pause and fence an interrupted activation left behind', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths);
+    await atomicWriteJson(f.context.paths.paused, { pausedAt: '2026-11-10T00:00:00.000Z', reason: 'Automatic Sentinel update to 99.0.0' });
+    expect(await kinds(f.context.paths)).toEqual(['paused']);
+    await atomicWriteJson(updateMarker(f.context.paths), { version: '99.0.0', pid: DEAD_PID, startedAt: '2026-11-10T00:00:00.000Z' });
+    expect(await kinds(f.context.paths)).toEqual(['paused', 'interrupted']);
+    const [line] = await reviewNotices(f.context.paths, 'example');
+    expect(line).toContain('an earlier activation was interrupted');
+    expect(line).toContain('Isolation and recovery');
+    // Stopped mid-activation, the phase stays `activating`: the fence is said there too.
+    const g = await waiting('activating');
+    await atomicWriteJson(updateMarker(g.context.paths), { version: '99.0.0', pid: DEAD_PID });
+    expect(await kinds(g.context.paths)).toEqual(['interrupted']);
+  });
+  it('reports every unreadable record without hiding a readable pause', async () => {
+    const f = await waiting(); await liveWatcher(f.context.paths);
+    await atomicWriteJson(f.context.paths.paused, { pausedAt: '2026-11-03T08:00:00.000Z', reason: SAFETY });
+    await writeFile(f.context.paths.githubFailure, '{');
+    await writeFile(f.context.paths.queueSubmitLock, '{');
+    const holds = (await updateInformation(f.context.paths)).blockedBy;
+    expect(holds.map((hold) => hold.kind)).toEqual(['unreadable', 'paused']);
+    expect(holds[0].reason).toMatch(/githubFailure: .*; queueSubmitLock: /);
+  });
+  it('says when updates are disabled rather than promising an activation, and shows the last attempt', async () => {
+    const f = await waiting('waiting', { lastError: 'A foreground or watcher review is active. Let it finish before updating.' });
+    await liveWatcher(f.context.paths);
+    expect(await reviewNotices(f.context.paths, 'example')).toEqual([expect.stringContaining('Last attempt: A foreground or watcher review is active.')]);
+    await atomicWriteJson(path.join(f.context.paths.root, 'update-settings.json'), { enabled: false });
+    const [line] = await reviewNotices(f.context.paths, 'example');
+    expect(line).toContain('automatic updates are disabled here');
+    expect(line).toContain('updates --enable');
   });
   it('reports a pause older than a day with no update waiting, and not a fresh one', async () => {
     const f = await waiting('active', { activeVersion: '99.0.0', pendingVersion: null }); await liveWatcher(f.context.paths);

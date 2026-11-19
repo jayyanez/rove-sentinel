@@ -22,16 +22,19 @@ npx --no-install rove-sentinel --version
 ```
 
 A downloaded release can remain **waiting** while another review runs. It
-activates only once the watcher acknowledges an idle pause, so a watcher that is
-**paused** (a safety pause after a provider cleanup that could not be verified is
-deliberate, and nothing lifts it on its own) or **not running** keeps it waiting
-indefinitely. `updates` and `status` then list each hold under `blockedBy`, with
-its time, reason and the command that lifts it, and `gate`, `pre-push`, `status`
-and `doctor` print one line saying so. Inspect the reason before running
-`resume`, or fix a stopped watcher's reason and run `install` from your trusted
-checkout; the release then activates within about ten minutes, or at once with
-`update`. Those commands also print a line for a pause older than a day, with or
-without an update waiting, and for a download that failed. **Active**
+activates only once a running watcher of the active engine and the installed
+policy acknowledges an idle pause, with its state readable and no earlier
+activation's fence left. So a watcher that is **paused** (a safety pause after a
+provider cleanup that could not be verified is deliberate, and nothing lifts it
+on its own), **not running**, running **another engine or policy**, or an
+**interrupted** activation keeps it waiting indefinitely. `updates` and `status`
+then list each hold under `blockedBy`, with its time, reason and the command that
+lifts it, and `gate`, `pre-push`, `status` and `doctor` print one line saying so.
+Inspect the reason before running `resume`, or fix a stopped watcher's reason and
+run `install` from your trusted checkout; the watcher then activates the release
+within about ten minutes. Those commands also print a line for a pause older than
+a day, with or without an update waiting, for a download that failed, and for a
+release that will not activate because automatic updates are disabled. **Active**
 means the new watcher passed its health check and new commands select that engine.
 Existing Claude Code and Codex sessions can continue; their next Sentinel command
 uses the selected version. An already running Sentinel review retains its version
@@ -106,8 +109,11 @@ retained paths. Other projects remain independent.
 The shared engine store retains at most five installed versions. A version a
 project has active or pending, or that a live process uses, is never collected.
 A project's previous version stays available for rollback while there is room:
-when the store is full, a new release first removes versions nothing references,
-then copies kept only as some project's rollback, oldest first. A project record
+when the store is full, a new release removes versions nothing references, then
+copies kept only as some project's rollback, oldest first, once it is downloaded
+and verified, so a failed download removes nothing. A project reusing a version
+already in the store waits for a download in progress, whose collection may be
+removing it. A project record
 whose checkout no longer exists keeps only its active version, since clones of
 one remote share one selection and another clone may still run it. If every slot
 is still required, the download fails with an error naming those versions, and
