@@ -287,8 +287,10 @@ GPT-6.2 Sol, the default from 1.20.0, was qualified on Windows with Codex CLI
 0.170.0, the first version verified. The older 0.159.0 client rejected that
 identifier with ChatGPT authentication (`model_not_found`). Sentinel requires
 0.170.0 or later when this model is selected; it does not replace an old client
-or silently choose another model. A project that follows the defaults on a
-computer with an older Codex either updates Codex or pins
+or silently choose another model. A project with no installed `models.codex`
+settings follows the default; one that set any Codex setting keeps the model
+frozen at its installation until it reinstalls. A project on the default, on a
+computer with an older Codex, either updates Codex or pins
 `"model": "gpt-6.1-sol"`, which still needs 0.159.0 or later (0.154.0 rejected
 it). Both models take `low` through `max` effort, never `none` or `minimal`.
 Claude Opus 5.5 needs Claude Code 2.1.280 or later; Sonnet 5.5 needs 2.1.284.
