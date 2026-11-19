@@ -198,6 +198,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
   const releaseWorker = await acquireDispositionLock(paths,
     { repository: context.repository, branch: 'sentinel-runtime-update' }, { maxHoldMs: Infinity });
   let target = null;
+  let reservedBefore = null;
   const save = async (patch) => {
     state = { ...state, repoRoot: context.repoRoot, ...patch };
     await publishEngineState(paths, state, root);
@@ -211,7 +212,8 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
     // Reserve the runtime under the store's lock, so another project's collection
     // either reads the reservation or has removed the copy before this one looks.
     target = nextVersion;
-    await save({ phase: 'downloading', lastError: null });
+    reservedBefore = state.pendingVersion ?? null;
+    await save({ phase: 'downloading', lastError: null, attemptedVersion: null });
     await ensure(nextVersion, { root, reserve: () => save({ pendingVersion: nextVersion }) });
     await save({ phase: 'waiting' });
     if (!await enabled(paths, env)) return { status: 'disabled' };
@@ -264,7 +266,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       }
       // Publish only after health verification. New CLI invocations now choose the same runtime as the watcher.
       await save({ activeVersion: nextVersion, previousVersion: previousState.activeVersion || null,
-        pendingVersion: null, phase: 'active', activatedAt: Date.now(), failedVersion: null, lastError: null });
+        pendingVersion: null, attemptedVersion: null, phase: 'active', activatedAt: Date.now(), failedVersion: null, lastError: null });
       await clearPause();
       await notify(context, state).catch(() => {});
       return { status: 'updated', version: nextVersion };
@@ -288,8 +290,10 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       return { status: preserveFence ? 'recovery-required' : 'failed', version: nextVersion, error: state.lastError };
     } finally { if (!preserveFence) await releaseUpdate(); }
   } catch (error) {
-    // Not a reservation: written outside the store's lock, it names the attempt only.
-    await save({ phase: 'download-failed', lastError: error.message, ...(target ? { attemptedVersion: target } : {}) });
+    // Outside the store's lock a failed attempt reserves nothing: the reservation
+    // goes back to what it was, and attemptedVersion only names the attempt.
+    await save({ phase: 'download-failed', lastError: error.message,
+      ...(target ? { attemptedVersion: target, pendingVersion: reservedBefore } : {}) });
     return { status: 'download-failed', error: error.message };
   } finally { await releaseWorker(); }
 }

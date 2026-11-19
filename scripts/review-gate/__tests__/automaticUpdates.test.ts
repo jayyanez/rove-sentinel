@@ -53,6 +53,17 @@ describe('automatic engine activation', () => {
     expect(f.deps.ensure).toHaveBeenCalledOnce();
     expect(f.deps.stop).not.toHaveBeenCalled();
   });
+  it('leaves no reservation behind a failed download, only the attempt it names', async () => {
+    const f = await fixture();
+    f.deps.ensure.mockImplementation(async (_version, options) => { await options.reserve(); throw new Error('Release download returned HTTP 503.'); });
+    expect(await automaticUpdate({}, f.deps)).toMatchObject({ status: 'download-failed' });
+    const record = await readJson(path.join(f.deps.root, 'consumers', `${path.basename(f.context.paths.root)}.json`));
+    expect(record.pendingVersion ?? null).toBeNull();
+    expect(await readJson(engineStatePath(f.context.paths))).toMatchObject({ phase: 'download-failed', attemptedVersion: '1.11.0' });
+    f.deps.ensure.mockImplementation(async (_version, options) => { await options.reserve(); });
+    expect(await automaticUpdate({}, f.deps)).toMatchObject({ status: 'updated' });
+    expect(await readJson(engineStatePath(f.context.paths))).toMatchObject({ attemptedVersion: null, pendingVersion: null });
+  });
   it('updates a live watcher whose GitHub polls fail: the new engine may be the fix', async () => {
     const f = await fixture();
     Object.assign(f.health, { watcherHealthy: false, watcherRunning: true });

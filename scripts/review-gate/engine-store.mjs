@@ -227,10 +227,11 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     await mkdir(path.join(root, 'versions'), { recursive: true });
     if (await isReady()) {
       // Finish, at best effort, a collection an interrupted install left undone.
-      if ((await readdir(path.join(root, 'versions'))).filter(stableVersion).length > maxVersions) {
-        await collectionPlan(root, maxVersions + 1, { strict: false, protect: version })
-          .then((displaced) => removeDisplaced(root, displaced), () => {});
-      }
+      try {
+        if ((await readdir(path.join(root, 'versions'))).filter(stableVersion).length > maxVersions) {
+          await removeDisplaced(root, await collectionPlan(root, maxVersions + 1, { strict: false, protect: version }));
+        }
+      } catch { /* The ready runtime is returned either way. */ }
       return directory;
     }
     // Refuse before downloading when no slot can be freed; remove nothing yet,
