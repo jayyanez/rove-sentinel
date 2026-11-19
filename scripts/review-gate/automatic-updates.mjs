@@ -198,7 +198,6 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
   const releaseWorker = await acquireDispositionLock(paths,
     { repository: context.repository, branch: 'sentinel-runtime-update' }, { maxHoldMs: Infinity });
   let target = null;
-  let reservedBefore = null;
   const save = async (patch) => {
     state = { ...state, repoRoot: context.repoRoot, ...patch };
     await publishEngineState(paths, state, root);
@@ -212,7 +211,6 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
     // Reserve the runtime under the store's lock, so another project's collection
     // either reads the reservation or has removed the copy before this one looks.
     target = nextVersion;
-    reservedBefore = state.pendingVersion ?? null;
     await save({ phase: 'downloading', lastError: null, attemptedVersion: null });
     await ensure(nextVersion, { root, reserve: () => save({ pendingVersion: nextVersion }) });
     await save({ phase: 'waiting' });
@@ -290,10 +288,10 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       return { status: preserveFence ? 'recovery-required' : 'failed', version: nextVersion, error: state.lastError };
     } finally { if (!preserveFence) await releaseUpdate(); }
   } catch (error) {
-    // Outside the store's lock a failed attempt reserves nothing: the reservation
-    // goes back to what it was, and attemptedVersion only names the attempt.
-    await save({ phase: 'download-failed', lastError: error.message,
-      ...(target ? { attemptedVersion: target, pendingVersion: reservedBefore } : {}) });
+    // The reservation is left as the store's lock left it: one made there stays
+    // (it protects only a copy that exists), and none is made here, outside
+    // that lock. attemptedVersion only names the attempt for the notice.
+    await save({ phase: 'download-failed', lastError: error.message, ...(target ? { attemptedVersion: target } : {}) });
     return { status: 'download-failed', error: error.message };
   } finally { await releaseWorker(); }
 }
