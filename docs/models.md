@@ -12,8 +12,8 @@ API keys do not satisfy subscription authentication.
 
 By default all roles use the same project-selected model and initial effort
 per provider; a project can set them per role (see below).
-The defaults are GPT-6.1 Sol (`gpt-6.1-sol`) and Claude Opus 5.5
-(`claude-opus-5-5`), both at `high`, with a ceiling of `xhigh`.
+The defaults are GPT-6.2 Sol (`gpt-6.2-sol`; GPT-6.1 Sol before 1.20.0) and
+Claude Opus 5.5 (`claude-opus-5-5`), both at `high`, with a ceiling of `xhigh`.
 
 Add these optional fields to your project's `.rove-sentinel.json`:
 
@@ -22,7 +22,7 @@ Add these optional fields to your project's `.rove-sentinel.json`:
   "schemaVersion": 1,
   "providers": "auto",
   "models": {
-    "codex": { "model": "gpt-6.1-sol", "effort": "high", "maxEffort": "xhigh" },
+    "codex": { "model": "gpt-6.2-sol", "effort": "high", "maxEffort": "xhigh" },
     "claude": { "model": "claude-opus-5-5", "effort": "high", "maxEffort": "xhigh" }
   }
 }
@@ -283,16 +283,23 @@ under the login Sentinel inherits, exactly as before. With accounts:
 
 ## Client compatibility
 
-GPT-6.1 Sol was qualified on Windows with Codex CLI 0.159.0. The older 0.154.0
-client rejected that identifier with ChatGPT authentication. Sentinel requires
-0.159.0 or later when this model is selected; it does not replace an old client
-or silently choose another model. Claude Opus 5.5 needs Claude Code 2.1.280 or
-later; Sonnet 5.5 needs 2.1.284. This does not guarantee account access. Default
-Opus 5.5 was qualified with Claude Code 2.1.284 at both effort levels.
+GPT-6.2 Sol, the default from 1.20.0, was qualified on Windows with Codex CLI
+0.170.0, the first version verified. The older 0.159.0 client rejected that
+identifier with ChatGPT authentication (`model_not_found`). Sentinel requires
+0.170.0 or later when this model is selected; it does not replace an old client
+or silently choose another model. A project with no installed `models.codex`
+settings follows the default; one that set any Codex setting keeps the model
+frozen at its installation until it reinstalls. A project on the default, on a
+computer with an older Codex, either updates Codex or pins
+`"model": "gpt-6.1-sol"`, which still needs 0.159.0 or later (0.154.0 rejected
+it). Both models take `low` through `max` effort, never `none` or `minimal`.
+Claude Opus 5.5 needs Claude Code 2.1.280 or later; Sonnet 5.5 needs 2.1.284.
+This does not guarantee account access. Default Opus 5.5 was qualified with
+Claude Code 2.1.284 at both effort levels.
 
 Read the providers' current documentation for their model lists and controls:
 [OpenAI model selection](https://learn.chatgpt.com/docs/models),
-[GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol), and
+[GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), and
 [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
 Use the native CLIs' model pickers to inspect models offered to your account.
 

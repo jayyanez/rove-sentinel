@@ -3,7 +3,7 @@
 [Back to the overview](../README.md) · [Your first review](usage.md)
 
 These instructions pin the
-[v1.19.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.19.0)
+[v1.20.0 release](https://github.com/jayyanez/rove-sentinel/releases/tag/v1.20.0)
 as an exact dependency. Confirm its archive is listed before installing.
 To work on Sentinel itself, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
@@ -41,7 +41,7 @@ github.com only.
 From your project directory, choose the command for its package manager:
 
 ```powershell
-npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.19.0/rove-sentinel-1.19.0.tgz
+npm install --save-dev --save-exact --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.20.0/rove-sentinel-1.20.0.tgz
 ```
 
 From npm 12, npm refuses a dependency given as a URL (`EALLOWREMOTE`)
@@ -53,7 +53,7 @@ Releases before npm 12 install the URL without it.
 Or with pnpm:
 
 ```powershell
-pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.19.0/rove-sentinel-1.19.0.tgz
+pnpm add --save-dev --save-exact https://github.com/jayyanez/rove-sentinel/releases/download/v1.20.0/rove-sentinel-1.20.0.tgz
 ```
 
 This is a GitHub Release archive; the instructions do not depend on an npm
@@ -81,7 +81,8 @@ Inspect and commit these files. Start with the default configuration: the
 built-in review charter, no visual evidence rules, and no automatic Cargo builds.
 See [configuration](configuration.md) before enabling project integrations, and
 [models](models.md) to choose providers, model identifiers and reasoning effort.
-The 1.11 model defaults require Codex 0.159.0+ and/or Claude Code 2.1.280+.
+The model defaults require Codex 0.170.0+ (since 1.20; 0.159.0+ before) and/or
+Claude Code 2.1.280+.
 
 ## 3. Install from a trusted, stable checkout
 
@@ -129,7 +130,7 @@ no `package.json`, lockfile, `.npmrc`, `.rove-sentinel.json` or `.githooks/`.
 1. Install Sentinel outside the repository, globally:
 
    ```powershell
-   npm install --global --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.19.0/rove-sentinel-1.19.0.tgz
+   npm install --global --allow-remote=root https://github.com/jayyanez/rove-sentinel/releases/download/v1.20.0/rove-sentinel-1.20.0.tgz
    ```
 
    or with `npm install` in a folder of its own, and run its

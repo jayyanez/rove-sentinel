@@ -29,9 +29,9 @@ describe('explicit model-access probes', () => {
     expect(checks.map((check) => check.effort)).toEqual(['medium', 'xhigh', 'high']);
     expect(new Set(calls).size).toBe(calls.length);
     expect(calls).toEqual([
-      'gpt-6.1-sol/model_reasoning_effort="medium"',
-      'gpt-6.1-sol/model_reasoning_effort="xhigh"',
-      'gpt-6.1-sol/model_reasoning_effort="high"',
+      'gpt-6.2-sol/model_reasoning_effort="medium"',
+      'gpt-6.2-sol/model_reasoning_effort="xhigh"',
+      'gpt-6.2-sol/model_reasoning_effort="high"',
     ]);
   });
 });

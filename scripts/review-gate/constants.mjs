@@ -1,4 +1,4 @@
-export const GATE_VERSION = '1.19.0';
+export const GATE_VERSION = '1.20.0';
 export const CHARTER_VERSION = '1.8.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
@@ -242,7 +242,7 @@ export const PROVIDER_PROFILE = Object.freeze(Object.fromEntries(
       model: 'claude-opus-5-5', effort: 'high', maxEffort: 'xhigh',
       autocompact: '200k', maxBudgetUsd: role === 'Coordinator' ? 6 : 4,
     })],
-    [`codex${role}`, Object.freeze({ model: 'gpt-6.1-sol', effort: 'high', maxEffort: 'xhigh' })],
+    [`codex${role}`, Object.freeze({ model: 'gpt-6.2-sol', effort: 'high', maxEffort: 'xhigh' })],
   ]),
 ));
 

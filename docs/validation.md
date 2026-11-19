@@ -1,5 +1,21 @@
 # Standalone validation record
 
+## 1.20.0 GPT-6.2 Sol by default — 2026-11-18
+
+Deterministic tests cover GPT-6.2 Sol as every Codex role's default; Codex 0.159.0 and
+0.169.9 refused for it, naming 0.170.0, and 0.170.0 and later accepted; a project pinning
+GPT-6.1 Sol keeping its 0.159.0 floor, and a role that names GPT-6.2 Sol under such a pin
+needing 0.170.0; `none` and `minimal` refused for GPT-6.2 Sol, `low` to `max` accepted; and
+the client floor in `limits`. 1,029 tests passed on Windows, and the package smoke passed.
+
+Live on Windows Server 2025 with the maintainer's ChatGPT login: Codex CLI 0.159.0 rejected
+`gpt-6.2-sol` (`model_not_found`, "not supported when using Codex with a ChatGPT account");
+Codex CLI 0.170.0 accepted it, and its model catalog lists `low`, `medium`, `high`, `xhigh`,
+`max` and `ultra` for it, as for GPT-6.1 Sol. `doctor --test-models` with a Codex-only
+configuration, run from this branch's source, passed GPT-6.2 Sol at `high` and `xhigh` on
+0.170.0. Not tested: Codex 0.160 to 0.169, and a full review under the new default, which
+runs once this engine is installed.
+
 ## 1.19.0 a push gate that leaves the repository as it is — 2026-11-11
 
 Deterministic tests cover the local hook's text and its recognition for any launcher path

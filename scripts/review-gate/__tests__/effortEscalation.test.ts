@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runWithEffortEscalation, runReviewer } from '../providers.mjs';
 
-const profile = { model: 'gpt-6.1-sol', effort: 'high', maxEffort: 'xhigh' };
+const profile = { model: 'gpt-6.2-sol', effort: 'high', maxEffort: 'xhigh' };
 describe('bounded model-requested escalation', () => {
   it('refuses empty findings when required context was not read', async () => {
     const run = vi.fn().mockResolvedValue({ review_complete: false, effort_request: null,

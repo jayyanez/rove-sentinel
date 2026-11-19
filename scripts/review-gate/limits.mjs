@@ -1,6 +1,7 @@
-import { GATE_VERSION, LIMITS } from './constants.mjs';
+import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
+import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.19.0), from the
+// What this engine version accepts and where it stops (1.20.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -12,6 +13,7 @@ const mib = (bytes) => `${bytes / (1024 * 1024)} MiB`;
 const minutes = (ms) => `${Math.round(ms / 60_000)} min`;
 
 export function sentinelLimits() {
+  const codexModel = PROVIDER_PROFILE.codexReviewer.model;
   return {
     version: GATE_VERSION,
     review: [
@@ -91,6 +93,11 @@ export function sentinelLimits() {
         id: 'review-accounts',
         limit: `${LIMITS.maxAccountsPerProvider} accounts per provider`,
         text: `A user may declare up to ${LIMITS.maxAccountsPerProvider} accounts of each CLI (a CLAUDE_CONFIG_DIR or CODEX_HOME folder and a label) in a per-user accounts file, never in the repository. Reviewers avoid the author's own account while another is usable, and rotate through the rest. An account that fails or reports its usage limit is held, as a provider would be, and the review restarts from scratch with the provider's next account, under any provider requirement: one restart per failing account, plus the one provider restart under auto. Only labels reach reports.`,
+      },
+      {
+        id: 'codex-client',
+        limit: `Codex ${CODEX_MODEL_CLIENTS[codexModel].join('.')}`,
+        text: `The default Codex model, ${codexModel}, needs Codex CLI ${CODEX_MODEL_CLIENTS[codexModel].join('.')} or later (gpt-6.1-sol, the default before 1.20.0, needs ${CODEX_MODEL_CLIENTS['gpt-6.1-sol'].join('.')}). A review, or doctor, that selects Codex with an older client refuses before any model work and names the version; Sentinel never picks another model. Update Codex, or pin a model it supports in the project's models.`,
       },
     ],
     superseded: [
