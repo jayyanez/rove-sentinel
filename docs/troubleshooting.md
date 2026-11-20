@@ -80,8 +80,9 @@ repository, run that launcher instead of `npx --no-install rove-sentinel`:
 `installation.node` and `installation.launcher`. In PowerShell the command is
 `& '<installation.node>' '<installation.launcher>' repair --repo '<repository>'`;
 on macOS, `'<installation.node>' '<installation.launcher>' repair --repo '<repository>'`.
-Single quotes keep each path literal. Inside them, write each `'` in a path as
-`''` in PowerShell, and as `'\''` on macOS.
+Single quotes keep each path literal. Inside them, double each apostrophe in a
+path in PowerShell, typographic ones (`‘ ’ ‚ ‛`) included, and write each `'` as
+`'\''` on macOS.
 
 A repository whose active engine predates 1.20.1 (its launcher pinned earlier
 and its update blocked) answers `repair` with `Unknown review-gate command:
@@ -104,8 +105,9 @@ active engine predates 1.20.1, every `Next:` line this repair prints that runs
 repair is this same line with the options to pass (never `npx --no-install
 rove-sentinel repair`, which would run the old engine); other `Next:` lines name
 other commands, such as `resume` or `install`. Run each one exactly as printed.
-For a local installation whose engine runs the repair, a `Next:` line that runs
-`repair`, `resume` or `updates` names its recorded launcher instead of npx.
+For a local installation, a `Next:` line that runs `resume` or `updates`, or
+`repair` on the installation's own engine, names its recorded launcher instead
+of npx.
 
 Behind a proxy, Node's fetch needs what the updater needs (see `update` fails
 behind a proxy, above). The checksum comes from the same release, so this is an integrity
