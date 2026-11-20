@@ -37,8 +37,6 @@ const parse = (raw) => { try { return JSON.parse(raw); } catch { return undefine
 const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').replace(/[.\s]+$/, '');
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
-// A repair's longest steps (a rollback, an update) are bounded well under this.
-const REPAIR_BOUND_MS = 60 * 60_000;
 
 /**
  * Every process of this OS user that the system lists: PID, parent PID, name,
@@ -255,22 +253,30 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   // One repair at a time for a state folder: its checks and removals assume no
   // other remover. Each repair writes a lease of its own, then looks for any
   // other live one; two that start together both see each other and both stop,
-  // so two never run. A lease of a process that is gone, or older than any
-  // repair runs, is removed: its name is unique, so nobody else can own it.
+  // so two never run. A lease whose process is gone, or whose PID now runs a
+  // process started at another time, is removed: its name is unique, so nobody
+  // else can own it. A lease is never expired by age: a suspended repair keeps it.
   const leaseDirectory = path.join(paths.root, 'repairs');
   let lease = null;
   if (!dryRun) {
     await mkdir(leaseDirectory, { recursive: true });
     lease = path.join(leaseDirectory, `${process.pid}-${randomUUID()}.json`);
-    await writeFile(lease, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
+    await writeFile(lease, JSON.stringify({ pid: process.pid, startedAt: await startedAt(process.pid).catch(() => null), at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
     let other = null;
-    for (const entry of await readdir(leaseDirectory).catch(() => [])) {
+    let entries;
+    // A listing that fails proves nothing about other repairs: stop.
+    try { entries = await readdir(leaseDirectory); }
+    catch (error) { await rm(lease, { force: true }).catch(() => {}); throw error; }
+    for (const entry of entries) {
       const file = path.join(leaseDirectory, entry);
       if (file === lease) continue;
       const record = await readJson(file).catch(() => null);
-      const age = await ageOf(file, now());
       const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
-      const gone = !Number.isInteger(pid) || !isAlive(pid) || (age !== null && age > REPAIR_BOUND_MS);
+      let gone = !Number.isInteger(pid) || !isAlive(pid);
+      if (!gone && Number.isFinite(record?.startedAt)) {
+        const observed = await startedAt(pid).catch(() => null);
+        gone = observed !== null && Math.abs(observed - record.startedAt) > START_TOLERANCE_MS;
+      }
       if (gone) await rm(file, { force: true }).catch(() => {});
       else other ??= pid;
     }
