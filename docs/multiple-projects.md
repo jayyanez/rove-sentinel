@@ -55,8 +55,8 @@ carry this, as written:
 > troubleshooting guide, section "Repair on an engine before 1.20.1"
 > (<https://github.com/jayyanez/rove-sentinel/blob/main/docs/troubleshooting.md#repair-on-an-engine-before-1201>),
 > in that repository, then run each `Next:` line it prints exactly as printed:
-> while the old engine is active they are that same line with options after
-> `--` (such as `-- --stop-orphans`).
+> while the old engine is active, those that run repair are that same line with
+> options after `--` (such as `-- --stop-orphans`).
 
 See the [runbook](troubleshooting.md#runbook-for-agents) for what `repair` checks.
 

@@ -333,7 +333,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       step(other !== null
         ? { state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` }
         : { state: 'repair', status: 'blocked', detail: `The lease of a repair that is gone cannot be removed: ${stuck}.`, next: `Run again once that file can be removed: ${REPAIR_COMMAND}` });
-      return finish(false);
+      return await finish(false);
     }
   }
   try {
@@ -433,20 +433,27 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   }
   for (const entry of steps) if (entry.status === 'would-fix' && !entry.next) entry.next = `Run: ${REPAIR_COMMAND}${stopOrphans ? ' --stop-orphans' : ''}`;
   // Done only when every state is fixed or fine: a busy or dry-run step still has work.
-  return finish(steps.every((entry) => ['fixed', 'ok'].includes(entry.status)));
+  return await finish(steps.every((entry) => ['fixed', 'ok'].includes(entry.status)));
 
   /**
-   * On a newer engine than the repository selects, the repository's own
-   * `repair` would run its older engine, which may not know the command: every
-   * Next line then names the bootstrap with the same options, which reaches an
-   * engine at least as new as this one.
+   * The repair command in every Next line, as this repository can run it. On a
+   * newer engine than the repository selects, its own `repair` would run the
+   * older engine, which may not know the command: it is the bootstrap with the
+   * same options, which reaches an engine at least as new as this one. A local
+   * installation has no dependency for npx: it is the launcher it recorded.
    */
-  function finish(ok) {
-    if (!onSelected) {
-      for (const entry of steps) {
-        if (entry.next) entry.next = entry.next.replace(/npx --no-install rove-sentinel repair((?: --[a-z-]+)*)/g,
-          (_match, options) => repairBootstrap(options.trim() ? options.trim().split(/\s+/) : []));
-      }
+  async function finish(ok) {
+    const installation = await readInstallation(paths).catch(() => null);
+    const quote = (value) => `'${String(value).replaceAll("'", platform === 'win32' ? "''" : "'\\''")}'`;
+    const command = (options) => {
+      if (!onSelected) return repairBootstrap(options);
+      if (installation?.mode !== 'local') return null;
+      const line = [quote(installation.node), quote(installation.launcher), 'repair', ...options, '--repo', quote(context.repoRoot)].join(' ');
+      return platform === 'win32' ? `& ${line}` : line;
+    };
+    for (const entry of steps) {
+      if (entry.next) entry.next = entry.next.replace(/npx --no-install rove-sentinel repair((?: --[a-z-]+)*)/g,
+        (match, options) => command(options.trim() ? options.trim().split(/\s+/) : []) ?? match);
     }
     return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };
   }
@@ -666,7 +673,8 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     const error = result.error ?? (await readJson(engineStatePath(paths)).catch(() => null))?.lastError ?? result.status;
     if (/^Runtime storage is full/.test(String(error))) {
       const holders = await storeHolders(root);
-      step({ state: 'update', status: 'blocked', detail: `${error}`, holders, next: holders.some((holder) => holder.repoRoot) ? `Run in each checkout listed: ${REPAIR_COMMAND}` : `Run again in ten minutes, after the processes listed exit: ${REPAIR_COMMAND}` });
+      // Each listed checkout may select an engine before 1.20.1: the bootstrap reaches repair in any.
+      step({ state: 'update', status: 'blocked', detail: `${error}`, holders, next: holders.some((holder) => holder.repoRoot) ? `Run in each checkout listed: ${repairBootstrap()}` : `Run again in ten minutes, after the processes listed exit: ${REPAIR_COMMAND}` });
       return;
     }
     step({ state: 'update', status: 'blocked', detail: `The update failed: ${error}`, next: `Run again in ten minutes: ${REPAIR_COMMAND}` });

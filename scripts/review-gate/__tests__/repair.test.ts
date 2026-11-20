@@ -9,7 +9,7 @@ import { updateMarker } from '../maintenance.mjs';
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
-import { safetyPauseReason } from '../process.mjs';
+import { REPAIR_BOOTSTRAP, safetyPauseReason } from '../process.mjs';
 
 const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -226,6 +226,15 @@ describe('repair', () => {
     expect(f.deps.stop.mock.calls[0][0][0]).toMatchObject({ pid: 888 });
     expect(f.deps.recover).toHaveBeenCalledOnce();
   });
+  it('names a local installation\'s recorded launcher in the Next lines that run repair', async () => {
+    const f = await fixture();
+    await atomicWriteJson(f.paths.installation, { schemaVersion: 1, mode: 'local', hook: '/opt/hooks/pre-push', launcher: "/opt/tools/it's/launcher.mjs", node: '/opt/node/bin/node', config: null });
+    const startedAt = Date.now() - 60_000;
+    await atomicWriteJson(f.paths.lock, { pid: 888, ownerToken: 'hung-owner', startedAt: new Date(startedAt + 1_000).toISOString() });
+    f.list.processes = [{ pid: 888, ppid: 1, name: 'node.exe', commandLine: `node cli.mjs watch --daemon --repo ${f.repoRoot}`, startedAt }];
+    const report = await repair(f);
+    expect(report.steps[0].next).toBe(`& '/opt/node/bin/node' '/opt/tools/it''s/launcher.mjs' repair --stop-orphans --repo '${f.repoRoot}'`);
+  });
   it('says a watcher that cannot start, with the command, and leaves a repository without one alone', async () => {
     const f = await fixture();
     await atomicWriteJson(f.paths.lock, { pid: DEAD, ownerToken: 'dead-owner' });
@@ -279,7 +288,8 @@ describe('repair', () => {
     await atomicWriteJson(path.join(f.deps.root, 'consumers', 'held.json'), { repoRoot: f.repoRoot, activeVersion: '1.18.0' });
     const report = await repair(f);
     expect(report.steps[0]).toMatchObject({ state: 'update', status: 'blocked', holders: [expect.objectContaining({ activeVersion: '1.18.0' })] });
-    expect(report.steps[0].next).toContain('rove-sentinel repair');
+    // Each listed checkout may select an engine before 1.20.1: the bootstrap reaches repair in any.
+    expect(report.steps[0].next).toBe(`Run in each checkout listed: ${REPAIR_BOOTSTRAP}`);
   });
   it('removes a daemon-lock takeover marker over ten minutes old, and a watcher lock never given an owner', async () => {
     const f = await fixture(); await f.healthy({ activity: 'idle' });

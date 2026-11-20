@@ -84,8 +84,9 @@ cannot download.
   `node -e` line, the same in every Windows shell and on macOS, that downloads the 1.20.1
   archive, refuses it unless its SHA-256 matches the release's `SHA256SUMS`, and runs its
   `repair`, with `--stop-orphans`, `--dry-run` or `--json` passed on after `--`. A repair on
-  a newer engine than the one the repository selects prints each `Next:` line as that line
-  with its options, since the repository's own `repair` would run the older engine. From 1.20.1, `updates`
+  a newer engine than the one the repository selects prints each `Next:` line that runs
+  repair as that line with its options, since the repository's own `repair` would run the
+  older engine; for a local installation such a line names its recorded launcher. From 1.20.1, `updates`
   and `status` name that line under `repair.ifUnknownCommand` beside every hold.
 - **`recover` starts the watcher** after clearing its state, and **`resume` starts one that is
   not running**, as install does; both report it under `watcher`. Recovering by hand needed a

@@ -100,9 +100,12 @@ node -e "const v='1.20.1',u='https://github.com/jayyanez/rove-sentinel/releases/
 `repair`'s options go after `--` at the end of the line, as in
 `node -e "…" -- --stop-orphans`; the line passes on `--stop-orphans`,
 `--dry-run` and `--json`, and refuses anything else. While the repository's
-active engine predates 1.20.1, every `Next:` line this repair prints is this
-same line with the options to pass (never `npx --no-install rove-sentinel
-repair`, which would run the old engine): run each one exactly as printed.
+active engine predates 1.20.1, every `Next:` line this repair prints that runs
+repair is this same line with the options to pass (never `npx --no-install
+rove-sentinel repair`, which would run the old engine); other `Next:` lines name
+other commands, such as `resume` or `install`. Run each one exactly as printed.
+For a local installation, a `Next:` line that runs repair names its recorded
+launcher.
 
 Behind a proxy, Node's fetch needs what the updater needs (see `update` fails
 behind a proxy, above). The checksum comes from the same release, so this is an integrity
