@@ -149,18 +149,21 @@ describe('repair', () => {
       expect(await readJson(f.paths.paused)).not.toBeNull();
     }
   });
-  it('runs one repair at a time for a repository, and takes over from one whose process is gone or stopped touching its lease', async () => {
+  it('runs one repair at a time for a repository, and takes over from one whose process is gone or a reused PID', async () => {
     const f = await fixture(); await f.healthy({ activity: 'idle' });
+    f.list.processes = [{ pid: process.pid, ppid: 1, name: 'node.exe', commandLine: 'node', startedAt: 5 }];
     const leases = path.join(f.paths.root, 'repairs');
     await mkdir(leases, { recursive: true });
     const other = path.join(leases, `${process.pid}-other.json`);
-    await writeFile(other, JSON.stringify({ pid: process.pid }));
+    await writeFile(other, JSON.stringify({ pid: process.pid, startedAt: 5 }));
     expect(await repair(f)).toMatchObject({ ok: false, steps: [expect.objectContaining({ state: 'repair', status: 'busy' })] });
-    // The repair that stopped took its own lease back.
+    // The repair that stopped took its own lease back; an old lease of a live repair stays live.
     expect(await readdir(leases)).toEqual([`${process.pid}-other.json`]);
-    // A lease its process stopped touching (a reused PID, or a repair that died) is stale.
-    const old = new Date(Date.now() - 2 * 60_000);
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
     await utimes(other, old, old);
+    expect((await repair(f)).ok).toBe(false);
+    // The same PID, listed with another start time, is another process: its lease is stale.
+    await writeFile(other, JSON.stringify({ pid: process.pid, startedAt: 4 }));
     expect(await repair(f)).toMatchObject({ ok: true, steps: [] });
     expect(await readdir(leases)).toEqual([]);
     await writeFile(other, JSON.stringify({ pid: DEAD }));
