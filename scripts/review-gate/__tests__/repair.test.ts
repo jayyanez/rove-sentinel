@@ -49,8 +49,8 @@ const events = async (paths) => Promise.all((await readdir(paths.events).catch((
 
 describe('which processes a repair may count as this repository\'s', () => {
   it('reads Sentinel review directories from command lines, quoted, with spaces or after an equals sign', () => {
-    expect(reviewDirectoriesIn('claude.exe -p --add-dir "C:\\Users\\Some One\\AppData\\Local\\Temp\\rove-review-abc123\\checkout" C:\\Temp\\rove-review-context-x1Y2 --effort high'))
-      .toEqual(['C:\\Users\\Some One\\AppData\\Local\\Temp\\rove-review-abc123', 'C:\\Temp\\rove-review-context-x1Y2']);
+    expect(reviewDirectoriesIn('claude.exe -p --add-dir "C:\\Build Area\\Temp\\rove-review-abc123\\checkout" C:\\Temp\\rove-review-context-x1Y2 --effort high'))
+      .toEqual(['C:\\Build Area\\Temp\\rove-review-abc123', 'C:\\Temp\\rove-review-context-x1Y2']);
     expect(reviewDirectoriesIn('codex exec --cd=/tmp/rove-review-context-Q9 --add-dir /tmp/rove-review-Z/checkout')).toEqual(['/tmp/rove-review-context-Q9', '/tmp/rove-review-Z']);
     expect(reviewDirectoriesIn('node build.js --name rove-review-context-nothing')).toEqual([]);
   });
