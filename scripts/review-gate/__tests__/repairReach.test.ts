@@ -153,12 +153,14 @@ describe('the bootstrap for an engine before 1.20.1', () => {
       .replace('https://github.com/jayyanez/rove-sentinel/releases/download', `http://localhost:${port}`)
       .replace(/const w=process\.platform.*?process\.exitCode=r\.status\?\?1/, "console.log('VERIFIED')");
     expect(command).toContain("console.log('VERIFIED')");
+    const temporary = await temp();
     const shell = process.platform === 'win32'
       ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${command}; exit $LASTEXITCODE`]]
       : ['sh', ['-c', command]];
     try {
       return await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawn(shell[0] as string, shell[1] as string[], { windowsHide: true });
+        // Its temporary folder is this test's, removed after it.
+        const child = spawn(shell[0] as string, shell[1] as string[], { windowsHide: true, env: { ...process.env, TEMP: temporary, TMP: temporary, TMPDIR: temporary } });
         let stdout = ''; let stderr = '';
         child.stdout.on('data', (chunk) => { stdout += chunk; });
         child.stderr.on('data', (chunk) => { stderr += chunk; });
