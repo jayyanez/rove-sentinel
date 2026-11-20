@@ -104,8 +104,8 @@ active engine predates 1.20.1, every `Next:` line this repair prints that runs
 repair is this same line with the options to pass (never `npx --no-install
 rove-sentinel repair`, which would run the old engine); other `Next:` lines name
 other commands, such as `resume` or `install`. Run each one exactly as printed.
-For a local installation, a `Next:` line that runs repair names its recorded
-launcher.
+For a local installation whose engine runs the repair, a `Next:` line that runs
+`repair`, `resume` or `updates` names its recorded launcher instead of npx.
 
 Behind a proxy, Node's fetch needs what the updater needs (see `update` fails
 behind a proxy, above). The checksum comes from the same release, so this is an integrity

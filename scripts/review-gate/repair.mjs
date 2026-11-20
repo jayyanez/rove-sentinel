@@ -444,16 +444,24 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
    */
   async function finish(ok) {
     const installation = await readInstallation(paths).catch(() => null);
-    const quote = (value) => `'${String(value).replaceAll("'", platform === 'win32' ? "''" : "'\\''")}'`;
-    const command = (options) => {
-      if (!onSelected) return repairBootstrap(options);
-      if (installation?.mode !== 'local') return null;
-      const line = [quote(installation.node), quote(installation.launcher), 'repair', ...options, '--repo', quote(context.repoRoot)].join(' ');
+    // PowerShell ends a single-quoted string at any of its five single quotes,
+    // and reads each doubled one as itself; a POSIX shell knows only one.
+    const quote = (value) => (platform === 'win32'
+      ? `'${String(value).replace(/['\u2018\u2019\u201A\u201B]/g, (mark) => mark + mark)}'`
+      : `'${String(value).replaceAll("'", "'\\''")}'`);
+    const local = (name, options) => {
+      const line = [quote(installation.node), quote(installation.launcher), name, ...options, '--repo', quote(context.repoRoot)].join(' ');
       return platform === 'win32' ? `& ${line}` : line;
     };
+    const split = (options) => (options.trim() ? options.trim().split(/\s+/) : []);
     for (const entry of steps) {
-      if (entry.next) entry.next = entry.next.replace(/npx --no-install rove-sentinel repair((?: --[a-z-]+)*)/g,
-        (match, options) => command(options.trim() ? options.trim().split(/\s+/) : []) ?? match);
+      if (!entry.next) continue;
+      if (!onSelected) {
+        entry.next = entry.next.replace(/npx --no-install rove-sentinel repair((?: --[a-z-]+)*)/g, (_match, options) => repairBootstrap(split(options)));
+      } else if (installation?.mode === 'local') {
+        // install stays as printed: a local installation reinstalls with install --local.
+        entry.next = entry.next.replace(/npx --no-install rove-sentinel (repair|resume|updates)((?: --[a-z-]+)*)/g, (_match, name, options) => local(name, split(options)));
+      }
     }
     return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };
   }
