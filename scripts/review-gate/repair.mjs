@@ -266,6 +266,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       if (error.code !== 'EEXIST') throw error;
       const raw = await readFile(lockFile, 'utf8').catch(() => null);
       const holder = raw === null ? null : parse(raw);
+      const judgedAt = await stat(lockFile).then((info) => info.mtimeMs, () => null);
       const age = await ageOf(lockFile, now());
       // A repair ends within REPAIR_BOUND_MS, so an older lock's PID may be another
       // process's now; a lock that never got its owner is abandoned sooner.
@@ -286,9 +287,12 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
         }
         if (marker) {
           try {
-            if (await readFile(lockFile, 'utf8').catch(() => null) === raw) {
+            // The same content and the same write time: a lock created since, even
+            // an empty one still being written, differs in its time.
+            const sameTime = await stat(lockFile).then((info) => info.mtimeMs, () => null) === judgedAt;
+            if (sameTime && await readFile(lockFile, 'utf8').catch(() => null) === raw) {
               await rm(lockFile, { force: true });
-              held = await create().catch(() => null);
+              held = await create().catch((createError) => { if (createError.code === 'EEXIST') return null; throw createError; });
             }
           } finally {
             await marker.close().catch(() => {});
@@ -334,7 +338,8 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) {
       step({ state: 'interrupted-activation', status: 'busy', detail: `An update to ${marker.version} is activating now (PID ${marker.pid}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
     } else if (dryRun) {
-      const journal = await fenceJournal(paths, marker).then((found) => (found.journalIsThisUpdate
+      // As the applying run: an unfinished fence has no version to match.
+      const journal = await fenceJournal(paths, unfinished ? { pid: null } : marker).then((found) => (found.journalIsThisUpdate
         && !(found.recovery.previousPolicy && found.recovery.previousCli && found.recovery.previousState)
         ? { error: new Error('update-recovery.json beside the fence is incomplete, so the engine before the update is unknown.') } : found), (error) => ({ error }));
       step({ state: 'interrupted-activation', status: journal.error ? 'blocked' : 'would-fix', detail: journal.error
