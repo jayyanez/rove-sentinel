@@ -1,4 +1,5 @@
-import { open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -251,66 +252,31 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   const snapshot = async () => (processes ??= await list({ platform, run }));
   const fresh = async () => { processes = null; return snapshot(); };
 
-  // One repair at a time for a state folder: its checks and removals assume no other remover.
-  const lockFile = path.join(paths.root, 'repair.lock');
-  let held = null;
-  const create = async () => {
-    const handle = await open(lockFile, 'wx', 0o600);
-    try { await handle.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() })); }
-    catch (error) { await handle.close().catch(() => {}); await rm(lockFile, { force: true }); throw error; }
-    return handle;
-  };
+  // One repair at a time for a state folder: its checks and removals assume no
+  // other remover. Each repair writes a lease of its own, then looks for any
+  // other live one; two that start together both see each other and both stop,
+  // so two never run. A lease of a process that is gone, or older than any
+  // repair runs, is removed: its name is unique, so nobody else can own it.
+  const leaseDirectory = path.join(paths.root, 'repairs');
+  let lease = null;
   if (!dryRun) {
-    try { held = await create(); }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const raw = await readFile(lockFile, 'utf8').catch(() => null);
-      const holder = raw === null ? null : parse(raw);
-      const judgedAt = await stat(lockFile).then((info) => info.mtimeMs, () => null);
-      const age = await ageOf(lockFile, now());
-      // A repair ends within REPAIR_BOUND_MS, so an older lock's PID may be another
-      // process's now; a lock that never got its owner is abandoned sooner.
-      const gone = raw !== null && (Number.isInteger(holder?.pid)
-        ? !isAlive(holder.pid) || (age !== null && age > REPAIR_BOUND_MS)
-        : age !== null && age > UNFINISHED_RECORD_MS);
-      if (gone) {
-        // Takers serialize on repair.takeover; under it, the lock is removed only
-        // while it holds what was judged, and the taker's own lock is in place
-        // before the marker is released.
-        const takeover = path.join(paths.root, 'repair.takeover');
-        let marker = null;
-        try {
-          marker = await open(takeover, 'wx', 0o600);
-          await marker.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
-        } catch (markerError) {
-          if (markerError.code !== 'EEXIST') throw markerError;
-          // An abandoned marker goes only while it is the same file judged: its
-          // content and write time. A marker another taker made since differs in both.
-          const before = await stat(takeover).then((info) => info.mtimeMs, () => null);
-          const content = await readFile(takeover, 'utf8').catch(() => null);
-          if (before !== null && now() - before > TAKEOVER_ABANDONED_MS
-            && await stat(takeover).then((info) => info.mtimeMs, () => null) === before
-            && await readFile(takeover, 'utf8').catch(() => null) === content) await rm(takeover, { force: true });
-        }
-        if (marker) {
-          try {
-            // The same content and the same write time: a lock created since, even
-            // an empty one still being written, differs in its time.
-            const sameTime = await stat(lockFile).then((info) => info.mtimeMs, () => null) === judgedAt;
-            if (sameTime && await readFile(lockFile, 'utf8').catch(() => null) === raw) {
-              await rm(lockFile, { force: true });
-              held = await create().catch((createError) => { if (createError.code === 'EEXIST') return null; throw createError; });
-            }
-          } finally {
-            await marker.close().catch(() => {});
-            await rm(takeover, { force: true }).catch(() => {});
-          }
-        }
-      }
+    await mkdir(leaseDirectory, { recursive: true });
+    lease = path.join(leaseDirectory, `${process.pid}-${randomUUID()}.json`);
+    await writeFile(lease, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
+    let other = null;
+    for (const entry of await readdir(leaseDirectory).catch(() => [])) {
+      const file = path.join(leaseDirectory, entry);
+      if (file === lease) continue;
+      const record = await readJson(file).catch(() => null);
+      const age = await ageOf(file, now());
+      const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
+      const gone = !Number.isInteger(pid) || !isAlive(pid) || (age !== null && age > REPAIR_BOUND_MS);
+      if (gone) await rm(file, { force: true }).catch(() => {});
+      else other ??= pid;
     }
-    if (!held) {
-      const holder = await readJson(lockFile).catch(() => null);
-      step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${holder?.pid ?? 'unknown'}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
+    if (other !== null) {
+      await rm(lease, { force: true }).catch(() => {});
+      step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
       return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: false, steps };
     }
   }
@@ -407,7 +373,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   await repairUpdate();
 
   } finally {
-    if (held) { await held.close().catch(() => {}); await rm(lockFile, { force: true }).catch(() => {}); }
+    if (lease) await rm(lease, { force: true }).catch(() => {});
   }
   for (const entry of steps) if (entry.status === 'would-fix' && !entry.next) entry.next = `Run: ${REPAIR_COMMAND}${stopOrphans ? ' --stop-orphans' : ''}`;
   // Done only when every state is fixed or fine: a busy or dry-run step still has work.

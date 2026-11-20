@@ -151,11 +151,15 @@ describe('repair', () => {
   });
   it('runs one repair at a time for a repository, and takes over from one whose process is gone', async () => {
     const f = await fixture(); await f.healthy({ activity: 'idle' });
-    await writeFile(path.join(f.paths.root, 'repair.lock'), JSON.stringify({ pid: process.pid }));
+    const leases = path.join(f.paths.root, 'repairs');
+    await mkdir(leases, { recursive: true });
+    await writeFile(path.join(leases, `${process.pid}-other.json`), JSON.stringify({ pid: process.pid }));
     expect(await repair(f)).toMatchObject({ ok: false, steps: [expect.objectContaining({ state: 'repair', status: 'busy' })] });
-    await writeFile(path.join(f.paths.root, 'repair.lock'), JSON.stringify({ pid: DEAD }));
+    // The repair that stopped took its own lease back.
+    expect(await readdir(leases)).toEqual([`${process.pid}-other.json`]);
+    await writeFile(path.join(leases, `${process.pid}-other.json`), JSON.stringify({ pid: DEAD }));
     expect(await repair(f)).toMatchObject({ ok: true, steps: [] });
-    await expect(readFile(path.join(f.paths.root, 'repair.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readdir(leases)).toEqual([]);
   });
   it('names the command for unreadable update settings, and the running processes that fill a store', async () => {
     const f = await fixture(); await f.healthy({ activity: 'idle' });
