@@ -273,6 +273,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   const onSelected = selectedVersion === GATE_VERSION;
   const steps = [];
   const step = (entry) => { steps.push(entry); return entry; };
+  // The checkout a Next line runs in when it is not this one, kept beside the
+  // line rather than read back from it: a path may hold any character.
+  const checkouts = new WeakMap();
   const audit = (action, evidence) => (dryRun ? null : recordEvent(paths, { type: 'repair', action, ...evidence }));
   let processes = null;
   const snapshot = async () => (processes ??= await list({ platform, run }));
@@ -462,7 +465,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       if (installation?.mode === 'local') {
         // install stays as printed: a local installation reinstalls with install --local.
         // A line for another checkout of this repository (the watcher's) names that checkout.
-        const repo = entry.next.match(/^Run in (.+?): /)?.[1] ?? context.repoRoot;
+        const repo = checkouts.get(entry) ?? context.repoRoot;
         entry.next = entry.next.replace(/npx --no-install rove-sentinel (repair|resume|updates)((?: --[a-z-]+)*)/g, (_match, name, options) => local(name, split(options), repo));
       }
     }
@@ -565,7 +568,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     }
     const detail = `The watcher runs ${heartbeat.gateVersion ?? 'an unknown engine'}${digest && heartbeat.policyDigest !== digest ? ' with another policy than the installed one' : ''}; this repository selects ${selectedVersion}.`;
     if (comparable(heartbeat.repoRoot ?? context.repoRoot) !== comparable(context.repoRoot)) {
-      step({ state: 'watcher', status: 'blocked', detail: `${detail} It runs from another checkout.`, next: `Run in ${heartbeat.repoRoot}: ${REPAIR_COMMAND}` });
+      checkouts.set(step({ state: 'watcher', status: 'blocked', detail: `${detail} It runs from another checkout.`, next: `Run in ${heartbeat.repoRoot}: ${REPAIR_COMMAND}` }), heartbeat.repoRoot);
       return { running: true, heartbeat };
     }
     const byPid = new Map((await snapshot()).map((proc) => [proc.pid, proc]));

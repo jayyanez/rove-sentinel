@@ -242,6 +242,11 @@ describe('repair', () => {
     await f.healthy({ gateVersion: '1.0.0', activity: 'idle', repoRoot: '/work/watcher-checkout' });
     const report = await repair(f);
     expect(report.steps[0].next).toBe("Run in /work/watcher-checkout: & '/opt/node/bin/node' '/opt/tools/launcher.mjs' repair --repo '/work/watcher-checkout'");
+    // The checkout is not read back from the line: a newline or ': ' in it changes nothing.
+    const odd = '/work/a: b\nwatcher';
+    await f.healthy({ gateVersion: '1.0.0', activity: 'idle', repoRoot: odd });
+    const again = await repair(f);
+    expect(again.steps[0].next).toBe(`Run in ${odd}: & '/opt/node/bin/node' '/opt/tools/launcher.mjs' repair --repo '${odd}'`);
   });
   it('says a watcher that cannot start, with the command, and leaves a repository without one alone', async () => {
     const f = await fixture();
