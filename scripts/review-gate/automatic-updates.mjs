@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
 import { createGateContext } from './gate.mjs';
@@ -192,9 +192,22 @@ export async function rollBackInterruptedUpdate(context, {
   const marker = unfinished ? { pid: null } : await readJson(updateMarker(paths));
   if (!marker) return { rolledBack: false, reason: 'no update fence is left' };
   if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) return { rolledBack: false, running: true, reason: `the activation's process ${marker.pid} still runs` };
-  const recovery = await readJson(path.join(paths.root, 'update-recovery.json'));
-  if (!recovery?.previousPolicy || !recovery?.previousCli || !recovery?.previousState) {
-    throw new Error(`The fence ${updateMarker(paths)} has no complete update-recovery.json beside it, so the engine before the update is unknown.`);
+  // The fence is written before its journal, and a journal outlives the update
+  // that wrote it: one older than the fence, or for another version, is an
+  // earlier update's. Then the activation died before it changed anything, and
+  // removing the fence is the whole recovery.
+  const journalPath = path.join(paths.root, 'update-recovery.json');
+  const recovery = await readJson(journalPath).catch(() => null);
+  const [fenceTime, journalTime] = await Promise.all([updateMarker(paths), journalPath]
+    .map((file) => stat(file).then((info) => info.mtimeMs, () => null)));
+  const journalIsThisUpdate = recovery && journalTime !== null && (fenceTime === null || journalTime >= fenceTime)
+    && (!marker.version || recovery.nextVersion === marker.version);
+  if (!journalIsThisUpdate) {
+    await removeStoredJson(updateMarker(paths));
+    return { rolledBack: true, version: null, nextVersion: marker.version ?? null, markerPid: marker.pid, unchanged: true };
+  }
+  if (!recovery.previousPolicy || !recovery.previousCli || !recovery.previousState) {
+    throw new Error(`update-recovery.json beside ${updateMarker(paths)} is incomplete, so the engine before the update is unknown. Run from the repository's trusted checkout: npx --no-install rove-sentinel install`);
   }
   const exec = async (cli, args) => (await run(process.execPath, [cli, ...args, '--repo', context.repoRoot], {
     cwd: context.repoRoot, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024,
@@ -283,7 +296,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       await atomicWriteJson(path.join(paths.root, 'update-recovery.json'), {
         repoRoot: context.repoRoot, previousState, previousPolicy, previousCli: cliPath, nextVersion,
       });
-      pause = await pauseGate(paths, `Automatic Sentinel update to ${nextVersion}`);
+      pause = await pauseGate(paths, `Automatic Sentinel update to ${nextVersion}`, { kind: 'update' });
       const deadline = Date.now() + pauseTimeoutMs;
       let acknowledged = false;
       while (Date.now() <= deadline) {

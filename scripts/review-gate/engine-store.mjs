@@ -230,10 +230,17 @@ export async function removeStaleStoreLock(root, verdict, { reason = 'automatic'
   try { handle = await open(marker, 'wx', 0o600); }
   catch (error) {
     if (error.code !== 'EEXIST') throw error;
-    const holder = await readFile(marker, 'utf8').then((text) => JSON.parse(text), () => null);
-    if (Number.isInteger(holder?.pid) && !isAlive(holder.pid)) {
+    // A takeover lasts milliseconds: a marker whose holder is gone, or that
+    // never got its PID within a minute, is removed while it holds what was read.
+    let raw = null;
+    let modified = Date.now();
+    try { modified = (await stat(marker)).mtimeMs; raw = await readFile(marker, 'utf8'); } catch { return false; }
+    let holder = null;
+    try { holder = JSON.parse(raw); } catch { holder = null; }
+    const abandoned = Number.isInteger(holder?.pid) ? !isAlive(holder.pid) : Date.now() - modified > 60_000;
+    if (abandoned && await readFile(marker, 'utf8').catch(() => null) === raw) {
       await rm(marker, { force: true });
-      await recordStoreEvent(root, { type: 'takeover-marker-removed', reason, holderPid: holder.pid });
+      await recordStoreEvent(root, { type: 'takeover-marker-removed', reason, holderPid: holder?.pid ?? null });
     }
     return false;
   }
@@ -258,6 +265,9 @@ export async function removeStaleStoreLock(root, verdict, { reason = 'automatic'
  */
 async function lockStore(root, lockFile, version, waitMs) {
   const deadline = Date.now() + waitMs;
+  // Liveness is read every time; a PID's start time once, as its probe is a process launch.
+  const starts = new Map();
+  const startedAt = (pid) => { if (!starts.has(pid)) starts.set(pid, processStartedAt(pid).catch(() => null)); return starts.get(pid); };
   let last = null;
   while (true) {
     try {
@@ -267,17 +277,11 @@ async function lockStore(root, lockFile, version, waitMs) {
       const release = async () => { try { await handle.close(); } finally { await rm(lockFile, { force: true }); } };
       return { release };
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
-    // One verdict per lock content: the start-time probe is a process launch.
-    const raw = await readFile(lockFile, 'utf8').catch(() => null);
-    if (raw === null) continue;
-    if (last?.raw !== raw) last = await inspectStoreLock(root);
-    if (last.state === 'stale') {
-      await removeStaleStoreLock(root, last);
-      last = null;
-      continue;
-    }
-    if (last.state === 'free') continue;
-    if (Date.now() >= deadline) return { busy: true, owner: last.owner };
+    const verdict = await inspectStoreLock(root, { startedAt }).catch(() => null);
+    if (verdict?.state === 'free') continue;
+    if (verdict?.state === 'stale' && await removeStaleStoreLock(root, verdict)) continue;
+    if (verdict) last = verdict;
+    if (Date.now() >= deadline) return { busy: true, owner: last?.owner ?? null };
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }

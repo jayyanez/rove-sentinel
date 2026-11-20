@@ -2,8 +2,9 @@ import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { findOrphans, formatRepair, repairRepository, reviewDirectoriesIn, stopProcesses } from '../repair.mjs';
+import { findOrphans, formatRepair, repairRepository, reviewDirectoriesIn, reviewDirectoryCandidates, stopProcesses } from '../repair.mjs';
 import { recoverReviewGate, resumeReviewGate, startWatcher } from '../install.mjs';
+import { rollBackInterruptedUpdate } from '../automatic-updates.mjs';
 import { updateMarker } from '../maintenance.mjs';
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
@@ -53,6 +54,9 @@ describe('which processes a repair may count as this repository\'s', () => {
       .toEqual(['C:\\Build Area\\Temp\\rove-review-abc123', 'C:\\Temp\\rove-review-context-x1Y2']);
     expect(reviewDirectoriesIn('codex exec --cd=/tmp/rove-review-context-Q9 --add-dir /tmp/rove-review-Z/checkout')).toEqual(['/tmp/rove-review-context-Q9', '/tmp/rove-review-Z']);
     expect(reviewDirectoriesIn('node build.js --name rove-review-context-nothing')).toEqual([]);
+    // `ps` joins arguments with spaces: a path with spaces is read from each earlier space too.
+    expect(reviewDirectoryCandidates('codex exec --cd /var/tmp/my dir/rove-review-context-Q9')).toEqual([['/var/tmp/my dir/rove-review-context-Q9']]);
+    expect(reviewDirectoryCandidates('codex --add-dir /srv/x /tmp/rove-review-A')).toEqual([['/tmp/rove-review-A', '/srv/x /tmp/rove-review-A']]);
   });
   it('counts a process of this repository\'s review that no running review owns, its descendants, and nothing else', async () => {
     const f = await fixture();
@@ -75,7 +79,9 @@ describe('which processes a repair may count as this repository\'s', () => {
       { pid: 205, ppid: 1, name: 'codex.exe', commandLine: `codex exec --cd "${path.join(f.base, 'tmp', 'rove-review-context-gone')}"`, startedAt: 14 },
     ];
     const found = await findOrphans(f.context, { processes });
-    expect(found.map((entry) => [entry.pid, entry.kind])).toEqual([[201, 'repository'], [205, 'unattributed'], [202, 'repository']]);
+    expect(found.orphans.map((entry) => [entry.pid, entry.kind])).toEqual([[201, 'repository'], [202, 'repository']]);
+    // A directory without an owner record is listed, never counted or stopped.
+    expect(found.unattributed.map((entry) => entry.pid)).toEqual([205]);
   });
   it('traces the provider recorded in a safety pause, but not a PID reused after it', async () => {
     const f = await fixture();
@@ -84,14 +90,14 @@ describe('which processes a repair may count as this repository\'s', () => {
       { pid: 301, ppid: 300, name: 'node.exe', commandLine: 'node mcp-server', startedAt: 500 },
       { pid: 302, ppid: 300, name: 'notepad.exe', commandLine: 'notepad', startedAt: 5_000 },
     ];
-    expect((await findOrphans(f.context, { processes, pause })).map((entry) => entry.pid)).toEqual([301]);
+    expect((await findOrphans(f.context, { processes, pause })).orphans.map((entry) => entry.pid)).toEqual([301]);
   });
-  it('stops only processes whose PID still has the start time they were listed with, children first', async () => {
-    const run = vi.fn(async () => ({}));
-    const list = vi.fn(async () => [{ pid: 1, startedAt: 10 }, { pid: 2, startedAt: 99_999 }, { pid: 3, startedAt: 30 }] as any);
-    const stopped = await stopProcesses([{ pid: 1, rawStartedAt: 10 }, { pid: 2, rawStartedAt: 20 }, { pid: 3, rawStartedAt: 30 }] as any, { platform: 'win32', run, list });
+  it('stops only processes whose PID still has the start time it was listed with, children first, and counts only confirmed stops', async () => {
+    const run = vi.fn(async (_command, args) => ({ code: args[1] === '4' ? 128 : 0 }));
+    const list = vi.fn(async () => [{ pid: 1, startedAt: 10 }, { pid: 2, startedAt: 99_999 }, { pid: 3, startedAt: 30 }, { pid: 4, startedAt: 40 }, { pid: 5, startedAt: null }] as any);
+    const stopped = await stopProcesses([{ pid: 1, rawStartedAt: 10 }, { pid: 2, rawStartedAt: 20 }, { pid: 3, rawStartedAt: 30 }, { pid: 4, rawStartedAt: 40 }, { pid: 5, rawStartedAt: null }] as any, { platform: 'win32', run, list });
     expect(stopped).toEqual([3, 1]);
-    expect(run.mock.calls.map(([, args]) => args[1])).toEqual(['3', '1']);
+    expect(run.mock.calls.map(([, args]) => args[1])).toEqual(['4', '3', '1']);
   });
 });
 
@@ -132,12 +138,35 @@ describe('repair', () => {
     expect(f.deps.stop.mock.calls[0][0].map((t) => t.pid)).toEqual([4242]);
     expect(await readJson(f.paths.paused)).toBeNull();
   });
-  it('never lifts a person\'s pause', async () => {
-    const f = await fixture(); await f.healthy();
-    await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), reason: 'Holding reviews during a release' });
-    const report = await repair(f, { stopOrphans: true });
-    expect(report.steps[0]).toMatchObject({ status: 'blocked', next: expect.stringContaining('rove-sentinel resume') });
-    expect(await readJson(f.paths.paused)).not.toBeNull();
+  it('never lifts a person\'s pause, even one whose reason reads like Sentinel\'s', async () => {
+    for (const pause of [{ reason: 'Holding reviews during a release' },
+      { reason: safetyPauseReason('ORPHANED_PROCESS_TREE'), kind: 'manual' },
+      { reason: 'Automatic Sentinel update to 9.9.9', kind: 'manual' }]) {
+      const f = await fixture(); await f.healthy();
+      await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), ...pause });
+      const report = await repair(f, { stopOrphans: true });
+      expect(report.steps[0]).toMatchObject({ status: 'blocked', next: expect.stringContaining('rove-sentinel resume') });
+      expect(await readJson(f.paths.paused)).not.toBeNull();
+    }
+  });
+  it('runs one repair at a time for a repository, and takes over from one whose process is gone', async () => {
+    const f = await fixture(); await f.healthy({ activity: 'idle' });
+    await writeFile(path.join(f.paths.root, 'repair.lock'), JSON.stringify({ pid: process.pid }));
+    expect(await repair(f)).toMatchObject({ ok: false, steps: [expect.objectContaining({ state: 'repair', status: 'busy' })] });
+    await writeFile(path.join(f.paths.root, 'repair.lock'), JSON.stringify({ pid: DEAD }));
+    expect(await repair(f)).toMatchObject({ ok: true, steps: [] });
+    await expect(readFile(path.join(f.paths.root, 'repair.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('names the command for unreadable update settings, and the running processes that fill a store', async () => {
+    const f = await fixture(); await f.healthy({ activity: 'idle' });
+    f.deps.info = vi.fn(async () => ({ settingsError: 'Unexpected end of JSON input', automatic: null, phase: 'download-failed', blockedBy: [] }));
+    expect((await repair(f)).steps[0]).toMatchObject({ state: 'update-settings', status: 'blocked', next: 'Run: npx --no-install rove-sentinel updates --enable' });
+    f.deps.info = vi.fn(async () => ({ automatic: true, phase: 'download-failed', blockedBy: [] }));
+    f.deps.update.mockResolvedValue({ status: 'download-failed', error: 'Runtime storage is full: every installed version (1.18.0) is active or pending for a project, or used by a running process.' });
+    await atomicWriteJson(path.join(f.deps.root, 'processes', 'live.json'), { pid: process.pid, version: '1.18.0' });
+    const report = await repair(f);
+    expect(report.steps[0].holders).toEqual([{ pid: process.pid, version: '1.18.0' }]);
+    expect(formatRepair(report)).toContain(`PID ${process.pid}, uses 1.18.0`);
   });
   it('lifts the pause an update left with no activation running', async () => {
     const f = await fixture(); await f.healthy();
@@ -252,6 +281,12 @@ describe('repair', () => {
 });
 
 describe('recover and resume start the watcher', () => {
+  it('reports a scheduler that fails, rather than throwing', async () => {
+    const f = await fixture();
+    const run = vi.fn(async (_command, args) => { if (args[0] === '/Run') throw new Error('Access is denied.'); return { code: 0 }; });
+    expect(await startWatcher(f.context, { platform: 'win32', run, clearError: async () => {} }))
+      .toMatchObject({ started: false, reason: 'Access is denied.', next: NEXT });
+  });
   it('starts the installed scheduled task, or names install when there is none', async () => {
     const f = await fixture();
     const run = vi.fn(async (_command, args) => (args[0] === '/Query' ? { code: 0, stdout: '' } : { code: 0 }));
@@ -272,5 +307,37 @@ describe('recover and resume start the watcher', () => {
     start.mockClear();
     expect(await resumeReviewGate({ repoRoot: f.repoRoot }, { start, contextFor: async () => f.context })).toMatchObject({ watcher: { running: true } });
     expect(start).not.toHaveBeenCalled();
+  });
+});
+
+describe('rolling back an interrupted activation', () => {
+  it('removes only the fence when the journal beside it is an earlier update\'s', async () => {
+    const f = await fixture();
+    await atomicWriteJson(path.join(f.paths.root, 'update-recovery.json'), { nextVersion: '1.19.0', previousCli: 'old-cli', previousPolicy: {}, previousState: {} });
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path.join(f.paths.root, 'update-recovery.json'), old, old);
+    await atomicWriteJson(updateMarker(f.paths), { version: '1.20.1', pid: DEAD, startedAt: new Date().toISOString() });
+    const stop = vi.fn(async () => true); const run = vi.fn();
+    expect(await rollBackInterruptedUpdate(f.context, { stop, run, root: f.deps.root, startedAt: async () => null }))
+      .toMatchObject({ rolledBack: true, unchanged: true });
+    expect(stop).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(await readJson(updateMarker(f.paths))).toBeNull();
+  });
+  it('restores the recorded engine and policy, verifies its watcher, then removes the fence and the update\'s pause', async () => {
+    const f = await fixture();
+    await atomicWriteJson(updateMarker(f.paths), { version: '1.20.1', pid: DEAD, startedAt: new Date().toISOString() });
+    await atomicWriteJson(path.join(f.paths.root, 'update-recovery.json'), { nextVersion: '1.20.1', previousCli: 'old-cli',
+      previousPolicy: { restored: true }, previousState: { activeVersion: '1.20.0' } });
+    await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), reason: 'Automatic Sentinel update to 1.20.1', kind: 'update' });
+    const stop = vi.fn(async () => true);
+    const run = vi.fn(async (_node, args) => ({ stdout: args.includes('--version') ? '1.20.0'
+      : args.includes('status') ? JSON.stringify({ watcherRunning: true, heartbeat: { gateVersion: '1.20.0' } }) : '' }));
+    expect(await rollBackInterruptedUpdate(f.context, { stop, run, root: f.deps.root, startedAt: async () => null }))
+      .toMatchObject({ rolledBack: true, version: '1.20.0', nextVersion: '1.20.1' });
+    expect(stop).toHaveBeenCalledOnce();
+    expect(await readJson(f.paths.policy)).toEqual({ restored: true });
+    expect(await readJson(updateMarker(f.paths))).toBeNull();
+    expect(await readJson(f.paths.paused)).toBeNull();
   });
 });

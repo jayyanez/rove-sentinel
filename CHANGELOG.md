@@ -53,11 +53,16 @@ cannot download.
   review directory a process's command line names and that directory's owner record, by
   descent from the provider recorded in the pause, which safety pauses now record, and by
   descent from those); otherwise it lists them, and `--stop-orphans` stops only those,
-  each while its PID keeps the start time it was listed with, then resumes. A stopped
+  each while its PID keeps the start time it was listed with, then resumes. A process
+  naming a review directory without an owner record cannot be traced to a repository: it
+  is listed, never counted or stopped. A pause now records who set it (`provider-cleanup`,
+  `update` or `manual`); a person's pause is never lifted, whatever its reason says, and a
+  pause is lifted only while it is still the record repair judged. One repair runs at a
+  time per repository; exit code 0 means every state is fixed or fine. A stopped
   watcher whose lock owner is gone or a reused PID is recovered and started the way install
   starts it (the Windows scheduled task); a hung watcher of this repository is stopped only
   with `--stop-orphans`. It also removes a dead submitter's queue lock, a stale store lock, a
-  daemon-lock takeover marker over ten minutes old and unreadable counters; rolls back an
+  daemon-lock takeover marker over a minute old and unreadable counters; rolls back an
   activation whose process is gone, from `update-recovery.json`; restarts a watcher of
   another engine or policy with `install --preserve-policy` once no review runs; and retries
   a waiting or failed update, naming the projects that hold a full store. It never lifts a

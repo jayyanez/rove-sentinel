@@ -536,7 +536,7 @@ export async function runPrePush({
           async shouldCancel() {
             const currentPause = await readPause(context.paths);
             if (currentPause) {
-              return `Shared review gate was paused while this push was waiting: ${currentPause.reason}`;
+              return `Shared review gate was paused while this push was waiting: ${String(currentPause.reason).replace(/\s*Run: [^\n]*$/, '').replace(/[.\s]+$/, '')}. Run: npx --no-install rove-sentinel repair`;
             }
             return await waitingWatcherProblem(context.paths, reviewPolicy.policyDigest);
           },

@@ -25,19 +25,24 @@ activation's own pause; the long-pause, failed-download and disabled-updates lin
 `repair`: review directories read from quoted, spaced and `--flag=` command lines; a
 process counted as this repository's only when its review directory's owner names this
 repository and runs no review, or it descends from the provider a safety pause recorded and
-started before it, never one of another repository; children stopped first and only while a
-PID keeps its listed start time; a safety pause (and one from an earlier engine) resumed
+started before it, never one of another repository, and one naming a directory without an
+owner record listed but never counted or stopped; children stopped first, only while a PID
+keeps its listed start time, and counted only when the system confirms the stop; a safety pause (and one from an earlier engine) resumed
 when no such process remains, kept with the processes listed and `--stop-orphans` named
-while they do, and resumed after that command stops them; a person's pause never lifted; an
+while they do, and resumed after that command stops them; a person's pause never lifted, even one whose reason
+reads like Sentinel's; one repair at a time per repository; an
 update's leftover pause lifted; a watcher whose lock owner is dead or a reused PID
 recovered and started; a hung watcher stopped only with `--stop-orphans`; a watcher that
 cannot start named with its command, and a repository without a watcher left alone; a
 watcher of another engine restarted only while no review runs; a dead submitter's queue
 lock, a stale store lock, an old takeover marker and an unreadable watcher lock handled; an
-interrupted activation rolled back and a running one waited for; a waiting or failed update
+interrupted activation rolled back, and only its fence removed when the journal beside it is
+an earlier update's; a running one waited for; unreadable update settings and the running
+processes that fill a store named; a waiting or failed update
 retried and a full store's holders named; a dry run changing nothing. `recover` and
-`resume` start the watcher, through the installed scheduled task or by naming install.
-The 42 new tests fail on 1.20.0. 1,071 tests passed on Windows, and the package smoke passed.
+`resume` start the watcher, through the installed scheduled task or by naming install, and
+a failing scheduler is reported rather than thrown.
+The 47 new tests fail on 1.20.0. 1,076 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store,
 paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in

@@ -437,11 +437,15 @@ async function main() {
     return;
   }
   if (command === 'resume') {
-    print(await resumeReviewGate({ repoRoot }), true);
+    const result = await resumeReviewGate({ repoRoot });
+    print(result, true);
+    if (result.watcher?.started === false) process.exitCode = 1;
     return;
   }
   if (command === 'recover') {
-    print(await recoverReviewGate({ repoRoot, reason: options.reason }), true);
+    const result = await recoverReviewGate({ repoRoot, reason: options.reason });
+    print(result, true);
+    if (result.watcher?.started === false) process.exitCode = 1;
     return;
   }
   if (command === 'help' || command === '--help' || command === '-h') {

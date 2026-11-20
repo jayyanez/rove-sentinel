@@ -362,6 +362,16 @@ describe('shared immutable runtime distribution', () => {
     expect(await removeStaleStoreLock(root, second)).toBe(false);
     expect(await removeStaleStoreLock(root, second)).toBe(true);
     await expect(readFile(lockFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    // A marker that never got its PID is abandoned after a minute, and kept before.
+    await writeFile(path.join(root, 'download.takeover'), '');
+    await writeFile(lockFile, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    const third = await inspectStoreLock(root);
+    expect(await removeStaleStoreLock(root, third)).toBe(false);
+    expect(await readFile(path.join(root, 'download.takeover'), 'utf8')).toBe('');
+    const minuteAgo = new Date(Date.now() - 2 * 60_000);
+    await utimes(path.join(root, 'download.takeover'), minuteAgo, minuteAgo);
+    expect(await removeStaleStoreLock(root, third)).toBe(false);
+    expect(await removeStaleStoreLock(root, third)).toBe(true);
     // A live remover's marker is respected.
     await writeFile(path.join(root, 'download.takeover'), JSON.stringify({ pid: process.pid }));
     await writeFile(lockFile, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));

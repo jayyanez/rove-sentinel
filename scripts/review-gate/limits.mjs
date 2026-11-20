@@ -139,7 +139,7 @@ export function sentinelLimits() {
       {
         rule: 'Run recover and install after a restart to bring a watcher back',
         unnecessarySince: '1.16.1',
-        why: 'A start replaces a lock when the machine booted after that lock\'s last heartbeat and its process is gone. Any other dead process\'s lock still needs both; status says why a watcher is stopped.',
+        why: 'A start replaces a lock when the machine booted after that lock\'s last heartbeat and its process is gone. Any other dead process\'s lock is cleared, and the watcher started, by rove-sentinel repair.',
       },
       {
         rule: 'Commit Sentinel\'s dependency, configuration and hook to use the push gate',

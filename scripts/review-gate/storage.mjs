@@ -1474,7 +1474,7 @@ export async function waitForDaemonHeartbeat(
       readJson(paths.daemonError).catch(() => null),
     ]);
     if (daemonError?.message) {
-      throw new Error(`The shared review watcher could not start: ${daemonError.message} State: ${paths.root}`);
+      throw new Error(`The shared review watcher could not start: ${String(daemonError.message).replace(/\s*Run: [^\n]*$/, '')} State: ${paths.root}. Run: npx --no-install rove-sentinel repair`);
     }
     if (daemonOwnerIsHealthy(lock, heartbeat)) {
       if (
@@ -1492,7 +1492,7 @@ export async function waitForDaemonHeartbeat(
     throw new Error(`The running shared review watcher has policy identity ${incompatibleHeartbeat.gateVersion || 'unknown'}/${incompatibleHeartbeat.charterVersion || 'unknown'}/${incompatibleHeartbeat.policyDigest || 'unknown'}, but this caller requires ${GATE_VERSION}/${CHARTER_VERSION}/${policyDigest || 'any installed digest'}. Run npx --no-install rove-sentinel install from your trusted main checkout.`);
   }
   const startLog = await readWatcherStartLog(paths);
-  throw new Error(`The shared review watcher did not produce a fresh matching owner heartbeat.${startLog ? ` It printed: ${startLog}` : ''}`);
+  throw new Error(`The shared review watcher did not produce a fresh matching owner heartbeat.${startLog ? ` It printed: ${startLog}` : ''} Run: npx --no-install rove-sentinel repair`);
 }
 
 export async function readPause(paths) {

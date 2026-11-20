@@ -1288,7 +1288,8 @@ export async function watcherReport(repoRoot, { status = gateStatus } = {}) {
 
 export async function pauseReviewGate({ repoRoot = process.cwd(), reason } = {}) {
   const context = await createGateContext(repoRoot);
-  return await pauseGate(context.paths, reason);
+  // A person's pause: repair never lifts it, whatever its reason says.
+  return await pauseGate(context.paths, reason, { kind: 'manual' });
 }
 
 /**
@@ -1308,20 +1309,20 @@ export async function startWatcher(
     timeoutMs = 60_000,
   } = {},
 ) {
-  const plan = buildInstallPlan({ platform, repoRoot: context.repoRoot, stateRoot: context.stateRoot });
   const install = 'npx --no-install rove-sentinel install';
-  // An earlier start's failure is not this one's.
-  await clearError(context.paths);
-  if (plan.unsupportedScheduler) {
-    await startDetached(context.repoRoot, context.stateRoot);
-  } else {
-    const query = await run(plan.query.command, plan.query.args, { allowFailure: true, timeoutMs: 30_000 });
-    if (!schedulerQueryInstalled(plan, query)) {
-      return { started: false, reason: 'no scheduled watcher is installed for this repository', next: `Run from the repository's trusted checkout: ${install}` };
-    }
-    await run(plan.start.command, plan.start.args, { timeoutMs: 120_000 });
-  }
   try {
+    const plan = buildInstallPlan({ platform, repoRoot: context.repoRoot, stateRoot: context.stateRoot });
+    // An earlier start's failure is not this one's.
+    await clearError(context.paths);
+    if (plan.unsupportedScheduler) {
+      await startDetached(context.repoRoot, context.stateRoot);
+    } else {
+      const query = await run(plan.query.command, plan.query.args, { allowFailure: true, timeoutMs: 30_000 });
+      if (!schedulerQueryInstalled(plan, query)) {
+        return { started: false, reason: 'no scheduled watcher is installed for this repository', next: `Run from the repository's trusted checkout: ${install}` };
+      }
+      await run(plan.start.command, plan.start.args, { timeoutMs: 120_000 });
+    }
     const heartbeat = await waitHeartbeat(context.paths, context.repoRoot, { timeoutMs });
     return { started: true, pid: heartbeat?.pid ?? null };
   } catch (error) {

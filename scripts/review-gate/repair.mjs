@@ -1,18 +1,18 @@
-import { readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  activationRuns, automaticUpdate, rollBackInterruptedUpdate, updateInformation, UPDATE_PAUSE,
+  activationRuns, automaticUpdate, rollBackInterruptedUpdate, updateInformation,
 } from './automatic-updates.mjs';
 import { engineRoot, engineStatePath, inspectStoreLock, removeStaleStoreLock, retainedVersions } from './engine-store.mjs';
 import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
-import { isSafetyPause, REPAIR_COMMAND, runProcess } from './process.mjs';
+import { pauseKind, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
 import {
-  daemonOwnerIsHealthy, isProcessAlive, readJson, recordEvent, resumeGate,
+  daemonOwnerIsHealthy, isProcessAlive, readJson, recordEvent, removeStoredJson,
 } from './storage.mjs';
 
 const ownCli = fileURLToPath(new URL('./cli.mjs', import.meta.url));
@@ -33,6 +33,9 @@ const ageOf = async (file, now) => {
   try { return now - (await stat(file)).mtimeMs; } catch { return null; }
 };
 const parse = (raw) => { try { return JSON.parse(raw); } catch { return undefined; } };
+const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').replace(/[.\s]+$/, '');
+// A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
+const TAKEOVER_ABANDONED_MS = 60_000;
 
 /**
  * Every process of this OS user that the system lists: PID, parent PID, name,
@@ -60,20 +63,41 @@ export async function listProcesses({ platform = process.platform, run = runProc
 /**
  * The Sentinel review directories a command line names: a provider runs with
  * its review context (`rove-review-context-…`) or checkout (`rove-review-…`) as
- * an argument. Quoted paths may hold spaces; unquoted ones end at a space.
+ * an argument. Quoted paths may hold spaces. Unquoted ones usually end at a
+ * space, but `ps` on macOS and Linux joins arguments with spaces, so a path
+ * with spaces is also tried from each earlier space, every candidate kept.
  */
-export function reviewDirectoriesIn(commandLine) {
+export function reviewDirectoryCandidates(commandLine) {
   const text = String(commandLine || '');
-  const found = new Set();
+  const absolute = (prefix) => /[\\/]$/.test(prefix) && /^(?:[A-Za-z]:)?[\\/]/.test(prefix) && !/["']/.test(prefix);
+  const groups = [];
   for (const match of text.matchAll(/rove-review-[A-Za-z0-9_.-]+/g)) {
     const before = text.slice(0, match.index);
     const quotes = (before.match(/"/g) || []).length;
-    const start = quotes % 2 === 1 ? before.lastIndexOf('"') + 1 : Math.max(before.lastIndexOf(' '), before.lastIndexOf('='), before.lastIndexOf("'")) + 1;
-    const prefix = before.slice(start);
-    if (!/[\\/]$/.test(prefix) || !/^(?:[A-Za-z]:)?[\\/]/.test(prefix)) continue;
-    found.add(`${prefix}${match[0]}`);
+    const candidates = [];
+    if (quotes % 2 === 1) {
+      const prefix = before.slice(before.lastIndexOf('"') + 1);
+      if (absolute(prefix)) candidates.push(`${prefix}${match[0]}`);
+    } else {
+      // Nearest first: after the last space or `=`, then from each earlier space.
+      let at = before.length;
+      const lastBreak = Math.max(before.lastIndexOf(' '), before.lastIndexOf('='), before.lastIndexOf("'"));
+      const starts = [lastBreak + 1];
+      at = before.lastIndexOf(' ');
+      while (starts.length < 12 && at > 0 && (at = before.lastIndexOf(' ', at - 1)) >= 0) starts.push(at + 1);
+      for (const start of starts) {
+        const prefix = before.slice(start);
+        if (absolute(prefix)) candidates.push(`${prefix}${match[0]}`);
+      }
+    }
+    if (candidates.length) groups.push(candidates);
   }
-  return [...found];
+  return groups;
+}
+
+/** The nearest reading of each review directory a command line names. */
+export function reviewDirectoriesIn(commandLine) {
+  return [...new Set(reviewDirectoryCandidates(commandLine).map((candidates) => candidates[0]))];
 }
 
 async function readOwner(directory) {
@@ -96,15 +120,6 @@ async function liveLeaseOwners(stateRoot, byPid) {
   return owners;
 }
 
-/** Live review leases in every Sentinel state folder of this OS user. */
-async function anyLiveReview(stateRoot, byPid) {
-  const base = path.dirname(stateRoot);
-  for (const entry of await readdir(base).catch(() => [])) {
-    if ((await liveLeaseOwners(path.join(base, entry), byPid)).size) return true;
-  }
-  return false;
-}
-
 const describe = (proc, why) => ({
   pid: proc.pid, name: proc.name, startedAt: proc.startedAt === null ? null : new Date(proc.startedAt).toISOString(),
   commandLine: proc.commandLine.length > EXCERPT ? `${proc.commandLine.slice(0, EXCERPT)}…` : proc.commandLine, why,
@@ -112,15 +127,15 @@ const describe = (proc, why) => ({
 
 /**
  * Processes left by this repository's reviews, which no running review owns:
- * - `repository`: its command line names a review directory whose owner record
- *   names this repository's checkout (or the watcher's), and the process that
- *   owns that directory holds no live review lease; or it descends from the
- *   provider recorded in this repository's safety pause and started before it;
- * - `unattributed`: it names a review directory that no longer has an owner
- *   record, so the repository is unknown; Sentinel stops it only when no review
- *   runs in any Sentinel state folder of this OS user;
- * and the live descendants of either. A process that names another repository's
- * review directory is that repository's and is never listed.
+ * its command line names a review directory whose owner record names this
+ * repository's checkout (or the watcher's), and the process that owns that
+ * directory holds no live review lease; or it is, or is a child of, the
+ * provider recorded in this repository's safety pause and started before it;
+ * and the live descendants of those. These are `orphans`, and only these are
+ * ever stopped. A process that names a review directory without an owner record
+ * cannot be traced to any repository: it is listed as `unattributed`, for the
+ * report, and neither blocks a resume nor is stopped. One that names another
+ * repository's review directory is that repository's and is not listed.
  */
 export async function findOrphans(context, { processes, pause = null, heartbeat = null, readOwnerRecord = readOwner } = {}) {
   const byPid = new Map(processes.map((proc) => [proc.pid, proc]));
@@ -128,18 +143,26 @@ export async function findOrphans(context, { processes, pause = null, heartbeat 
   const checkouts = new Set([context.repoRoot, heartbeat?.repoRoot].filter(Boolean).map(comparable));
   for (const checkout of [...checkouts]) checkouts.add(comparable(await realpath(checkout).catch(() => checkout)));
   const roots = new Map();
+  const unattributed = [];
   const pausedAt = Date.parse(pause?.pausedAt);
   const provider = Number.isInteger(pause?.provider?.pid) ? pause.provider.pid : null;
   for (const proc of processes) {
     if (proc.pid === process.pid) continue;
-    for (const directory of reviewDirectoriesIn(proc.commandLine)) {
-      const owner = await readOwnerRecord(directory);
-      if (!owner) { roots.set(proc.pid, { proc, kind: 'unattributed', why: `names ${directory}, which has no owner record` }); break; }
-      if (!checkouts.has(comparable(owner.repoRoot))) continue;
-      if (leases.has(owner.pid)) continue;
+    let unowned = null;
+    for (const candidates of reviewDirectoryCandidates(proc.commandLine)) {
+      // The reading whose directory has an owner record; with none, the nearest.
+      let directory = candidates[0];
+      let owner = null;
+      for (const candidate of candidates) {
+        owner = await readOwnerRecord(candidate);
+        if (owner) { directory = candidate; break; }
+      }
+      if (!owner) { unowned ??= directory; continue; }
+      if (!checkouts.has(comparable(owner.repoRoot)) || leases.has(owner.pid)) continue;
       roots.set(proc.pid, { proc, kind: 'repository', why: `names ${directory}, a review directory of this repository whose owner PID ${owner.pid} runs no review` });
       break;
     }
+    if (!roots.has(proc.pid) && unowned) unattributed.push({ ...describe(proc, `names ${unowned}, which has no owner record`), kind: 'unattributed' });
     if (!roots.has(proc.pid) && provider !== null && Number.isFinite(pausedAt) && proc.startedAt !== null && proc.startedAt <= pausedAt
       && (proc.pid === provider || proc.ppid === provider)) {
       roots.set(proc.pid, { proc, kind: 'repository', why: `is the provider process ${provider} of this repository's paused review, or its child` });
@@ -159,22 +182,30 @@ export async function findOrphans(context, { processes, pause = null, heartbeat 
       }
     }
   }
-  return [...found.values()].map(({ proc, kind, why }) => ({ ...describe(proc, why), kind, rawStartedAt: proc.startedAt }));
+  return {
+    orphans: [...found.values()].map(({ proc, kind, why }) => ({ ...describe(proc, why), kind, rawStartedAt: proc.startedAt })),
+    unattributed: unattributed.filter((entry) => !found.has(entry.pid)),
+  };
 }
 
 /**
  * Stops listed processes, children first, each only while its PID still has
- * the start time it was listed with. Returns the ones it stopped.
+ * the start time it was listed with (a process without a known start time is
+ * never stopped). Returns the ones the system confirmed it stopped.
  */
 export async function stopProcesses(targets, { platform = process.platform, run = runProcess, list = listProcesses, kill = process.kill } = {}) {
-  const now = new Map((await list({ platform, run })).map((proc) => [proc.pid, proc]));
   const stopped = [];
   for (const target of [...targets].reverse()) {
-    const current = now.get(target.pid);
-    if (!current || (target.rawStartedAt !== null && current.startedAt !== null && Math.abs(current.startedAt - target.rawStartedAt) > START_TOLERANCE_MS)) continue;
-    if (platform === 'win32') await run('taskkill.exe', ['/PID', String(target.pid), '/F'], { allowFailure: true, timeoutMs: 30_000 });
-    else { try { kill(target.pid, 'SIGKILL'); } catch (error) { if (error?.code !== 'ESRCH') throw error; } }
-    stopped.push(target.pid);
+    // Listed again for each: a PID can be reused while earlier ones are stopped.
+    const current = (await list({ platform, run })).find((proc) => proc.pid === target.pid);
+    if (!current || target.rawStartedAt === null || current.startedAt === null
+      || Math.abs(current.startedAt - target.rawStartedAt) > START_TOLERANCE_MS) continue;
+    if (platform === 'win32') {
+      const result = await run('taskkill.exe', ['/PID', String(target.pid), '/F'], { allowFailure: true, result: true, timeoutMs: 30_000 });
+      if ((result?.code ?? 0) === 0) stopped.push(target.pid);
+    } else {
+      try { kill(target.pid, 'SIGKILL'); stopped.push(target.pid); } catch (error) { if (error?.code !== 'ESRCH') throw error; }
+    }
   }
   return stopped;
 }
@@ -218,6 +249,29 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   const snapshot = async () => (processes ??= await list({ platform, run }));
   const fresh = async () => { processes = null; return snapshot(); };
 
+  // One repair at a time for a state folder: its checks and removals assume no other remover.
+  const lockFile = path.join(paths.root, 'repair.lock');
+  let held = null;
+  if (!dryRun) {
+    for (let attempt = 0; attempt < 2 && !held; attempt += 1) {
+      try {
+        held = await open(lockFile, 'wx', 0o600);
+        await held.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const holder = await readJson(lockFile).catch(() => null);
+        const age = await ageOf(lockFile, now());
+        if ((Number.isInteger(holder?.pid) && !isAlive(holder.pid)) || (!Number.isInteger(holder?.pid) && age !== null && age > UNFINISHED_RECORD_MS)) {
+          await rm(lockFile, { force: true });
+          continue;
+        }
+        step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${holder?.pid ?? 'unknown'}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
+        return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: false, steps };
+      }
+    }
+  }
+  try {
+
   // 1. The shared engine store's download lock.
   const storeLock = await inspectStoreLock(root, { isAlive, startedAt });
   if (storeLock.state === 'stale') {
@@ -251,8 +305,14 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     } else {
       try {
         const result = await rollBack(context, { isAlive: unfinished ? () => false : isAlive, startedAt, root, unfinished });
-        await audit('interrupted-activation-rolled-back', { markerPid: marker.pid, version: result.version, nextVersion: result.nextVersion });
-        step({ state: 'interrupted-activation', status: 'fixed', detail: `Rolled back the interrupted activation of ${result.nextVersion ?? marker.version}; ${result.version} runs again.` });
+        if (result.running) step({ state: 'interrupted-activation', status: 'busy', detail: `An update is activating now: ${result.reason}.`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
+        else if (!result.rolledBack) step({ state: 'interrupted-activation', status: 'ok', detail: `Nothing to roll back: ${result.reason}.` });
+        else {
+          await audit('interrupted-activation-rolled-back', { markerPid: marker.pid, version: result.version, nextVersion: result.nextVersion, unchanged: Boolean(result.unchanged) });
+          step({ state: 'interrupted-activation', status: 'fixed', detail: result.unchanged
+            ? `Removed the fence of an activation of ${result.nextVersion ?? 'an update'} that stopped before it changed anything.`
+            : `Rolled back the interrupted activation of ${result.nextVersion ?? marker.version}; ${result.version} runs again.` });
+        }
       } catch (error) {
         step({ state: 'interrupted-activation', status: 'blocked', detail: `The interrupted activation could not be rolled back: ${error?.message || String(error)}`, next: `Run again once the cause above is gone: ${REPAIR_COMMAND}` });
       }
@@ -273,15 +333,15 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   }
   // A daemon-lock replacement lasts milliseconds; its marker, this old, has no holder.
   const takeoverAge = await ageOf(paths.takeover, now());
-  if (takeoverAge !== null && takeoverAge > UNFINISHED_RECORD_MS) {
-    if (dryRun) step({ state: 'takeover-marker', status: 'would-fix', detail: `${paths.takeover} is ${Math.round(takeoverAge / 60_000)} minutes old; repair removes it.` });
+  if (takeoverAge !== null && takeoverAge > TAKEOVER_ABANDONED_MS) {
+    if (dryRun) step({ state: 'takeover-marker', status: 'would-fix', detail: `${paths.takeover} is ${Math.round(takeoverAge / 1000)} seconds old; repair removes it.` });
     else {
       await rm(paths.takeover, { force: true });
       await audit('takeover-marker-removed', { ageMs: takeoverAge });
-      step({ state: 'takeover-marker', status: 'fixed', detail: `Removed ${paths.takeover}, left ${Math.round(takeoverAge / 60_000)} minutes ago by a watcher start that died.` });
+      step({ state: 'takeover-marker', status: 'fixed', detail: `Removed ${paths.takeover}, left ${Math.round(takeoverAge / 1000)} seconds ago by a watcher start that died.` });
     }
   } else if (takeoverAge !== null) {
-    step({ state: 'takeover-marker', status: 'busy', detail: 'A watcher start is replacing the daemon lock.', next: `Run again in ten minutes: ${REPAIR_COMMAND}` });
+    step({ state: 'takeover-marker', status: 'busy', detail: 'A watcher start is replacing the daemon lock.', next: `Run again in one minute: ${REPAIR_COMMAND}` });
   }
   // 4. A pause, before any recovery removes the review directories that tell
   // this repository's leftover processes apart.
@@ -293,8 +353,12 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   // 7. An update waiting, or failed.
   await repairUpdate();
 
-  const blocked = steps.filter((entry) => entry.status === 'blocked');
-  return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: blocked.length === 0, steps };
+  } finally {
+    if (held) { await held.close().catch(() => {}); await rm(lockFile, { force: true }).catch(() => {}); }
+  }
+  // Done only when every state is fixed or fine: a busy or dry-run step still has work.
+  const ok = steps.every((entry) => ['fixed', 'ok'].includes(entry.status));
+  return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };
 
   async function repairWatcher() {
     const lockRaw = await readFile(paths.lock, 'utf8').catch(() => null);
@@ -415,6 +479,14 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     step({ state: 'queue-lock', status: 'fixed', detail: `Removed the review queue's submission lock of PID ${owner.pid}, which is not running.` });
   }
 
+  /** Lifts the pause only while it is still the record that was judged. */
+  async function liftPause(judged) {
+    const current = await readJson(paths.paused).catch(() => undefined);
+    if (JSON.stringify(current) !== JSON.stringify(judged)) return false;
+    await removeStoredJson(paths.paused);
+    return true;
+  }
+
   async function repairPause() {
     let paused;
     try { paused = await readJson(paths.paused); }
@@ -424,45 +496,44 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     }
     if (!paused) return;
     const reason = String(paused.reason ?? '');
-    if (reason.startsWith(UPDATE_PAUSE)) {
+    const kind = pauseKind(paused);
+    if (kind === 'update') {
       const fence = await readJson(updateMarker(paths)).catch(() => null);
       if (fence && await activationRuns(fence, { isAlive, startedAt })) return;
       if (dryRun) { step({ state: 'pause', status: 'would-fix', detail: 'An update left its pause with no activation running. Repair lifts it.' }); return; }
-      await resumeGate(paths);
+      if (!await liftPause(paused)) { step({ state: 'pause', status: 'busy', detail: 'The pause changed while repair read it.', next: `Run again: ${REPAIR_COMMAND}` }); return; }
       await audit('update-pause-lifted', { pause: paused });
       step({ state: 'pause', status: 'fixed', detail: 'Lifted the pause an update left with no activation running.' });
       return;
     }
-    if (!isSafetyPause(paused)) {
+    if (kind === 'manual') {
       step({ state: 'pause', status: 'blocked', detail: `A person paused reviews (${paused.pausedAt}): ${reason}. Repair never lifts a person's pause.`, next: 'Only if the person who asked for this repair asked you to lift that pause, run: npx --no-install rove-sentinel resume' });
       return;
     }
     const heartbeat = await readJson(paths.heartbeat).catch(() => null);
-    let orphans = await findOrphans(context, { processes: await snapshot(), pause: paused, heartbeat });
+    let { orphans, unattributed } = await findOrphans(context, { processes: await snapshot(), pause: paused, heartbeat });
     if (orphans.length && stopOrphans && !dryRun) {
-      const byPid = new Map((await snapshot()).map((proc) => [proc.pid, proc]));
-      const anyReview = orphans.some((orphan) => orphan.kind === 'unattributed') && await anyLiveReview(context.stateRoot, byPid);
-      const stoppable = orphans.filter((orphan) => orphan.kind === 'repository' || !anyReview);
-      const stopped = await stop(stoppable, { platform, run, list });
-      await audit('orphans-stopped', { pause: paused, stopped, processes: stoppable });
-      orphans = await findOrphans(context, { processes: await fresh(), pause: paused, heartbeat });
-      if (orphans.length && anyReview) {
-        step({ state: 'pause', status: 'blocked', detail: `Paused (${paused.pausedAt}): ${reason}. ${orphans.length} process(es) name review directories with no owner record, and a review runs now in another repository, so they may be its.`, processes: orphans, next: `Run again once that review finishes: ${STOP_ORPHANS}` });
-        return;
-      }
+      const stopped = await stop(orphans, { platform, run, list });
+      await audit('orphans-stopped', { pause: paused, stopped, processes: orphans });
+      ({ orphans, unattributed } = await findOrphans(context, { processes: await fresh(), pause: paused, heartbeat }));
     }
     if (orphans.length) {
-      step({ state: 'pause', status: dryRun && stopOrphans ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reason}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.`, processes: orphans, next: STOP_ORPHANS });
+      step({ state: 'pause', status: dryRun && stopOrphans ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
       return;
     }
-    if (dryRun) { step({ state: 'pause', status: 'would-fix', detail: `Paused (${paused.pausedAt}): ${reason}. No process of this repository's reviews remains; repair resumes.` }); return; }
-    await resumeGate(paths);
-    await audit('safety-pause-lifted', { pause: paused, processesChecked: (await snapshot()).length });
-    step({ state: 'pause', status: 'fixed', detail: `Resumed: no process left by this repository's reviews remains (${(await snapshot()).length} processes checked). The pause was: ${reason}` });
+    if (dryRun) { step({ state: 'pause', status: 'would-fix', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process of this repository's reviews remains; repair resumes.`, unattributed }); return; }
+    if (!await liftPause(paused)) { step({ state: 'pause', status: 'busy', detail: 'The pause changed while repair read it.', next: `Run again: ${REPAIR_COMMAND}` }); return; }
+    const checked = (await snapshot()).length;
+    await audit('safety-pause-lifted', { pause: paused, processesChecked: checked, unattributed });
+    step({ state: 'pause', status: 'fixed', detail: `Resumed: no process left by this repository's reviews remains (${checked} processes checked). The pause was: ${reasonText(reason)}.`, unattributed });
   }
 
   async function repairUpdate() {
     const information = await info(paths);
+    if (information.settingsError) {
+      step({ state: 'update-settings', status: 'blocked', detail: `update-settings.json cannot be read (${information.settingsError}), so automatic updates stop. Install turns them on.`, next: 'Run: npx --no-install rove-sentinel updates --enable' });
+      return;
+    }
     if (information.automatic !== true || platform !== 'win32') return;
     const phase = information.phase;
     if (!['waiting', 'download-failed', 'failed'].includes(phase)) return;
@@ -479,22 +550,30 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     const error = result.error ?? (await readJson(engineStatePath(paths)).catch(() => null))?.lastError ?? result.status;
     if (/^Runtime storage is full/.test(String(error))) {
       const holders = await storeHolders(root);
-      step({ state: 'update', status: 'blocked', detail: `${error}`, holders, next: holders.length ? `Run in each checkout listed: ${REPAIR_COMMAND}` : `Run again in ten minutes: ${REPAIR_COMMAND}` });
+      step({ state: 'update', status: 'blocked', detail: `${error}`, holders, next: holders.some((holder) => holder.repoRoot) ? `Run in each checkout listed: ${REPAIR_COMMAND}` : `Run again in ten minutes, after the processes listed exit: ${REPAIR_COMMAND}` });
       return;
     }
     step({ state: 'update', status: 'blocked', detail: `The update failed: ${error}`, next: `Run again in ten minutes: ${REPAIR_COMMAND}` });
   }
 }
 
-/** The projects whose records keep every slot of a full store, for the agent to repair next. */
+/**
+ * What keeps every slot of a full store: projects (repair them, or update them,
+ * in their checkouts) and running Sentinel processes (by PID and version; they
+ * end with their command).
+ */
 async function storeHolders(root) {
   const holders = [];
   for (const entry of await readdir(path.join(root, 'consumers')).catch(() => [])) {
     const record = await readJson(path.join(root, 'consumers', entry)).catch(() => null);
     if (record?.repoRoot) holders.push({ repoRoot: record.repoRoot, activeVersion: record.activeVersion ?? null, pendingVersion: record.pendingVersion ?? null });
   }
+  for (const entry of await readdir(path.join(root, 'processes')).catch(() => [])) {
+    const record = await readJson(path.join(root, 'processes', entry)).catch(() => null);
+    if (Number.isInteger(record?.pid) && isProcessAlive(record.pid)) holders.push({ pid: record.pid, version: record.version ?? null });
+  }
   const { required } = await retainedVersions(root);
-  return holders.filter((holder) => required.has(holder.activeVersion) || required.has(holder.pendingVersion));
+  return holders.filter((holder) => required.has(holder.activeVersion) || required.has(holder.pendingVersion) || required.has(holder.version));
 }
 
 /** The report as lines; each blocked one ends with the command to run. */
@@ -504,10 +583,12 @@ export function formatRepair(report) {
   for (const entry of report.steps) {
     lines.push(`  ${entry.status}: ${entry.state}: ${entry.detail}`);
     for (const proc of entry.processes ?? []) lines.push(`    PID ${proc.pid} ${proc.name} started ${proc.startedAt ?? 'unknown'} ${proc.why}: ${proc.commandLine}`);
-    for (const holder of entry.holders ?? []) lines.push(`    ${holder.repoRoot}: active ${holder.activeVersion ?? 'none'}, pending ${holder.pendingVersion ?? 'none'}`);
+    for (const holder of entry.holders ?? []) lines.push(holder.repoRoot ? `    ${holder.repoRoot}: active ${holder.activeVersion ?? 'none'}, pending ${holder.pendingVersion ?? 'none'}` : `    a running Sentinel process, PID ${holder.pid}, uses ${holder.version}`);
+    for (const proc of entry.unattributed ?? []) lines.push(`    (not counted: PID ${proc.pid} ${proc.name} ${proc.why})`);
     if (entry.next) lines.push(`    Next: ${entry.next}`);
   }
-  lines.push(report.ok ? 'Result: nothing is blocked now.' : 'Result: blocked; run each Next command above.');
+  lines.push(report.ok ? 'Result: nothing is blocked now.' : report.steps.some((entry) => entry.status === 'blocked')
+    ? 'Result: blocked; run each Next command above.' : 'Result: not finished; run each Next command above.');
   return lines.join('\n');
 }
 

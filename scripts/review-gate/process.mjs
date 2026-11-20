@@ -89,9 +89,20 @@ export const SAFETY_PAUSE_REASONS = {
 export function safetyPauseReason(code) {
   return `${code === 'ORPHANED_PROCESS_TREE' ? SAFETY_PAUSE_REASONS.orphaned : SAFETY_PAUSE_REASONS.unverified}; provider processes may remain. Run: ${REPAIR_COMMAND}`;
 }
-export function isSafetyPause(record) {
+/**
+ * Who paused: `provider-cleanup`, `update` and `manual` are recorded from 1.20.1.
+ * A pause without a kind was written by an earlier engine or a person, and is
+ * read by the openings those engines wrote.
+ */
+export function pauseKind(record) {
+  if (['provider-cleanup', 'update', 'manual'].includes(record?.kind)) return record.kind;
   const reason = String(record?.reason ?? '');
-  return record?.kind === 'provider-cleanup' || Object.values(SAFETY_PAUSE_REASONS).some((opening) => reason.startsWith(opening));
+  if (Object.values(SAFETY_PAUSE_REASONS).some((opening) => reason.startsWith(opening))) return 'provider-cleanup';
+  if (reason.startsWith('Automatic Sentinel update to ')) return 'update';
+  return 'manual';
+}
+export function isSafetyPause(record) {
+  return pauseKind(record) === 'provider-cleanup';
 }
 
 export function resetProviderCleanupLatch() {

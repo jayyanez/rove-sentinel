@@ -28,7 +28,7 @@ export function longPauseMessage({ pausedAt, reason }, project) {
 
 const newer = (pending, running) => stableVersion(pending) && (!stableVersion(running) || compareVersions(pending, running) > 0);
 
-const lastAttempt = (lastError) => (lastError ? ` Last attempt: ${clause(lastError)}.` : '');
+const lastAttempt = (lastError) => (lastError ? ` Last attempt: ${reasonClause(lastError)}.` : '');
 
 /**
  * One line per state, each ending with the command to run, so an agent that
@@ -48,9 +48,9 @@ export function updateMessage({ phase, activeVersion, pendingVersion, attemptedV
     return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.${lastAttempt(lastError)}`;
   }
   if (phase === 'download-failed' && newer(current, runningVersion)) {
-    return `Rove Sentinel ${current} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${clause(lastError)}.` : ''} ${RUN_REPAIR}`;
+    return `Rove Sentinel ${current} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${reasonClause(lastError)}.` : ''} ${RUN_REPAIR}`;
   }
-  if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active.${lastError ? ` ${clause(lastError)}.` : ''} ${RUN_REPAIR}`;
+  if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active.${lastError ? ` ${reasonClause(lastError)}.` : ''} ${RUN_REPAIR}`;
   if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. ${RUN_REPAIR}`;
   return null;
 }
