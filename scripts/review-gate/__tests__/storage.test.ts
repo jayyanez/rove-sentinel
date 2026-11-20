@@ -252,7 +252,7 @@ describe('shared review local state', () => {
     await expect(waitForDaemonHeartbeat(paths, 'C:\\second-checkout', {
       timeoutMs: 20,
       pollMs: 5,
-    })).rejects.toThrow('Run: npx --no-install rove-sentinel repair');
+    })).rejects.toThrow(/has policy identity .* Run: npx --no-install rove-sentinel repair$/);
   });
 
   it('surfaces the detached watcher startup cause instead of a generic heartbeat timeout', async () => {

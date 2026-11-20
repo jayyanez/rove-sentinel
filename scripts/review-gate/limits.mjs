@@ -97,7 +97,7 @@ export function sentinelLimits() {
       {
         id: 'repair',
         limit: 'one command',
-        text: 'Every blocked state (a paused or stopped watcher, a stale lock, an interrupted or failed update, a full store) either fixes itself when that is provably safe, or ends its message with: Run: npx --no-install rove-sentinel repair. repair verifies each state, acts when the checks pass, and otherwise prints the processes or records that stopped it and the next command. It never lifts a person\'s pause, and stops processes only with --stop-orphans and only those it can trace to this repository\'s reviews; a process naming a review directory without an owner record is listed, never stopped.',
+        text: 'Every blocked state (a paused or stopped watcher, a stale lock, an interrupted or failed update, a full store) either fixes itself when that is provably safe, or ends its message with: Run: npx --no-install rove-sentinel repair. repair verifies each state, acts when the checks pass, and otherwise prints the processes or records that stopped it and the next command. It never lifts a person\'s pause. It stops review processes only with --stop-orphans, and only those it can trace to this repository\'s reviews (a process naming a review directory without an owner record is listed, never stopped); rolling back an interrupted activation stops and restarts the watcher, as an activation does.',
       },
       {
         id: 'review-accounts',
@@ -139,7 +139,7 @@ export function sentinelLimits() {
       {
         rule: 'Run recover and install after a restart to bring a watcher back',
         unnecessarySince: '1.16.1',
-        why: 'A start replaces a lock when the machine booted after that lock\'s last heartbeat and its process is gone. Any other dead process\'s lock is cleared, and the installed watcher started, by rove-sentinel repair; with no scheduled watcher it names install.',
+        why: 'A start replaces a lock when the machine booted after that lock\'s last heartbeat and its process is gone. Any other dead process\'s lock is cleared, and an installed watcher started, by rove-sentinel repair.',
       },
       {
         rule: 'Commit Sentinel\'s dependency, configuration and hook to use the push gate',

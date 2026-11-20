@@ -264,14 +264,22 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
         if (error.code !== 'EEXIST') throw error;
         const holder = await readJson(lockFile).catch(() => null);
         const age = await ageOf(lockFile, now());
-        // A repair ends within REPAIR_BOUND_MS; an older lock's PID may be another process's now.
-        if ((Number.isInteger(holder?.pid) && !isAlive(holder.pid)) || (age !== null && age > REPAIR_BOUND_MS)) {
+        // A repair ends within REPAIR_BOUND_MS, so an older lock's PID may be another
+        // process's now; a lock that never got its owner is abandoned sooner.
+        const gone = Number.isInteger(holder?.pid)
+          ? !isAlive(holder.pid) || (age !== null && age > REPAIR_BOUND_MS)
+          : age !== null && age > UNFINISHED_RECORD_MS;
+        if (gone && attempt === 0) {
           await rm(lockFile, { force: true });
           continue;
         }
-        step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${holder?.pid ?? 'unknown'}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
-        return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: false, steps };
+        break;
       }
+    }
+    if (!held) {
+      const holder = await readJson(lockFile).catch(() => null);
+      step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${holder?.pid ?? 'unknown'}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
+      return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: false, steps };
     }
   }
   try {
@@ -412,6 +420,10 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       }
     }
     if (dryRun) {
+      if (!['win32', 'darwin'].includes(platform) && !lock && !heartbeat && !(await readJson(paths.daemonError).catch(() => null))) {
+        step({ state: 'watcher', status: 'ok', detail: 'No watcher has run for this repository on this computer.' });
+        return { running: false, installed: false };
+      }
       step({ state: 'watcher', status: 'would-fix', detail: `The watcher is not running (${why}). Repair clears its stale state and starts it the way install does.` });
       return { running: false };
     }
