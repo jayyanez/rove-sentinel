@@ -93,7 +93,7 @@ archive's `repair`, which the 1.20.1 launcher runs on the newest engine at hand.
 Windows (PowerShell):
 
 ```powershell
-$ErrorActionPreference='Stop'; $v='1.20.1'; $u="https://github.com/jayyanez/rove-sentinel/releases/download/v$v"; $f=Join-Path $env:TEMP ("rove-sentinel-$v-" + [guid]::NewGuid() + '.tgz'); Invoke-WebRequest "$u/rove-sentinel-$v.tgz" -OutFile $f -UseBasicParsing; Invoke-WebRequest "$u/SHA256SUMS" -OutFile "$f.sums" -UseBasicParsing; $h=((Get-Content "$f.sums" | Where-Object { $_ -match " rove-sentinel-$v\.tgz$" }) -split '\s+')[0]; if (-not $h -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $h) { throw "Checksum mismatch: do not run $f" }; npx --yes --package $f -- rove-sentinel repair
+$ErrorActionPreference='Stop'; $v='1.20.1'; $u="https://github.com/jayyanez/rove-sentinel/releases/download/v$v"; $f=[IO.Path]::Combine([IO.Path]::GetTempPath(), "rove-sentinel-$v-" + [guid]::NewGuid() + '.tgz'); $w=[Net.WebClient]::new(); $w.DownloadFile("$u/rove-sentinel-$v.tgz", $f); $w.DownloadFile("$u/SHA256SUMS", "$f.sums"); $h=(([IO.File]::ReadAllLines("$f.sums") | Where-Object { $_ -match " rove-sentinel-$v\.tgz$" }) -split '\s+')[0]; $a=-join ([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($f)) | ForEach-Object { $_.ToString('x2') }); if (-not $h -or $a -ne $h) { throw "Checksum mismatch: do not run $f" }; npx --yes --package $f -- rove-sentinel repair
 ```
 
 macOS:
