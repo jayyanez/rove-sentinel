@@ -9,7 +9,7 @@ import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, processStartedAt, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
 import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
-import { pauseKind, REPAIR_COMMAND, runProcess } from './process.mjs';
+import { pauseKind, REPAIR_BOOTSTRAP, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { checkForUpdates, compareVersions } from './updates.mjs';
 import { longPauseMessage, notifyUpdate, updateMessage } from './update-notifications.mjs';
 
@@ -110,7 +110,12 @@ export async function watcherHolds(paths, { isAlive = processAlive, startedAt = 
   return holds;
 }
 
-export async function updateInformation(paths, { holds = watcherHolds } = {}) {
+/**
+ * `gateVersion`: the engine the watcher should run, the repository's selected
+ * one; a repair on a newer engine passes it, so the watcher it judges is not
+ * called outdated for running the engine the repository selects.
+ */
+export async function updateInformation(paths, { holds = watcherHolds, gateVersion } = {}) {
   const state = await readJson(engineStatePath(paths));
   const phase = state?.phase || 'idle';
   const pendingVersion = state?.pendingVersion || null;
@@ -119,7 +124,7 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
   // Waiting: whatever keeps the release waiting. Activating: only what shows
   // the activation is gone or cannot be checked; a live one stops its watcher
   // and pauses on purpose.
-  const found = ['waiting', 'activating'].includes(phase) && pendingVersion ? await holds(paths) : [];
+  const found = ['waiting', 'activating'].includes(phase) && pendingVersion ? await holds(paths, gateVersion ? { gateVersion } : {}) : [];
   if (settingsError && ['waiting', 'activating'].includes(phase) && pendingVersion) {
     found.unshift({ kind: 'unreadable', since: null, reason: `update-settings: ${settingsError}`,
       action: `Run: ${REPAIR_COMMAND}` });
@@ -128,7 +133,9 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
     pendingVersion, attemptedVersion: state?.attemptedVersion || null, phase,
     lastAttempt: state?.lastAttempt || null, lastError: state?.lastError || null,
-    blockedBy: phase === 'waiting' ? found : found.filter((hold) => ['interrupted', 'unreadable'].includes(hold.kind)) };
+    blockedBy: phase === 'waiting' ? found : found.filter((hold) => ['interrupted', 'unreadable'].includes(hold.kind)),
+    // What to run, and what to run when this repository's engine has no repair.
+    ...(found.length ? { repair: { command: REPAIR_COMMAND, ifUnknownCommand: REPAIR_BOOTSTRAP } } : {}) };
 }
 
 /**

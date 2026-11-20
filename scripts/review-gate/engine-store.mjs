@@ -3,7 +3,7 @@ import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { processStartedAt } from './maintenance.mjs';
-import { runProcess } from './process.mjs';
+import { REPAIR_BOOTSTRAP_HINT, runProcess } from './process.mjs';
 import { atomicWriteJson, readJson, stateRootFor } from './storage.mjs';
 import { RELEASE_REPOSITORY, compareVersions, releaseUrls, stableVersion } from './updates.mjs';
 
@@ -42,6 +42,47 @@ export async function publishEngineState(paths, state, root = engineRoot()) {
     pendingVersion: state.pendingVersion,
   });
   await atomicWriteJson(engineStatePath(paths), { schemaVersion: 1, ...state });
+}
+
+/**
+ * The engine a `repair` runs on: the newest of the launcher's own, the active
+ * one and every verified ready copy in the shared store, and never one older
+ * than the active engine, which it repairs. A newer engine knows every state an
+ * older one leaves; an older one may not know the command at all.
+ */
+export async function repairEngine(paths, bundledCli, bundledVersion, root = engineRoot()) {
+  const state = await readJson(engineStatePath(paths)).catch(() => null);
+  const active = stableVersion(state?.activeVersion) ? state.activeVersion : null;
+  const candidates = stableVersion(bundledVersion) ? [{ version: bundledVersion, cli: bundledCli }] : [];
+  for (const version of (await readdir(path.join(root, 'versions')).catch(() => [])).filter(stableVersion)) {
+    const ready = await readJson(path.join(engineDirectory(version, root), 'ready.json')).catch(() => null);
+    const cli = engineCli(version, root);
+    if (ready?.version === version && ready?.schemaVersion === 1 && await stat(cli).then(() => true, () => false)) candidates.push({ version, cli });
+  }
+  const eligible = candidates.filter((candidate) => !active || compareVersions(candidate.version, active) >= 0)
+    .sort((a, b) => compareVersions(b.version, a.version));
+  if (!eligible.length) throw new Error(`No engine as new as the active ${active} is installed to repair this repository. ${REPAIR_BOOTSTRAP_HINT}`);
+  return eligible[0].cli;
+}
+
+/**
+ * Frees one slot of a full store, as a download would: versions nothing keeps,
+ * then copies kept only for a rollback, oldest first; never one a project has
+ * active or pending or a running process uses. An older engine's download then
+ * fits. Returns what it removed; throws the store-full error when nothing can go.
+ */
+export async function makeStoreRoom(root = engineRoot(), { maxVersions = 5, lockWaitMs = 30_000 } = {}) {
+  const lockFile = path.join(root, 'download.lock');
+  await mkdir(path.join(root, 'versions'), { recursive: true });
+  if ((await readdir(path.join(root, 'versions'))).filter(stableVersion).length < maxVersions) return { removed: [] };
+  const lock = await lockStore(root, lockFile, 'repair', lockWaitMs);
+  if (!lock.release) return { busy: true, owner: lock.owner };
+  try {
+    const removed = await collectionPlan(root, maxVersions);
+    await removeDisplaced(root, removed);
+    if (removed.length) await recordStoreEvent(root, { type: 'store-room-made', removed });
+    return { removed };
+  } finally { await lock.release(); }
 }
 
 export async function selectedEngine(paths, bundledCli, bundledVersion, root = engineRoot()) {

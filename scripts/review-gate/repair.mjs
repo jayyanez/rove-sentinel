@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   activationRuns, automaticUpdate, fenceJournal, rollBackInterruptedUpdate, updateInformation,
 } from './automatic-updates.mjs';
-import { engineRoot, engineStatePath, inspectStoreLock, removeStaleStoreLock, retainedVersions } from './engine-store.mjs';
+import { engineRoot, engineStatePath, inspectStoreLock, makeStoreRoom, removeStaleStoreLock, retainedVersions } from './engine-store.mjs';
 import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
@@ -245,9 +245,24 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     isAlive = isProcessAlive, startedAt = processStartedAt, waitMs = 30_000, now = Date.now,
     reinstall = async (repo) => run(process.execPath, [ownCli, 'install', '--preserve-policy', '--repo', repo],
       { cwd: repo, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024 }),
+    // The repository's own command, through its launcher: its selected engine.
+    sentinel = async (repo, args) => (platform === 'win32'
+      ? run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `& npx --no-install rove-sentinel ${args.map((arg) => `'${arg}'`).join(' ')}; exit $LASTEXITCODE`], { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 })
+      : run('npx', ['--no-install', 'rove-sentinel', ...args], { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 })),
+    selectedVersionOf = async (repo) => {
+      const recorded = (await readJson(engineStatePath(paths)).catch(() => null))?.activeVersion;
+      if (recorded) return recorded;
+      try { return (await sentinel(repo, ['--version'])).stdout.trim(); } catch { return GATE_VERSION; }
+    },
+    makeRoom = makeStoreRoom,
   } = deps;
   const context = await contextFor(repoRoot);
   const { paths } = context;
+  // The engine this repository selects. The launcher runs repair on the newest
+  // engine at hand, which may be newer: the watcher is then judged against the
+  // selected engine, and the update runs through the repository's own command.
+  const selectedVersion = await selectedVersionOf(context.repoRoot);
+  const onSelected = selectedVersion === GATE_VERSION;
   const steps = [];
   const step = (entry) => { steps.push(entry); return entry; };
   const audit = (action, evidence) => (dryRun ? null : recordEvent(paths, { type: 'repair', action, ...evidence }));
@@ -501,10 +516,13 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   async function repairOutdatedWatcher(heartbeat) {
     let digest = null;
     try { digest = reviewPolicySnapshot(await readJson(paths.policy)).policyDigest; } catch { digest = null; }
-    if (heartbeat.gateVersion === GATE_VERSION && heartbeat.charterVersion === CHARTER_VERSION && (!digest || heartbeat.policyDigest === digest)) {
+    // On another engine than the selected one, only the engine version can be
+    // judged: charter and policy digests are the selected engine's to compute.
+    if (heartbeat.gateVersion === selectedVersion && (!onSelected
+      || (heartbeat.charterVersion === CHARTER_VERSION && (!digest || heartbeat.policyDigest === digest)))) {
       return { running: true, heartbeat };
     }
-    const detail = `The watcher runs ${heartbeat.gateVersion ?? 'an unknown engine'}${digest && heartbeat.policyDigest !== digest ? ' with another policy than the installed one' : ''}; this engine is ${GATE_VERSION}.`;
+    const detail = `The watcher runs ${heartbeat.gateVersion ?? 'an unknown engine'}${digest && heartbeat.policyDigest !== digest ? ' with another policy than the installed one' : ''}; this repository selects ${selectedVersion}.`;
     if (comparable(heartbeat.repoRoot ?? context.repoRoot) !== comparable(context.repoRoot)) {
       step({ state: 'watcher', status: 'blocked', detail: `${detail} It runs from another checkout.`, next: `Run in ${heartbeat.repoRoot}: ${REPAIR_COMMAND}` });
       return { running: true, heartbeat };
@@ -516,7 +534,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     }
     if (dryRun) { step({ state: 'watcher', status: 'would-fix', detail: `${detail} Repair restarts it with install --preserve-policy, which keeps the installed policy.` }); return { running: true, heartbeat }; }
     try {
-      await reinstall(context.repoRoot);
+      // The selected engine installs its own watcher.
+      if (onSelected) await reinstall(context.repoRoot);
+      else await sentinel(context.repoRoot, ['install', '--preserve-policy']);
       await audit('outdated-watcher-restarted', { from: heartbeat.gateVersion ?? null, to: GATE_VERSION });
       step({ state: 'watcher', status: 'fixed', detail: `${detail} Restarted it with the installed policy.` });
     } catch (error) {
@@ -590,7 +610,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   }
 
   async function repairUpdate() {
-    const information = await info(paths);
+    const information = await info(paths, { gateVersion: selectedVersion });
     if (information.settingsError) {
       step({ state: 'update-settings', status: 'blocked', detail: `update-settings.json cannot be read (${information.settingsError}), so automatic updates stop. Install turns them on.`, next: 'Run: npx --no-install rove-sentinel updates --enable' });
       return;
@@ -603,7 +623,15 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       return;
     }
     if (dryRun) { step({ state: 'update', status: 'would-fix', detail: `The update is ${phase}. Repair retries it now.` }); return; }
-    const result = await update({ repoRoot: context.repoRoot, force: true });
+    // A full store refuses an older engine's download, which cannot free a slot itself.
+    const room = await makeRoom(root).catch((error) => ({ error }));
+    if (room.removed?.length) {
+      await audit('store-room-made', { removed: room.removed });
+      step({ state: 'store', status: 'fixed', detail: `Freed a slot of the full engine store: removed ${room.removed.join(', ')}, kept only for a rollback or by nothing.` });
+    }
+    // The update runs on the selected engine, as the watcher's would.
+    const result = onSelected ? await update({ repoRoot: context.repoRoot, force: true })
+      : await sentinel(context.repoRoot, ['update']).then((output) => JSON.parse(output.stdout), (error) => ({ status: 'download-failed', error: error?.message || String(error) }));
     await audit('update-retried', { phase, result: result.status, error: result.error ?? null });
     if (result.status === 'updated') { step({ state: 'update', status: 'fixed', detail: `Activated Rove Sentinel ${result.version}.` }); return; }
     if (['current', 'ahead'].includes(result.status)) { step({ state: 'update', status: 'ok', detail: 'No newer release is waiting.' }); return; }

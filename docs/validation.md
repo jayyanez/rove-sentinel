@@ -42,7 +42,12 @@ processes that fill a store named; a waiting or failed update
 retried and a full store's holders named; a dry run changing nothing. `recover` and
 `resume` start the watcher, through the installed scheduled task or by naming install, and
 a failing scheduler is reported rather than thrown.
-The 49 new tests fail on 1.20.0. 1,078 tests passed on Windows, and the package smoke passed.
+The launcher runs `repair` on the newest engine at hand and never one older than the
+active one; a repair on a newer engine judges the watcher against the selected engine and
+updates through the repository's command; a full store gives one slot; the PowerShell
+bootstrap line, pointed at a local server, refuses an archive whose SHA-256 does not match
+and runs one that does (the macOS line was not run); and the runbook carries both lines
+exactly. The 55 new tests fail on 1.20.0. 1,084 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store,
 paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in

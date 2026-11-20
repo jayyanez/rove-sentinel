@@ -61,6 +61,54 @@ never one a person set with `rove-sentinel pause`, whatever its reason says.
 `recover` now starts the watcher after clearing its state, and `resume` starts a
 watcher that is not running; both report the result under `watcher`.
 
+### Which engine runs `repair`
+
+From 1.20.1 the launcher runs `repair` on the newest engine at hand: its own,
+the repository's active engine, or a verified copy in the shared engine store,
+and never one older than the active engine, which it repairs. A repair on a
+newer engine judges the watcher against the engine the repository selects, and
+runs the update through the repository's own command, on that engine; when the
+store is full it first frees a slot, as a 1.20.1 download would.
+
+### Repair on an engine before 1.20.1
+
+A repository whose active engine predates 1.20.1 (its launcher pinned earlier
+and its update blocked) answers `repair` with `Unknown review-gate command:
+repair`. Then run, in the repository, one of these lines. Each downloads the
+1.20.1 release archive and that release's `SHA256SUMS`, refuses to go on unless
+the archive's SHA-256 matches, as the updater checks an engine, and runs that
+archive's `repair`, which the 1.20.1 launcher runs on the newest engine at hand.
+
+Windows (PowerShell):
+
+```powershell
+$v='1.20.1'; $u="https://github.com/jayyanez/rove-sentinel/releases/download/v$v"; $f=Join-Path $env:TEMP "rove-sentinel-$v.tgz"; Invoke-WebRequest "$u/rove-sentinel-$v.tgz" -OutFile $f -UseBasicParsing; Invoke-WebRequest "$u/SHA256SUMS" -OutFile "$f.sums" -UseBasicParsing; $h=((Get-Content "$f.sums" | Where-Object { $_ -match " rove-sentinel-$v\.tgz$" }) -split '\s+')[0]; if (-not $h -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $h) { throw "Checksum mismatch: do not run $f" }; npx --yes --package $f -- rove-sentinel repair
+```
+
+macOS:
+
+```sh
+v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="${TMPDIR:-/tmp}/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" | grep " rove-sentinel-$v.tgz$" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair
+```
+
+The checksum comes from the same release, so this is an integrity check, not
+an independent signature: it trusts GitHub and the release publisher, as the
+updater does. The repair then retries the update, after which the repository's
+own `repair` works.
+
+Engines before 1.20.1 print these for the states above; each means: run the
+line above.
+
+| An engine before 1.20.1 prints | Its state |
+| --- | --- |
+| `Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.` or `Windows provider parent exited before inherited pipes closed; inspect remaining provider processes before resuming.` | A safety pause |
+| `Review daemon lock belongs to dead PID …; refusing automatic removal because another starter may have replaced it.` | A stopped watcher |
+| `Runtime storage is full of versions retained by projects or running processes.` | A full engine store |
+| `Another or interrupted runtime download owns …download.lock` | A stale store lock |
+| `Another or interrupted update exists: …` or `Sentinel is being updated. Retry after it finishes; inspect … if interrupted.` | An interrupted activation |
+| `updates` shows `"phase": "waiting"` or `"download-failed"` for days | An update the watcher keeps waiting |
+
+
 ## A shard reviewer failed and the gate failed closed
 
 "N shard reviewer(s) failed after retry" means the only reviewer of some hunks

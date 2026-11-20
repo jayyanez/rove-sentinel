@@ -37,6 +37,7 @@ async function fixture({ processes = [] as Proc[] } = {}) {
     rollBack: vi.fn(async () => ({ rolledBack: true, version: '1.20.0', nextVersion: '1.20.1' })),
     update: vi.fn(async () => ({ status: 'updated', version: '1.20.1' })),
     startedAt: async () => null, waitMs: 0, reinstall: vi.fn(async () => ({})),
+    selectedVersionOf: async () => GATE_VERSION, sentinel: vi.fn(async () => ({ stdout: '{}' })),
   };
   const healthy = async (extra = {}) => {
     await atomicWriteJson(paths.lock, { ownerToken: 'owner-token', pid: process.pid, startedAt: new Date().toISOString() });
