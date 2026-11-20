@@ -254,39 +254,46 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   // One repair at a time for a state folder: its checks and removals assume no other remover.
   const lockFile = path.join(paths.root, 'repair.lock');
   let held = null;
+  const create = async () => {
+    const handle = await open(lockFile, 'wx', 0o600);
+    try { await handle.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() })); }
+    catch (error) { await handle.close().catch(() => {}); await rm(lockFile, { force: true }); throw error; }
+    return handle;
+  };
   if (!dryRun) {
-    for (let attempt = 0; attempt < 2 && !held; attempt += 1) {
-      try {
-        held = await open(lockFile, 'wx', 0o600);
-        try { await held.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() })); }
-        catch (error) { await held.close().catch(() => {}); held = null; await rm(lockFile, { force: true }); throw error; }
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        const raw = await readFile(lockFile, 'utf8').catch(() => null);
-        const holder = raw === null ? null : parse(raw);
-        const age = await ageOf(lockFile, now());
-        // A repair ends within REPAIR_BOUND_MS, so an older lock's PID may be another
-        // process's now; a lock that never got its owner is abandoned sooner.
-        const gone = Number.isInteger(holder?.pid)
-          ? !isAlive(holder.pid) || (age !== null && age > REPAIR_BOUND_MS)
-          : age !== null && age > UNFINISHED_RECORD_MS;
-        if (!gone || attempt > 0 || raw === null) break;
-        // Takers serialize on repair.takeover, and remove the lock only while it
-        // still holds what was judged: a lock another taker just made stays.
+    try { held = await create(); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const raw = await readFile(lockFile, 'utf8').catch(() => null);
+      const holder = raw === null ? null : parse(raw);
+      const age = await ageOf(lockFile, now());
+      // A repair ends within REPAIR_BOUND_MS, so an older lock's PID may be another
+      // process's now; a lock that never got its owner is abandoned sooner.
+      const gone = raw !== null && (Number.isInteger(holder?.pid)
+        ? !isAlive(holder.pid) || (age !== null && age > REPAIR_BOUND_MS)
+        : age !== null && age > UNFINISHED_RECORD_MS);
+      if (gone) {
+        // Takers serialize on repair.takeover; under it, the lock is removed only
+        // while it holds what was judged, and the taker's own lock is in place
+        // before the marker is released.
         const takeover = path.join(paths.root, 'repair.takeover');
-        let marker;
+        let marker = null;
         try { marker = await open(takeover, 'wx', 0o600); }
         catch (markerError) {
           if (markerError.code !== 'EEXIST') throw markerError;
           const markerAge = await ageOf(takeover, now());
           if (markerAge !== null && markerAge > TAKEOVER_ABANDONED_MS) await rm(takeover, { force: true });
-          break;
         }
-        try {
-          if (await readFile(lockFile, 'utf8').catch(() => null) === raw) await rm(lockFile, { force: true });
-        } finally {
-          await marker.close().catch(() => {});
-          await rm(takeover, { force: true }).catch(() => {});
+        if (marker) {
+          try {
+            if (await readFile(lockFile, 'utf8').catch(() => null) === raw) {
+              await rm(lockFile, { force: true });
+              held = await create().catch(() => null);
+            }
+          } finally {
+            await marker.close().catch(() => {});
+            await rm(takeover, { force: true }).catch(() => {});
+          }
         }
       }
     }
@@ -327,7 +334,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) {
       step({ state: 'interrupted-activation', status: 'busy', detail: `An update to ${marker.version} is activating now (PID ${marker.pid}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
     } else if (dryRun) {
-      const journal = await fenceJournal(paths, marker).catch((error) => ({ error }));
+      const journal = await fenceJournal(paths, marker).then((found) => (found.journalIsThisUpdate
+        && !(found.recovery.previousPolicy && found.recovery.previousCli && found.recovery.previousState)
+        ? { error: new Error('update-recovery.json beside the fence is incomplete, so the engine before the update is unknown.') } : found), (error) => ({ error }));
       step({ state: 'interrupted-activation', status: journal.error ? 'blocked' : 'would-fix', detail: journal.error
         ? `The activation of ${marker.version} stopped (PID ${marker.pid} is gone), but ${journal.error.message}`
         : journal.journalIsThisUpdate

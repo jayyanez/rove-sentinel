@@ -190,7 +190,7 @@ export async function fenceJournal(paths, marker) {
   catch (error) { throw new Error(`update-recovery.json beside ${updateMarker(paths)} cannot be read (${error?.message || String(error)}), so the engine before the update is unknown. Run from the repository's trusted checkout: npx --no-install rove-sentinel install`); }
   const [fenceTime, journalTime] = await Promise.all([updateMarker(paths), journalPath]
     .map((file) => stat(file).then((info) => info.mtimeMs, () => null)));
-  const named = Number.isInteger(recovery?.fence?.pid) && Number.isFinite(Date.parse(recovery?.fence?.startedAt));
+  const named = Number.isInteger(recovery?.fence?.pid) && typeof recovery?.fence?.startedAt === 'string' && Number.isFinite(Date.parse(recovery.fence.startedAt));
   const journalIsThisUpdate = Boolean(recovery) && (named
     ? recovery.fence.pid === marker.pid && recovery.fence.startedAt === marker.startedAt
     : journalTime !== null && (fenceTime === null || journalTime >= fenceTime) && (!marker.version || recovery.nextVersion === marker.version));
