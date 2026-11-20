@@ -85,6 +85,24 @@ describe('the watcher a repair on a newer engine judges', () => {
 });
 
 describe('a repair on a newer engine than the repository selects', () => {
+  it('prints every Next line as the bootstrap with its options, never the repository\'s own repair', async () => {
+    const base = await temp();
+    const paths = await ensureState(path.join(base, 'state'));
+    const repoRoot = path.join(base, 'checkout');
+    await mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    const context = { repoRoot, stateRoot: paths.root, paths };
+    // A hung watcher of this repository, on the old selected engine.
+    const startedAt = Date.now() - 60_000;
+    await atomicWriteJson(paths.lock, { pid: 888, ownerToken: 'hung-owner', startedAt: new Date(startedAt + 1_000).toISOString() });
+    const report = await repairRepository({ repoRoot }, {
+      contextFor: async () => context, root: path.join(base, 'engines'), platform: 'win32', waitMs: 0,
+      list: async () => [{ pid: 888, ppid: 1, name: 'node.exe', commandLine: `node cli.mjs watch --daemon --repo ${repoRoot}`, startedAt }],
+      selectedVersionOf: async () => '1.18.0', startedAt: async () => null,
+    });
+    const next = report.steps.find((entry) => entry.state === 'watcher')?.next;
+    expect(next).toBe(`${REPAIR_BOOTSTRAP} -- --stop-orphans`);
+    expect(report.steps.every((entry) => !entry.next?.includes('npx --no-install rove-sentinel repair'))).toBe(true);
+  });
   it('judges the watcher against the selected engine and updates through the repository\'s own command', async () => {
     const base = await temp();
     const paths = await ensureState(path.join(base, 'state'));
@@ -139,7 +157,7 @@ describe('the bootstrap for an engine before 1.20.1', () => {
   // The published line, through this platform's shell, pointed at a local
   // server and with its npx run replaced by a marker: the verification is what
   // is tested, not the repair it then runs.
-  async function bootstrap(sums: (digest: string) => string) {
+  async function bootstrap(sums: (digest: string) => string, options: string[] = []) {
     const archive = Buffer.from('synthetic release archive');
     const digest = createHash('sha256').update(archive).digest('hex');
     const server = createServer((request, response) => {
@@ -151,12 +169,13 @@ describe('the bootstrap for an engine before 1.20.1', () => {
     const { port } = server.address() as { port: number };
     const command = REPAIR_BOOTSTRAP
       .replace('https://github.com/jayyanez/rove-sentinel/releases/download', `http://localhost:${port}`)
-      .replace(/const w=process\.platform.*?process\.exitCode=r\.status\?\?1/, "console.log('VERIFIED')");
-    expect(command).toContain("console.log('VERIFIED')");
+      .replace(/,r=w===false.*?process\.exitCode=r\.status\?\?1/, ";console.log('VERIFIED '+q.join(' '))");
+    expect(command).toContain("console.log('VERIFIED '");
+    const line = options.length ? `${command} -- ${options.join(' ')}` : command;
     const temporary = await temp();
     const shell = process.platform === 'win32'
-      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${command}; exit $LASTEXITCODE`]]
-      : ['sh', ['-c', command]];
+      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${line}; exit $LASTEXITCODE`]]
+      : ['sh', ['-c', line]];
     try {
       return await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
         // Its temporary folder is this test's, removed after it.
@@ -178,6 +197,15 @@ describe('the bootstrap for an engine before 1.20.1', () => {
     expect(missing.stderr).toContain('Checksum mismatch');
     const ok = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`);
     expect(ok.status).toBe(0);
-    expect(ok.stdout).toContain('VERIFIED');
+    expect(ok.stdout).toMatch(/VERIFIED .* rove-sentinel repair\s*$/m);
+  }, 120_000);
+  it('passes repair\'s own options on after --, and refuses any other before downloading', async () => {
+    const passed = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`, ['--stop-orphans', '--json']);
+    expect(passed.status).toBe(0);
+    expect(passed.stdout).toMatch(/VERIFIED .* rove-sentinel repair --stop-orphans --json\s*$/m);
+    const refused = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`, ['--force']);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('Not a repair option: --force');
+    expect(refused.stdout).not.toContain('VERIFIED');
   }, 120_000);
 });

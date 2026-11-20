@@ -47,9 +47,10 @@ active one; a repair on a newer engine judges the watcher against the selected e
 updates through the repository's command; a full store gives one slot; the bootstrap line,
 run through PowerShell and pointed at a local server with its npx run replaced by a marker,
 refuses an archive whose SHA-256 does not match or is not listed and reaches the marker for one
-that does (by hand, the same line served a packed 1.20.1 archive and ran its launcher through
+that does, passes `--stop-orphans` and `--json` on after `--` and refuses any other option; a
+repair on a newer engine than the selected one prints its Next lines as that line with options (by hand, the same line served a packed 1.20.1 archive and ran its launcher through
 npx; it was not run on macOS); and the runbook carries the line
-exactly. The 57 new tests fail on 1.20.0. 1,086 tests passed on Windows, and the package smoke passed.
+exactly. The 59 new tests fail on 1.20.0. 1,088 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store,
 paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in

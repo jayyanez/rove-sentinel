@@ -10,7 +10,7 @@ import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
 import { readInstallation } from './local.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
-import { pauseKind, REPAIR_COMMAND, runProcess } from './process.mjs';
+import { pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { stableVersion } from './updates.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
@@ -333,7 +333,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       step(other !== null
         ? { state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` }
         : { state: 'repair', status: 'blocked', detail: `The lease of a repair that is gone cannot be removed: ${stuck}.`, next: `Run again once that file can be removed: ${REPAIR_COMMAND}` });
-      return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: false, steps };
+      return finish(false);
     }
   }
   try {
@@ -433,8 +433,23 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   }
   for (const entry of steps) if (entry.status === 'would-fix' && !entry.next) entry.next = `Run: ${REPAIR_COMMAND}${stopOrphans ? ' --stop-orphans' : ''}`;
   // Done only when every state is fixed or fine: a busy or dry-run step still has work.
-  const ok = steps.every((entry) => ['fixed', 'ok'].includes(entry.status));
-  return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };
+  return finish(steps.every((entry) => ['fixed', 'ok'].includes(entry.status)));
+
+  /**
+   * On a newer engine than the repository selects, the repository's own
+   * `repair` would run its older engine, which may not know the command: every
+   * Next line then names the bootstrap with the same options, which reaches an
+   * engine at least as new as this one.
+   */
+  function finish(ok) {
+    if (!onSelected) {
+      for (const entry of steps) {
+        if (entry.next) entry.next = entry.next.replace(/npx --no-install rove-sentinel repair((?: --[a-z-]+)*)/g,
+          (_match, options) => repairBootstrap(options.trim() ? options.trim().split(/\s+/) : []));
+      }
+    }
+    return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };
+  }
 
   async function repairWatcher() {
     const lockRaw = await readFile(paths.lock, 'utf8').catch(() => null);
