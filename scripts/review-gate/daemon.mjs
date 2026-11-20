@@ -13,6 +13,8 @@ import { syncPullRequests } from './github.mjs';
 import {
   blockNewProcessLaunches,
   processTreeCleanupFailureCode,
+  providerCleanupFailureRecord,
+  safetyPauseReason,
   terminateActiveProcesses,
 } from './process.mjs';
 import {
@@ -49,12 +51,8 @@ export async function pauseForUnrecoverableProviderTree(
   if (!cleanupCode) {
     return false;
   }
-  await pause(
-    context.paths,
-    cleanupCode === 'ORPHANED_PROCESS_TREE'
-      ? 'Windows provider parent exited before inherited pipes closed; inspect remaining provider processes before resuming.'
-      : 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.',
-  );
+  await pause(context.paths, safetyPauseReason(cleanupCode),
+    { kind: 'provider-cleanup', provider: providerCleanupFailureRecord() });
   return true;
 }
 

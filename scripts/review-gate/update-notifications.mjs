@@ -1,12 +1,57 @@
 import path from 'node:path';
-import { runProcess } from './process.mjs';
+import { REPAIR_COMMAND, runProcess } from './process.mjs';
 import { atomicWriteJson, readJson } from './storage.mjs';
+import { compareVersions, stableVersion } from './updates.mjs';
 
-export function updateMessage({ phase, activeVersion, pendingVersion, lastError }, project) {
+const HOLDS = {
+  paused: 'the review watcher is paused',
+  stopped: 'the review watcher is not running',
+  unreadable: 'the review watcher cannot be checked',
+  outdated: 'the review watcher runs another engine or policy',
+  'queue-lock': 'the review queue is locked',
+  interrupted: 'an earlier activation was interrupted',
+};
+
+const RUN_REPAIR = `Run: ${REPAIR_COMMAND}`;
+const clause = (text) => String(text).replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '');
+// A reason that already names the repair command: the line names it once, at its end.
+const reasonClause = (text) => clause(String(text).replace(/\s*Run: [^\n]*$/, ''));
+
+/** One hold from `watcherHolds`, as a clause; the line it ends up in names the command. */
+export function describeHold({ kind, since, reason }) {
+  return `${HOLDS[kind] ?? 'the review watcher holds it'}${since ? ` (since ${since})` : ''}: ${reasonClause(reason)}`;
+}
+
+export function longPauseMessage({ pausedAt, reason }, project) {
+  return `The review watcher for ${project} has been paused since ${pausedAt}: ${reasonClause(reason)}. Pushes without a passing review are refused and no update activates until it resumes. ${RUN_REPAIR}`;
+}
+
+const newer = (pending, running) => stableVersion(pending) && (!stableVersion(running) || compareVersions(pending, running) > 0);
+
+const lastAttempt = (lastError) => (lastError ? ` Last attempt: ${reasonClause(lastError)}.` : '');
+
+/**
+ * One line per state, each ending with the command to run, so an agent that
+ * reads a review log acts on the line itself.
+ */
+export function updateMessage({ phase, activeVersion, pendingVersion, attemptedVersion, lastError, blockedBy, runningVersion, automatic }, project) {
   if (phase === 'active') return `Rove Sentinel updated to ${activeVersion} for ${project}. New reviews use it; existing agents can continue.`;
-  if (phase === 'waiting') return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.`;
-  if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active. ${lastError || ''}`;
-  if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. Run rove-sentinel updates for details.`;
+  // `automatic` is false only where updates are switched off; a notification's state has no such field.
+  const current = phase === 'download-failed' ? attemptedVersion || pendingVersion : pendingVersion;
+  if (automatic === false && ['waiting', 'download-failed'].includes(phase) && newer(current, runningVersion)) {
+    return `Rove Sentinel ${current} was downloading or downloaded for ${project}, but automatic updates are disabled here (updates --disable, or ROVE_SENTINEL_AUTO_UPDATE=0), so it will not activate. To turn them back on where that variable is not set, run: npx --no-install rove-sentinel updates --enable`;
+  }
+  if (['waiting', 'activating'].includes(phase) && blockedBy?.length) {
+    return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join('; ')}.${lastAttempt(lastError)} ${RUN_REPAIR}`;
+  }
+  if (phase === 'waiting') {
+    return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.${lastAttempt(lastError)}`;
+  }
+  if (phase === 'download-failed' && newer(current, runningVersion)) {
+    return `Rove Sentinel ${current} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${reasonClause(lastError)}.` : ''} ${RUN_REPAIR}`;
+  }
+  if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active.${lastError ? ` ${reasonClause(lastError)}.` : ''} ${RUN_REPAIR}`;
+  if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. ${RUN_REPAIR}`;
   return null;
 }
 

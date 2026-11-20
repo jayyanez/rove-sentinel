@@ -40,6 +40,26 @@ SSH and HTTPS clones of the same GitHub repository share state. Only one healthy
 watcher may own that identity: install it from a stable canonical checkout.
 Different remotes are different repositories, even if their file trees look alike.
 
+## When Sentinel reports a blocked state
+
+Every line in which Sentinel reports a paused or stopped watcher, a lock left
+by a process that is gone, or an update that cannot proceed ends with
+`Run: npx --no-install rove-sentinel repair`. A project's agent instructions can
+carry this, as written:
+
+> When any Rove Sentinel output reports a paused, stopped, locked or blocked
+> state, or an update that does not activate, run
+> `npx --no-install rove-sentinel repair` in that repository and run each of its
+> `Next:` lines exactly as printed. If `repair` is an unknown command, the active
+> engine predates 1.20.1: run the bootstrap line from Rove Sentinel's
+> troubleshooting guide, section "Repair on an engine before 1.20.1"
+> (<https://github.com/jayyanez/rove-sentinel/blob/main/docs/troubleshooting.md#repair-on-an-engine-before-1201>),
+> in that repository, then run each `Next:` line it prints exactly as printed:
+> while the old engine is active, those that run repair are that same line with
+> options after `--` (such as `-- --stop-orphans`).
+
+See the [runbook](troubleshooting.md#runbook-for-agents) for what `repair` checks.
+
 ## Updates across projects
 
 Downloads are shared under the OS account, so two projects can reuse the same

@@ -73,6 +73,52 @@ export function providerCleanupFailureDetail() {
   return `${command}${pid === null ? '' : ` (pid ${pid})`}: ${reason}`;
 }
 
+/** The provider whose cleanup failed, for the pause record: repair traces its descendants. */
+export function providerCleanupFailureRecord() {
+  if (!providerCleanupFailure) return null;
+  return { pid: providerCleanupFailure.pid, command: providerCleanupFailure.command };
+}
+
+export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
+// For a repository whose active engine predates 1.20.1, which has no `repair`:
+// one line, the same in PowerShell, Windows PowerShell and a POSIX shell.
+// Node (which npx needs anyway) downloads the 1.20.1 archive and that release's
+// SHA256SUMS, refuses the archive unless its SHA-256 matches, as the updater
+// checks an engine, writes it to a new temporary folder and runs its repair
+// through npx (npm's npx-cli.js beside Node on Windows, else the npx on PATH);
+// the 1.20.1 launcher then runs repair on the newest engine at hand. It uses
+// Node's fetch, as the updater does, with the same proxy support. The script holds no double quote, $, backtick or !, so no shell
+// rewrites it, and it calls no PowerShell module, so a constrained or
+// module-less PowerShell runs it as well.
+export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.1',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
+export const REPAIR_BOOTSTRAP = `node -e "${REPAIR_BOOTSTRAP_SCRIPT}"`;
+// repair's options pass after `--`; the script refuses any other.
+export const repairBootstrap = (options = []) => (options.length ? `${REPAIR_BOOTSTRAP} -- ${options.join(' ')}` : REPAIR_BOOTSTRAP);
+// The two safety pauses a failed provider cleanup writes. Earlier engines wrote
+// the same openings, so repair recognises their pauses too.
+export const SAFETY_PAUSE_REASONS = {
+  orphaned: 'Windows provider parent exited before inherited pipes closed',
+  unverified: 'Provider process-tree cleanup could not be verified',
+};
+export function safetyPauseReason(code) {
+  return `${code === 'ORPHANED_PROCESS_TREE' ? SAFETY_PAUSE_REASONS.orphaned : SAFETY_PAUSE_REASONS.unverified}; provider processes may remain. Run: ${REPAIR_COMMAND}`;
+}
+/**
+ * Who paused: `provider-cleanup`, `update` and `manual` are recorded from 1.20.1.
+ * A pause without a kind was written by an earlier engine or a person, and is
+ * read by the openings those engines wrote.
+ */
+export function pauseKind(record) {
+  if (['provider-cleanup', 'update', 'manual'].includes(record?.kind)) return record.kind;
+  const reason = String(record?.reason ?? '');
+  if (Object.values(SAFETY_PAUSE_REASONS).some((opening) => reason.startsWith(opening))) return 'provider-cleanup';
+  if (reason.startsWith('Automatic Sentinel update to ')) return 'update';
+  return 'manual';
+}
+export function isSafetyPause(record) {
+  return pauseKind(record) === 'provider-cleanup';
+}
+
 export function resetProviderCleanupLatch() {
   providerCleanupFailure = null;
 }
@@ -176,7 +222,7 @@ export async function terminateProcessTree(
   if (!child.pid) return;
   if (platform === 'win32') {
     const throwOrphanedTree = () => {
-      const error = new Error(`Provider process ${child.pid} exited before its inherited pipes closed. Windows can no longer identify that process tree by the recorded parent PID; stop the watcher and inspect remaining provider processes before retrying.`);
+      const error = new Error(`Provider process ${child.pid} exited before its inherited pipes closed. Windows can no longer identify that process tree by the recorded parent PID, and provider processes may remain. Run: npx --no-install rove-sentinel repair`);
       error.code = 'ORPHANED_PROCESS_TREE';
       throw error;
     };

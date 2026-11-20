@@ -915,7 +915,7 @@ async function acquireQueueSubmissionLock(paths, { timeoutMs = 5_000 } = {}) {
         .then((value) => JSON.parse(value))
         .catch(() => null);
       if (Number.isInteger(owner?.pid) && owner.pid > 0 && !isProcessAlive(owner.pid)) {
-        throw new Error(`Shared review queue submission lock belongs to dead PID ${owner.pid}; refusing automatic removal because another submitter may have replaced it. Inspect npx --no-install rove-sentinel status, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" before retrying.`);
+        throw new Error(`Shared review queue submission lock belongs to dead PID ${owner.pid}; refusing automatic removal because another submitter may have replaced it. Run: npx --no-install rove-sentinel repair`);
       }
       await sleep(25);
     }
@@ -1243,7 +1243,7 @@ export async function withTakeoverMarker(
     if (age === null || age < TAKEOVER_MARKER_IN_USE_MS) {
       throw Object.assign(new Error(`Another Sentinel process is replacing the review daemon lock. Retry shortly. Marker: ${paths.takeover}`), { code: 'TAKEOVER_IN_USE' });
     }
-    throw new Error(`A replacement of the review daemon lock never finished. Confirm no Sentinel process is working in ${paths.root}, delete ${paths.takeover}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>".`);
+    throw new Error(`A replacement of the review daemon lock never finished; ${paths.takeover} remains. Run: npx --no-install rove-sentinel repair`);
   }
   try {
     return await work();
@@ -1332,7 +1332,7 @@ export async function acquireDaemonLock(
   try {
     existing = await read(paths.lock, missingLock);
   } catch (error) {
-    throw new Error(`Review daemon lock is unreadable or still initializing; refusing to remove it during concurrent startup. Retry shortly, or inspect ${paths.root} and run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" if it remains invalid. ${error?.message || String(error)}`);
+    throw new Error(`Review daemon lock is unreadable or still initializing; refusing to remove it during concurrent startup. ${error?.message || String(error)} Run: npx --no-install rove-sentinel repair`);
   }
   if (existing === missingLock) return await tryAcquire();
   if (
@@ -1341,7 +1341,7 @@ export async function acquireDaemonLock(
     typeof existing?.ownerToken !== 'string' ||
     existing.ownerToken.length < 8
   ) {
-    throw new Error(`Review daemon lock is invalid or still initializing; refusing to remove it during concurrent startup. Retry shortly, or inspect ${paths.root} and run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" if it remains invalid.`);
+    throw new Error(`Review daemon lock is invalid or still initializing; refusing to remove it during concurrent startup. Run: npx --no-install rove-sentinel repair`);
   }
   const heartbeat = await read(paths.heartbeat).catch(() => null);
   if (daemonOwnerIsHealthy(existing, heartbeat)) return null;
@@ -1390,9 +1390,9 @@ export async function acquireDaemonLock(
   }
   if (current?.ownerToken !== existing.ownerToken || daemonOwnerIsHealthy(current, currentHeartbeat)) return null;
   if (isAlive(existing?.pid)) {
-    throw new Error(`Review daemon lock names live PID ${existing.pid} without a fresh matching owner heartbeat; refusing to trust a possibly reused PID. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" to clear it without signaling that PID.`);
+    throw new Error(`Review daemon lock names live PID ${existing.pid} without a fresh matching owner heartbeat; refusing to trust a possibly reused PID. Run: npx --no-install rove-sentinel repair`);
   }
-  throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}; refusing automatic removal because another starter may have replaced it. Inspect ${paths.root}, then run npx --no-install rove-sentinel recover --reason "<why the owner is stale>" before retrying.`);
+  throw new Error(`Review daemon lock belongs to dead PID ${existing.pid}; refusing automatic removal because another starter may have replaced it. Run: npx --no-install rove-sentinel repair`);
 }
 
 export async function writeHeartbeat(paths, details = {}) {
@@ -1474,7 +1474,7 @@ export async function waitForDaemonHeartbeat(
       readJson(paths.daemonError).catch(() => null),
     ]);
     if (daemonError?.message) {
-      throw new Error(`The shared review watcher could not start: ${daemonError.message} State: ${paths.root}`);
+      throw new Error(`The shared review watcher could not start: ${String(daemonError.message).replace(/\s*Run: [^\n]*$/, '')} State: ${paths.root}. Run: npx --no-install rove-sentinel repair`);
     }
     if (daemonOwnerIsHealthy(lock, heartbeat)) {
       if (
@@ -1489,10 +1489,10 @@ export async function waitForDaemonHeartbeat(
     await sleep(pollMs);
   }
   if (incompatibleHeartbeat) {
-    throw new Error(`The running shared review watcher has policy identity ${incompatibleHeartbeat.gateVersion || 'unknown'}/${incompatibleHeartbeat.charterVersion || 'unknown'}/${incompatibleHeartbeat.policyDigest || 'unknown'}, but this caller requires ${GATE_VERSION}/${CHARTER_VERSION}/${policyDigest || 'any installed digest'}. Run npx --no-install rove-sentinel install from your trusted main checkout.`);
+    throw new Error(`The running shared review watcher has policy identity ${incompatibleHeartbeat.gateVersion || 'unknown'}/${incompatibleHeartbeat.charterVersion || 'unknown'}/${incompatibleHeartbeat.policyDigest || 'unknown'}, but this caller requires ${GATE_VERSION}/${CHARTER_VERSION}/${policyDigest || 'any installed digest'}. Run: npx --no-install rove-sentinel repair`);
   }
   const startLog = await readWatcherStartLog(paths);
-  throw new Error(`The shared review watcher did not produce a fresh matching owner heartbeat.${startLog ? ` It printed: ${startLog}` : ''}`);
+  throw new Error(`The shared review watcher did not produce a fresh matching owner heartbeat.${startLog ? ` It printed: ${startLog}` : ''} Run: npx --no-install rove-sentinel repair`);
 }
 
 export async function readPause(paths) {
@@ -1504,10 +1504,10 @@ export async function readPause(paths) {
   }
 }
 
-export async function pauseGate(paths, reason) {
+export async function pauseGate(paths, reason, details = {}) {
   const normalized = String(reason || '').trim();
   if (normalized.length < 8) throw new Error('A pause reason of at least 8 characters is required.');
-  const value = { pausedAt: new Date().toISOString(), reason: normalized };
+  const value = { pausedAt: new Date().toISOString(), reason: normalized, ...details };
   await atomicWriteJson(paths.paused, value);
   return value;
 }

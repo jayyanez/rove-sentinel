@@ -21,7 +21,24 @@ npx --no-install rove-sentinel status
 npx --no-install rove-sentinel --version
 ```
 
-A downloaded release can remain **waiting** while another review runs. **Active**
+A downloaded release can remain **waiting** while another review runs. It
+activates only once a running watcher of the active engine and the installed
+policy acknowledges an idle pause, with its state readable and no earlier
+activation's fence left. So a watcher that is **paused** (a safety pause after a
+provider cleanup that could not be verified is deliberate, and nothing lifts it
+on its own), **not running**, running **another engine or policy**, a queue
+**submission lock** left by a dead process, unreadable state, or an
+**interrupted** activation keeps it waiting indefinitely. `updates` and `status`
+then list each hold under `blockedBy`, with its time and reason, and `gate`,
+`pre-push`, `status` and `doctor` print one line saying so, which ends with
+`Run: npx --no-install rove-sentinel repair`. `repair` verifies each hold and
+lifts it when that is provably safe, or names the processes or records that stop
+it and the next command ([runbook](troubleshooting.md#runbook-for-agents)); the
+watcher then activates the release within about ten minutes. Those commands also print a line for a pause older than
+a day, with or without an update waiting, for a download that failed while its
+release is still newer than the running engine, for update settings they cannot
+read, and for a release that will not activate because automatic updates are
+disabled. **Active**
 means the new watcher passed its health check and new commands select that engine.
 Existing Claude Code and Codex sessions can continue; their next Sentinel command
 uses the selected version. An already running Sentinel review retains its version
@@ -29,8 +46,8 @@ until it finishes. There is no need to restart Claude Code or Codex just for thi
 
 `failed` means activation failed and the previous watcher was restored.
 `recovery-required` means restoration could not be verified: review stays fenced
-until the retained recovery information is inspected. Do not treat either as a
-successful update. `download-failed` leaves the running engine unchanged.
+until `npx --no-install rove-sentinel repair` rolls the activation back. Do not
+treat either as a successful update. `download-failed` leaves the running engine unchanged.
 
 ## Control automatic updates
 
@@ -88,18 +105,36 @@ watcher. Runtime files are never replaced in place.
 State is under Sentinel's OS-user state directory (shown by `status`). Per-project
 files include `engine.json`, `update-settings.json`, `update-recovery.json` and, during activation,
 `update-in-progress.json`. An interrupted transaction leaves its fence and backup;
-do not delete them merely to unblock a push. Inspect the recorded PIDs, restore
-the previous policy and runtime from the backup, verify watcher health, then remove
-the transaction marker and its update pause. Report incomplete recovery with the
-retained paths. Other projects remain independent.
+do not delete them merely to unblock a push. `npx --no-install rove-sentinel repair`
+recovers it once the process that wrote the fence is gone (its PID, and on Windows
+its start time): it stops any watcher, restores the previous policy and runtime
+from the backup, reinstalls with that runtime, verifies its watcher, then removes
+the fence and its update pause, and retries the update. Other projects remain
+independent.
 
-The shared engine store retains at most five installed versions. References from
-projects and live processes protect versions from collection; the previous managed
-version remains available for rollback. If every slot is retained, downloading
-pauses with an actionable error. Inactive projects may need deliberate state
-retirement before more versions fit. A download interrupted by process termination
-can leave `download.lock` and `staging`; inspect the recorded owner before clearing
-these failed-download artifacts. Never remove a directory used by a live process.
+The shared engine store retains at most five installed versions. A version a
+project has active or pending, or that a live process uses, is never collected.
+A project's previous version stays available for rollback while there is room:
+when the store is full, a new release removes versions nothing references, then
+copies kept only as some project's rollback, oldest first, once it is downloaded
+and verified, so a failed download removes nothing. A project reusing a version
+already in the store reserves it and checks it while it holds the store's lock,
+so a collection either reads that reservation or has already removed the copy,
+which is then downloaded again. A lock whose owner is provably gone is removed
+first (below). A project record
+whose checkout no longer exists keeps only its active version, since clones of
+one remote share one selection and another clone may still run it. If every slot
+is still required, the download fails with an error naming those versions, and
+review commands print it; uninstall or update inactive projects, or end processes
+running an old version, before more versions fit. A download interrupted by process termination
+can leave `download.lock` and `staging`. From 1.20.1 the lock records its owner's
+PID and start time, and the next download (or `repair`) removes both once that
+owner is provably gone: its PID is not running, or runs a process started at
+another time. A lock from an earlier engine records only a PID, so only a PID
+that no longer runs proves it gone. Removers take `download.takeover`
+exclusively and remove the lock only while it still holds what they judged, and
+each removal is logged in the store's `store-events.jsonl`. Never remove a
+directory used by a live process.
 
 ## Discovery without installation
 

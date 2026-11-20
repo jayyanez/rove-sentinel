@@ -356,7 +356,8 @@ describe('shared review PR comment', () => {
 
     expect(pause).toHaveBeenCalledWith(
       context.paths,
-      expect.stringContaining('inspect remaining provider processes'),
+      expect.stringContaining('Run: npx --no-install rove-sentinel repair'),
+      expect.objectContaining({ kind: 'provider-cleanup' }),
     );
   });
 
@@ -381,6 +382,7 @@ describe('shared review PR comment', () => {
     expect(pause).toHaveBeenCalledWith(
       context.paths,
       expect.stringContaining('cleanup could not be verified'),
+      expect.objectContaining({ kind: 'provider-cleanup' }),
     );
   });
 
@@ -402,7 +404,8 @@ describe('shared review PR comment', () => {
 
     expect(pause).toHaveBeenCalledWith(
       context.paths,
-      expect.stringContaining('inspect remaining provider processes'),
+      expect.stringContaining('Run: npx --no-install rove-sentinel repair'),
+      expect.objectContaining({ kind: 'provider-cleanup' }),
     );
   });
 

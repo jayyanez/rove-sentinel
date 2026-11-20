@@ -1,5 +1,63 @@
 # Standalone validation record
 
+## 1.20.1 updates that cannot proceed say so, and `repair` fixes them — 2026-11-19
+
+Deterministic tests cover a full engine store removing copies kept only for a rollback,
+oldest by version rather than by name, before refusing a new release, and none when the
+download fails or the verified runtime cannot be put in place; active, pending and running
+versions never removed, and the refusal naming them; a project record whose checkout is gone
+keeping only its active version; reservations written and taken back only while the store's
+lock is held, and a store left over its cap trimmed on the next install.
+
+Store locks: a live owner's lock waited for, with an error ending in the repair command; a
+dead owner's lock and its staging removed and logged; a lock never given an owner removed
+only after ten minutes; a reused PID told from the owner by its start time, and an earlier
+engine's lock judged by its PID alone; a lock another start put in place after the verdict
+never removed; a dead remover's takeover marker cleared and a live one respected.
+
+Holds and lines: `updates` listing a safety pause, a stopped watcher, a live watcher of
+another engine or policy, a dead submitter's queue lock, an interrupted activation's pause
+and fence (a reused PID included, where the system reports start times) and every
+unreadable record, without lifting anything; every such line ending with
+`Run: npx --no-install rove-sentinel repair`, once; no hold for a running watcher or a live
+activation's own pause; the long-pause, failed-download and disabled-updates lines.
+
+`repair`: review directories read from quoted, spaced and `--flag=` command lines; a
+process counted as this repository's only when its review directory's owner names this
+repository and runs no review, or it descends from the provider a safety pause recorded and
+started before it, never one of another repository, and one naming a directory without an
+owner record listed but never counted or stopped; children stopped first, only while a PID
+keeps its listed start time, and counted only when `taskkill` succeeds (on macOS and Linux, when the signal is sent); a pause is lifted only after a fresh listing finds none left; a safety pause (and one from an earlier engine) resumed
+when no such process remains, kept with the processes listed and `--stop-orphans` named
+while they do, and resumed after that command stops them; a person's pause never lifted, even one whose reason
+reads like Sentinel's; one repair at a time per repository; an
+update's leftover pause lifted; a watcher whose lock owner is dead or a reused PID
+recovered and started; a hung watcher stopped only with `--stop-orphans`; a watcher that
+cannot start named with its command, and a repository without a watcher left alone; a
+watcher of another engine restarted only while no review runs; a dead submitter's queue
+lock, a stale store lock, an old takeover marker and an unreadable watcher lock handled; an
+interrupted activation rolled back, and only its fence removed when the journal beside it is
+an earlier update's; a running one waited for; unreadable update settings and the running
+processes that fill a store named; a waiting or failed update
+retried and a full store's holders named; a dry run changing nothing. `recover` and
+`resume` start the watcher, through the installed scheduled task or by naming install, and
+a failing scheduler is reported rather than thrown.
+The launcher runs `repair` on the newest engine at hand and never one older than the
+active one; a repair on a newer engine judges the watcher against the selected engine and
+updates through the repository's command; a full store gives one slot; the bootstrap line,
+run through PowerShell and pointed at a local server with its npx run replaced by a marker,
+refuses an archive whose SHA-256 does not match or is not listed and reaches the marker for one
+that does, passes `--stop-orphans` and `--json` on after `--` (as it does `--dry-run`, not tested) and
+refuses `--force`; a repair on a newer engine than the selected one prints the Next lines that
+run repair as that line with options (by hand, the same line served a packed 1.20.1 archive and ran its launcher through
+npx; it was not run on macOS); and the runbook carries the line
+exactly. The 61 new tests fail on 1.20.0. 1,090 tests passed on Windows, and the package smoke passed.
+
+Not run live: the fix was not installed on a host with consumer projects, and no full store,
+paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in
+dry-run mode against a real installation, where it reported a watcher of another engine
+running from another checkout. The failures it addresses were read from one host's state.
+
 ## 1.20.0 GPT-6.2 Sol by default — 2026-11-18
 
 Deterministic tests cover GPT-6.2 Sol as every Codex role's default; Codex 0.159.0 and

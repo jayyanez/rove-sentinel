@@ -15,9 +15,9 @@ import { checkModels } from './modelCheck.mjs';
 import { describeProviderHold, readProviderHolds } from './usageLimits.mjs';
 import { describeAccountHold, loadAccounts, readAccountState, requesterAccountKeys } from './accounts.mjs';
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
-import { automaticUpdate, configureAutomaticUpdates, updateInformation } from './automatic-updates.mjs';
+import { automaticUpdate, configureAutomaticUpdates, reviewNotices, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
-import { updateMessage } from './update-notifications.mjs';
+import { formatRepair, repairRepository } from './repair.mjs';
 
 import { runWatcher } from './daemon.mjs';
 import {
@@ -212,11 +212,12 @@ async function main() {
     print(options.json ? sentinelLimits() : formatLimits(), Boolean(options.json));
     return;
   }
-  if (['gate', 'pre-push', 'doctor'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {
+  // An update the watcher keeps waiting, and a pause left for days, are said where people look.
+  if (['gate', 'pre-push', 'doctor', 'status'].includes(command) && process.env.ROVE_SENTINEL_UPDATE_NOTIFICATIONS !== '0') {
     try {
-      const context = await createGateContext(repoRoot);
-      const notice = updateMessage(await updateInformation(context.paths), path.basename(context.repoRoot));
-      if (notice) process.stderr.write(`${notice}\n`);
+      // The state the command itself uses: a review's --state-root selects another one.
+      const context = await createGateContext(repoRoot, { stateRoot: ['gate', 'pre-push'].includes(command) ? options['state-root'] : undefined });
+      for (const notice of await reviewNotices(context.paths, path.basename(context.repoRoot))) process.stderr.write(`${notice}\n`);
     } catch { /* Notifications cannot change review behavior. */ }
   }
   if (command === 'update-check') {
@@ -425,16 +426,26 @@ async function main() {
     print(result, true);
     return;
   }
+  if (command === 'repair') {
+    const report = await repairRepository({ repoRoot, dryRun: Boolean(options['dry-run']), stopOrphans: Boolean(options['stop-orphans']) });
+    print(options.json ? report : formatRepair(report), Boolean(options.json));
+    if (!report.ok) process.exitCode = 1;
+    return;
+  }
   if (command === 'pause') {
     print(await pauseReviewGate({ repoRoot, reason: options.reason }), true);
     return;
   }
   if (command === 'resume') {
-    print(await resumeReviewGate({ repoRoot }), true);
+    const result = await resumeReviewGate({ repoRoot });
+    print(result, true);
+    if (result.watcher?.started === false) process.exitCode = 1;
     return;
   }
   if (command === 'recover') {
-    print(await recoverReviewGate({ repoRoot, reason: options.reason }), true);
+    const result = await recoverReviewGate({ repoRoot, reason: options.reason });
+    print(result, true);
+    if (result.watcher?.started === false) process.exitCode = 1;
     return;
   }
   if (command === 'help' || command === '--help' || command === '-h') {

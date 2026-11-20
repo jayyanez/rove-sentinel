@@ -533,7 +533,7 @@ async function readRequiredState(target, label) {
   try {
     return await readJson(target);
   } catch (error) {
-    throw new Error(`The persisted ${label} at ${target} is unreadable: ${error?.message || String(error)} Inspect npx --no-install rove-sentinel status, then use npx --no-install rove-sentinel recover only after confirming the owner is stale.`);
+    throw new Error(`The persisted ${label} at ${target} is unreadable: ${error?.message || String(error)} Run: npx --no-install rove-sentinel repair`);
   }
 }
 
@@ -1077,7 +1077,7 @@ export function watcherState({ running, compatible, heartbeat, lock, daemonError
     state: 'stopped',
     reason: daemonError?.message ?? (stateError ? `the watcher's state is unreadable: ${stateError}` : silent),
     ...(daemonError?.at ? { since: daemonError.at } : {}),
-    action: 'Pushes wait for a review nobody runs. Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.',
+    action: 'Pushes wait for a review nobody runs. Run: npx --no-install rove-sentinel repair',
   };
 }
 
@@ -1288,12 +1288,57 @@ export async function watcherReport(repoRoot, { status = gateStatus } = {}) {
 
 export async function pauseReviewGate({ repoRoot = process.cwd(), reason } = {}) {
   const context = await createGateContext(repoRoot);
-  return await pauseGate(context.paths, reason);
+  // A person's pause: repair never lifts it, whatever its reason says.
+  return await pauseGate(context.paths, reason, { kind: 'manual' });
 }
 
-export async function resumeReviewGate({ repoRoot = process.cwd() } = {}) {
-  const context = await createGateContext(repoRoot);
-  return { resumed: true, previous: await resumeGate(context.paths) };
+/**
+ * Starts this repository's installed watcher the way install does (the Windows
+ * scheduled task, the macOS LaunchAgent, a detached process elsewhere) and waits
+ * for its heartbeat. It installs nothing: with no scheduled watcher it says which
+ * command does.
+ */
+export async function startWatcher(
+  context,
+  {
+    platform = process.platform,
+    run = runProcess,
+    startDetached = startDaemonDetached,
+    waitHeartbeat = waitForDaemonHeartbeat,
+    clearError = clearDaemonError,
+    timeoutMs = 60_000,
+  } = {},
+) {
+  const install = 'npx --no-install rove-sentinel install';
+  try {
+    const plan = buildInstallPlan({ platform, repoRoot: context.repoRoot, stateRoot: context.stateRoot });
+    // An earlier start's failure is not this one's.
+    await clearError(context.paths);
+    if (plan.unsupportedScheduler) {
+      await startDetached(context.repoRoot, context.stateRoot);
+    } else {
+      const query = await run(plan.query.command, plan.query.args, { allowFailure: true, timeoutMs: 30_000 });
+      if (!schedulerQueryInstalled(plan, query)) {
+        return { started: false, reason: 'no scheduled watcher is installed for this repository', next: `Run from the repository's trusted checkout: ${install}` };
+      }
+      await run(plan.start.command, plan.start.args, { timeoutMs: 120_000 });
+    }
+    const heartbeat = await waitHeartbeat(context.paths, context.repoRoot, { timeoutMs });
+    return { started: true, pid: heartbeat?.pid ?? null };
+  } catch (error) {
+    return { started: false, reason: error?.message || String(error), next: 'Run: npx --no-install rove-sentinel repair' };
+  }
+}
+
+/** Resumes, and starts the watcher when none is running: a resume alone wakes only a live one. */
+export async function resumeReviewGate({ repoRoot = process.cwd() } = {}, { start = startWatcher, contextFor = createGateContext } = {}) {
+  const context = await contextFor(repoRoot);
+  const previous = await resumeGate(context.paths);
+  const [lock, heartbeat] = await Promise.all([
+    readJson(context.paths.lock).catch(() => null), readJson(context.paths.heartbeat).catch(() => null),
+  ]);
+  const watcher = daemonOwnerIsHealthy(lock, heartbeat) ? { running: true } : await start(context);
+  return { resumed: true, previous, watcher };
 }
 
 export async function recoverStaleDaemonState(
@@ -1344,7 +1389,11 @@ export async function recoverStaleDaemonState(
   };
 }
 
-export async function recoverReviewGate({ repoRoot = process.cwd(), reason } = {}) {
-  const context = await createGateContext(repoRoot);
-  return await recoverStaleDaemonState(context, { reason });
+/** Clears a stopped watcher's stale state, then starts the watcher again. */
+export async function recoverReviewGate({ repoRoot = process.cwd(), reason } = {}, {
+  start = startWatcher, contextFor = createGateContext, recover = recoverStaleDaemonState,
+} = {}) {
+  const context = await contextFor(repoRoot);
+  const recovered = await recover(context, { reason });
+  return { ...recovered, watcher: await start(context) };
 }
