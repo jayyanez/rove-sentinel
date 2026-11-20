@@ -324,6 +324,29 @@ describe('rolling back an interrupted activation', () => {
     expect(run).not.toHaveBeenCalled();
     expect(await readJson(updateMarker(f.paths))).toBeNull();
   });
+  it('trusts only the journal of its own fence, refuses an unreadable one, and keeps a person\'s pause', async () => {
+    const f = await fixture();
+    const fence = { version: '1.20.1', pid: DEAD, startedAt: '2026-11-19T00:00:00.000Z' };
+    await atomicWriteJson(updateMarker(f.paths), fence);
+    await atomicWriteJson(path.join(f.paths.root, 'update-recovery.json'), { nextVersion: '1.20.1', previousCli: 'old-cli',
+      previousPolicy: {}, previousState: {}, fence: { pid: DEAD, startedAt: '2026-11-01T00:00:00.000Z' } });
+    const stop = vi.fn(async () => true); const run = vi.fn();
+    expect(await rollBackInterruptedUpdate(f.context, { stop, run, root: f.deps.root, startedAt: async () => null })).toMatchObject({ unchanged: true });
+    expect(stop).not.toHaveBeenCalled();
+    await atomicWriteJson(updateMarker(f.paths), fence);
+    await writeFile(path.join(f.paths.root, 'update-recovery.json'), '{');
+    await expect(rollBackInterruptedUpdate(f.context, { stop, run, root: f.deps.root, startedAt: async () => null })).rejects.toThrow('cannot be read');
+    expect(await readJson(updateMarker(f.paths))).toEqual(fence);
+    // The journal of this fence: rolled back, and a person's pause with an update-like reason stays.
+    await atomicWriteJson(path.join(f.paths.root, 'update-recovery.json'), { nextVersion: '1.20.1', previousCli: 'old-cli',
+      previousPolicy: {}, previousState: {}, fence: { pid: DEAD, startedAt: fence.startedAt } });
+    const manual = { pausedAt: new Date().toISOString(), reason: 'Automatic Sentinel update to 1.20.1', kind: 'manual' };
+    await atomicWriteJson(f.paths.paused, manual);
+    const ok = vi.fn(async (_node, args) => ({ stdout: args.includes('--version') ? '1.20.0'
+      : args.includes('status') ? JSON.stringify({ watcherRunning: true, heartbeat: { gateVersion: '1.20.0' } }) : '' }));
+    expect(await rollBackInterruptedUpdate(f.context, { stop, run: ok, root: f.deps.root, startedAt: async () => null })).toMatchObject({ rolledBack: true, version: '1.20.0' });
+    expect(await readJson(f.paths.paused)).toEqual(manual);
+  });
   it('restores the recorded engine and policy, verifies its watcher, then removes the fence and the update\'s pause', async () => {
     const f = await fixture();
     await atomicWriteJson(updateMarker(f.paths), { version: '1.20.1', pid: DEAD, startedAt: new Date().toISOString() });

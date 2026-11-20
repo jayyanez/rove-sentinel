@@ -64,7 +64,7 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 | Keep changed lines under about 2 KB | 1.12.0 | Context is bounded by bytes, and a long line is cut across parts |
 | Keep a follow-up delta small for the adjudicator | 1.13.0 | The patch is a lookup, and an adjudicator is assigned candidates, not a diff |
 | Avoid shards of about 70 KB | 1.11.1 | Shards are written in parts that each fit one read |
-| Run `recover` and `install` after a restart to bring a watcher back | 1.16.1 | A start replaces a lock when the machine booted after that lock's last heartbeat and its process is gone. Any other dead process's lock is cleared, and the watcher started, by `repair` |
+| Run `recover` and `install` after a restart to bring a watcher back | 1.16.1 | A start replaces a lock when the machine booted after that lock's last heartbeat and its process is gone. Any other dead process's lock is cleared, and the installed watcher started, by `repair`; with no scheduled watcher it names `install` |
 | Commit Sentinel's dependency, configuration and hook to use the push gate | 1.19.0 | `install --local` puts the hook in Git's own hooks folder and reads its configuration from a file outside the repository |
 | Ignore `output/` for the logs of `gate --detach` | 1.19.0 | The default log is in the repository's state folder, outside the checkout |
 | Move an old version out of the engine store by hand when updates stop with "Runtime storage is full" | 1.20.1 | A full store removes copies kept only for a project's rollback, oldest first, and a project whose checkout is gone keeps only its active version |

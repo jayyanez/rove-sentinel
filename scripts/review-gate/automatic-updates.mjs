@@ -9,7 +9,7 @@ import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, processStartedAt, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
 import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
-import { REPAIR_COMMAND, runProcess } from './process.mjs';
+import { pauseKind, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { checkForUpdates, compareVersions } from './updates.mjs';
 import { longPauseMessage, notifyUpdate, updateMessage } from './update-notifications.mjs';
 
@@ -50,7 +50,7 @@ export async function activationRuns(marker, { isAlive = processAlive, startedAt
  * checks everything it checked before.
  */
 async function liftsItself(paused, paths, probes) {
-  if (!String(paused?.reason ?? '').startsWith(UPDATE_PAUSE)) return false;
+  if (pauseKind(paused) !== 'update') return false;
   return activationRuns(await readJson(updateMarker(paths)).catch(() => null), probes);
 }
 
@@ -197,11 +197,15 @@ export async function rollBackInterruptedUpdate(context, {
   // earlier update's. Then the activation died before it changed anything, and
   // removing the fence is the whole recovery.
   const journalPath = path.join(paths.root, 'update-recovery.json');
-  const recovery = await readJson(journalPath).catch(() => null);
+  let recovery = null;
+  try { recovery = await readJson(journalPath); }
+  catch (error) { throw new Error(`update-recovery.json beside ${updateMarker(paths)} cannot be read (${error?.message || String(error)}), so the engine before the update is unknown. Run from the repository's trusted checkout: npx --no-install rove-sentinel install`); }
   const [fenceTime, journalTime] = await Promise.all([updateMarker(paths), journalPath]
     .map((file) => stat(file).then((info) => info.mtimeMs, () => null)));
-  const journalIsThisUpdate = recovery && journalTime !== null && (fenceTime === null || journalTime >= fenceTime)
-    && (!marker.version || recovery.nextVersion === marker.version);
+  // From 1.20.1 the journal names its fence; an earlier one is matched by time and version.
+  const journalIsThisUpdate = recovery && (recovery.fence
+    ? recovery.fence.pid === marker.pid && recovery.fence.startedAt === marker.startedAt
+    : journalTime !== null && (fenceTime === null || journalTime >= fenceTime) && (!marker.version || recovery.nextVersion === marker.version));
   if (!journalIsThisUpdate) {
     await removeStoredJson(updateMarker(paths));
     return { rolledBack: true, version: null, nextVersion: marker.version ?? null, markerPid: marker.pid, unchanged: true };
@@ -223,7 +227,8 @@ export async function rollBackInterruptedUpdate(context, {
   await publishEngineState(paths, { ...recovery.previousState, repoRoot: context.repoRoot, phase: 'failed',
     failedVersion: recovery.nextVersion ?? null, lastError: 'An interrupted activation was rolled back by repair.' }, root);
   const paused = await readJson(paths.paused).catch(() => null);
-  if (String(paused?.reason ?? '').startsWith(UPDATE_PAUSE)) await removeStoredJson(paths.paused);
+  // Only the update's own pause: a person's pause stays whatever its reason says.
+  if (pauseKind(paused) === 'update' && paused) await removeStoredJson(paths.paused);
   await removeStoredJson(updateMarker(paths));
   return { rolledBack: true, version, nextVersion: recovery.nextVersion ?? null, markerPid: marker.pid };
 }
@@ -293,8 +298,11 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
       if (pause && JSON.stringify(await readJson(paths.paused)) === JSON.stringify(pause)) await removeStoredJson(paths.paused);
     };
     try {
+      const fence = await readJson(updateMarker(paths)).catch(() => null);
       await atomicWriteJson(path.join(paths.root, 'update-recovery.json'), {
         repoRoot: context.repoRoot, previousState, previousPolicy, previousCli: cliPath, nextVersion,
+        // Ties this journal to its fence: a journal outlives the update that wrote it.
+        fence: fence ? { pid: fence.pid, startedAt: fence.startedAt } : null,
       });
       pause = await pauseGate(paths, `Automatic Sentinel update to ${nextVersion}`, { kind: 'update' });
       const deadline = Date.now() + pauseTimeoutMs;

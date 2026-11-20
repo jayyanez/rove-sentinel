@@ -36,6 +36,8 @@ const parse = (raw) => { try { return JSON.parse(raw); } catch { return undefine
 const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').replace(/[.\s]+$/, '');
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
+// A repair's longest steps (a rollback, an update) are bounded well under this.
+const REPAIR_BOUND_MS = 60 * 60_000;
 
 /**
  * Every process of this OS user that the system lists: PID, parent PID, name,
@@ -198,8 +200,8 @@ export async function stopProcesses(targets, { platform = process.platform, run 
   for (const target of [...targets].reverse()) {
     // Listed again for each: a PID can be reused while earlier ones are stopped.
     const current = (await list({ platform, run })).find((proc) => proc.pid === target.pid);
-    if (!current || target.rawStartedAt === null || current.startedAt === null
-      || Math.abs(current.startedAt - target.rawStartedAt) > START_TOLERANCE_MS) continue;
+    // Both start times come from the same listing, so they are equal for the same process.
+    if (!current || target.rawStartedAt === null || current.startedAt !== target.rawStartedAt) continue;
     if (platform === 'win32') {
       const result = await run('taskkill.exe', ['/PID', String(target.pid), '/F'], { allowFailure: true, result: true, timeoutMs: 30_000 });
       if ((result?.code ?? 0) === 0) stopped.push(target.pid);
@@ -256,12 +258,14 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     for (let attempt = 0; attempt < 2 && !held; attempt += 1) {
       try {
         held = await open(lockFile, 'wx', 0o600);
-        await held.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+        try { await held.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() })); }
+        catch (error) { await held.close().catch(() => {}); held = null; await rm(lockFile, { force: true }); throw error; }
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         const holder = await readJson(lockFile).catch(() => null);
         const age = await ageOf(lockFile, now());
-        if ((Number.isInteger(holder?.pid) && !isAlive(holder.pid)) || (!Number.isInteger(holder?.pid) && age !== null && age > UNFINISHED_RECORD_MS)) {
+        // A repair ends within REPAIR_BOUND_MS; an older lock's PID may be another process's now.
+        if ((Number.isInteger(holder?.pid) && !isAlive(holder.pid)) || (age !== null && age > REPAIR_BOUND_MS)) {
           await rm(lockFile, { force: true });
           continue;
         }
@@ -356,6 +360,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   } finally {
     if (held) { await held.close().catch(() => {}); await rm(lockFile, { force: true }).catch(() => {}); }
   }
+  for (const entry of steps) if (entry.status === 'would-fix' && !entry.next) entry.next = `Run: ${REPAIR_COMMAND}${stopOrphans ? ' --stop-orphans' : ''}`;
   // Done only when every state is fixed or fine: a busy or dry-run step still has work.
   const ok = steps.every((entry) => ['fixed', 'ok'].includes(entry.status));
   return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };
@@ -397,7 +402,10 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
           step({ state: 'watcher', status: dryRun && stopOrphans ? 'would-fix' : 'blocked', detail: `This repository's watcher (PID ${lock.pid}) runs without a heartbeat for ${Math.round(waitMs / 1000)} seconds.`, processes: [target], next: STOP_ORPHANS });
           return { running: false };
         }
-        await stop([target], { platform, run, list });
+        if (!(await stop([target], { platform, run, list })).includes(target.pid)) {
+          step({ state: 'watcher', status: 'blocked', detail: `This repository's watcher (PID ${lock.pid}) could not be stopped.`, processes: [target], next: `Run again in one minute: ${STOP_ORPHANS}` });
+          return { running: false };
+        }
         await audit('hung-watcher-stopped', { process: target });
         ownerGone = true;
         why = `its watcher PID ${lock.pid} ran without a heartbeat and was stopped`;

@@ -237,7 +237,8 @@ export async function removeStaleStoreLock(root, verdict, { reason = 'automatic'
     try { modified = (await stat(marker)).mtimeMs; raw = await readFile(marker, 'utf8'); } catch { return false; }
     let holder = null;
     try { holder = JSON.parse(raw); } catch { holder = null; }
-    const abandoned = Number.isInteger(holder?.pid) ? !isAlive(holder.pid) : Date.now() - modified > 60_000;
+    // A takeover lasts milliseconds: a minute-old marker is abandoned even if its PID was reused.
+    const abandoned = Date.now() - modified > 60_000 || (Number.isInteger(holder?.pid) && !isAlive(holder.pid));
     if (abandoned && await readFile(marker, 'utf8').catch(() => null) === raw) {
       await rm(marker, { force: true });
       await recordStoreEvent(root, { type: 'takeover-marker-removed', reason, holderPid: holder?.pid ?? null });
@@ -266,8 +267,15 @@ export async function removeStaleStoreLock(root, verdict, { reason = 'automatic'
 async function lockStore(root, lockFile, version, waitMs) {
   const deadline = Date.now() + waitMs;
   // Liveness is read every time; a PID's start time once, as its probe is a process launch.
+  // Read again every 30 seconds, so a PID reused while this waits is seen.
   const starts = new Map();
-  const startedAt = (pid) => { if (!starts.has(pid)) starts.set(pid, processStartedAt(pid).catch(() => null)); return starts.get(pid); };
+  const startedAt = (pid) => {
+    const cached = starts.get(pid);
+    if (cached && Date.now() - cached.at < 30_000) return cached.value;
+    const value = processStartedAt(pid).catch(() => null);
+    starts.set(pid, { at: Date.now(), value });
+    return value;
+  };
   let last = null;
   while (true) {
     try {
@@ -278,10 +286,10 @@ async function lockStore(root, lockFile, version, waitMs) {
       return { release };
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
     const verdict = await inspectStoreLock(root, { startedAt }).catch(() => null);
-    if (verdict?.state === 'free') continue;
-    if (verdict?.state === 'stale' && await removeStaleStoreLock(root, verdict)) continue;
     if (verdict) last = verdict;
     if (Date.now() >= deadline) return { busy: true, owner: last?.owner ?? null };
+    if (verdict?.state === 'free') continue;
+    if (verdict?.state === 'stale' && await removeStaleStoreLock(root, verdict)) continue;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }

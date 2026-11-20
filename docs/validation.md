@@ -27,7 +27,7 @@ process counted as this repository's only when its review directory's owner name
 repository and runs no review, or it descends from the provider a safety pause recorded and
 started before it, never one of another repository, and one naming a directory without an
 owner record listed but never counted or stopped; children stopped first, only while a PID
-keeps its listed start time, and counted only when the system confirms the stop; a safety pause (and one from an earlier engine) resumed
+keeps its listed start time, and counted only when `taskkill` succeeds (on macOS and Linux, when the signal is sent); a pause is lifted only after a fresh listing finds none left; a safety pause (and one from an earlier engine) resumed
 when no such process remains, kept with the processes listed and `--stop-orphans` named
 while they do, and resumed after that command stops them; a person's pause never lifted, even one whose reason
 reads like Sentinel's; one repair at a time per repository; an
@@ -42,7 +42,7 @@ processes that fill a store named; a waiting or failed update
 retried and a full store's holders named; a dry run changing nothing. `recover` and
 `resume` start the watcher, through the installed scheduled task or by naming install, and
 a failing scheduler is reported rather than thrown.
-The 47 new tests fail on 1.20.0. 1,076 tests passed on Windows, and the package smoke passed.
+The 48 new tests fail on 1.20.0. 1,077 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store,
 paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in

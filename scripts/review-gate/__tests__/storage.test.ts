@@ -232,7 +232,7 @@ describe('shared review local state', () => {
     )).resolves.toMatchObject({ repoRoot: 'C:\\first-checkout' });
   });
 
-  it('reports an actionable reinstall when a healthy watcher runs stale code', async () => {
+  it('reports the repair command when a healthy watcher runs stale code', async () => {
     const paths = await ensureState(await temporaryDirectory());
     const ownerToken = 'shared-owner';
     await atomicWriteJson(paths.lock, {
@@ -252,7 +252,7 @@ describe('shared review local state', () => {
     await expect(waitForDaemonHeartbeat(paths, 'C:\\second-checkout', {
       timeoutMs: 20,
       pollMs: 5,
-    })).rejects.toThrow('Run npx --no-install rove-sentinel install from your trusted main checkout');
+    })).rejects.toThrow('Run: npx --no-install rove-sentinel repair');
   });
 
   it('surfaces the detached watcher startup cause instead of a generic heartbeat timeout', async () => {
