@@ -236,6 +236,13 @@ describe('repair', () => {
     // PowerShell ends a quoted string at a typographic apostrophe too: it is doubled.
     expect(report.steps[0].next).toBe(`& '/opt/node/bin/node' '/opt/tools/it\u2019\u2019s/launcher.mjs' repair --stop-orphans --repo '${f.repoRoot}'`);
   });
+  it('names the watcher checkout in a local installation line for it', async () => {
+    const f = await fixture();
+    await atomicWriteJson(f.paths.installation, { schemaVersion: 1, mode: 'local', hook: '/opt/hooks/pre-push', launcher: '/opt/tools/launcher.mjs', node: '/opt/node/bin/node', config: null });
+    await f.healthy({ gateVersion: '1.0.0', activity: 'idle', repoRoot: '/work/watcher-checkout' });
+    const report = await repair(f);
+    expect(report.steps[0].next).toBe("Run in /work/watcher-checkout: & '/opt/node/bin/node' '/opt/tools/launcher.mjs' repair --repo '/work/watcher-checkout'");
+  });
   it('says a watcher that cannot start, with the command, and leaves a repository without one alone', async () => {
     const f = await fixture();
     await atomicWriteJson(f.paths.lock, { pid: DEAD, ownerToken: 'dead-owner' });

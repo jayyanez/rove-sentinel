@@ -449,8 +449,8 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     const quote = (value) => (platform === 'win32'
       ? `'${String(value).replace(/['\u2018\u2019\u201A\u201B]/g, (mark) => mark + mark)}'`
       : `'${String(value).replaceAll("'", "'\\''")}'`);
-    const local = (name, options) => {
-      const line = [quote(installation.node), quote(installation.launcher), name, ...options, '--repo', quote(context.repoRoot)].join(' ');
+    const local = (name, options, repo) => {
+      const line = [quote(installation.node), quote(installation.launcher), name, ...options, '--repo', quote(repo)].join(' ');
       return platform === 'win32' ? `& ${line}` : line;
     };
     const split = (options) => (options.trim() ? options.trim().split(/\s+/) : []);
@@ -461,7 +461,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       }
       if (installation?.mode === 'local') {
         // install stays as printed: a local installation reinstalls with install --local.
-        entry.next = entry.next.replace(/npx --no-install rove-sentinel (repair|resume|updates)((?: --[a-z-]+)*)/g, (_match, name, options) => local(name, split(options)));
+        // A line for another checkout of this repository (the watcher's) names that checkout.
+        const repo = entry.next.match(/^Run in (.+?): /)?.[1] ?? context.repoRoot;
+        entry.next = entry.next.replace(/npx --no-install rove-sentinel (repair|resume|updates)((?: --[a-z-]+)*)/g, (_match, name, options) => local(name, split(options), repo));
       }
     }
     return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok, steps };

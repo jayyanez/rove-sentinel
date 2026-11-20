@@ -107,7 +107,8 @@ rove-sentinel repair`, which would run the old engine); other `Next:` lines name
 other commands, such as `resume` or `install`. Run each one exactly as printed.
 For a local installation, a `Next:` line that runs `resume` or `updates`, or
 `repair` on the installation's own engine, names its recorded launcher instead
-of npx.
+of npx, with the checkout the line names. A full store's line for the checkouts
+it lists names the bootstrap, which runs anywhere.
 
 Behind a proxy, Node's fetch needs what the updater needs (see `update` fails
 behind a proxy, above). The checksum comes from the same release, so this is an integrity

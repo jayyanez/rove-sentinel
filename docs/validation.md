@@ -51,7 +51,7 @@ that does, passes `--stop-orphans` and `--json` on after `--` (as it does `--dry
 refuses `--force`; a repair on a newer engine than the selected one prints the Next lines that
 run repair as that line with options (by hand, the same line served a packed 1.20.1 archive and ran its launcher through
 npx; it was not run on macOS); and the runbook carries the line
-exactly. The 60 new tests fail on 1.20.0. 1,089 tests passed on Windows, and the package smoke passed.
+exactly. The 61 new tests fail on 1.20.0. 1,090 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store,
 paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in
