@@ -53,11 +53,13 @@ export async function listProcesses({ platform = process.platform, run = runProc
       startedAt: Number.isFinite(entry.startedAt) ? entry.startedAt : null,
     }));
   }
-  const result = await run('ps', ['-axo', 'pid=,ppid=,lstart=,args='], { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 * 1024 });
+  // In UTC and the C locale: a start time then reads the same in any time zone or season.
+  const result = await run('ps', ['-axo', 'pid=,ppid=,lstart=,args='], { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 * 1024,
+    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } });
   return result.stdout.split(/\r?\n/).map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/))
     .filter(Boolean).map(([, pid, ppid, lstart, args]) => ({
       pid: Number(pid), ppid: Number(ppid), name: path.basename(args.split(/\s+/)[0] || ''), commandLine: args,
-      startedAt: Number.isFinite(Date.parse(lstart)) ? Date.parse(lstart) : null,
+      startedAt: Number.isFinite(Date.parse(`${lstart} UTC`)) ? Date.parse(`${lstart} UTC`) : null,
     }));
 }
 
@@ -273,6 +275,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     const own = (await fresh()).find((proc) => proc.pid === process.pid)?.startedAt ?? null;
     await writeFile(lease, JSON.stringify({ pid: process.pid, startedAt: own, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
     let other = null;
+    let stuck = null;
     try {
       // A listing that fails proves nothing about other repairs: stop.
       const entries = await readdir(leaseDirectory);
@@ -285,20 +288,25 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
         const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
         const proc = listed.get(pid);
         // Live while its PID is listed with the start time it recorded; never by age,
-        // so a suspended repair keeps its lease.
-        const live = Boolean(proc) && (!Number.isFinite(record?.startedAt) || proc.startedAt === null || proc.startedAt === record.startedAt);
+        // so a suspended repair keeps its lease. Windows and macOS record a start
+        // time once; elsewhere only the PID is compared.
+        const comparable = ['win32', 'darwin'].includes(platform) && Number.isFinite(record?.startedAt) && proc?.startedAt !== null;
+        const live = Boolean(proc) && (!comparable || proc.startedAt === record.startedAt);
         if (live) { other ??= pid; continue; }
         // A stale lease that cannot be removed still counts: nothing proceeds beside it.
-        try { await rm(file, { force: true }); } catch { other ??= pid; }
+        try { await rm(file, { force: true }); }
+        catch (error) { stuck ??= `${file} (${error?.message || String(error)})`; }
       }
     } catch (error) {
       await rm(lease, { force: true }).catch(() => {});
       throw error;
     }
     processes = null;
-    if (other !== null) {
+    if (other !== null || stuck) {
       await rm(lease, { force: true }).catch(() => {});
-      step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
+      step(other !== null
+        ? { state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` }
+        : { state: 'repair', status: 'blocked', detail: `The lease of a repair that is gone cannot be removed: ${stuck}.`, next: `Run again once that file can be removed: ${REPAIR_COMMAND}` });
       return { repository: context.repoRoot, stateRoot: context.stateRoot, dryRun, ok: false, steps };
     }
   }
