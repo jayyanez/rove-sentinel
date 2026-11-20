@@ -11,6 +11,7 @@ Start here:
   rove-sentinel status                 Inspect health and local records
   rove-sentinel update-check           Check for a newer stable release
   rove-sentinel updates                Inspect automatic engine updates
+  rove-sentinel repair                 Fix a paused or stopped watcher, a stale lock or a stuck update
   rove-sentinel limits [--json]        What this engine version accepts and where it stops
   rove-sentinel tools [--install [--yes]]  Linter tools this machine lacks; install them (asks first)
 
@@ -24,9 +25,11 @@ Review:
 
 Operations:
   watch [--once] [--no-github] [--daemon]
+  repair [--dry-run] [--json] [--stop-orphans]
+                                       Verify and fix what blocks reviews or updates; says the next command
   pause --reason TEXT
-  resume
-  recover --reason TEXT
+  resume                              Also starts a watcher that is not running
+  recover --reason TEXT               Clears a stopped watcher's state and starts it again
   uninstall [--dry-run]
   install [--dry-run] [--no-start] [--no-github] [--accounts FILE]
   install --local [--config FILE] [--github] [--dry-run] [--no-start] [--accounts FILE]

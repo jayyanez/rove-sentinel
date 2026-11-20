@@ -31,7 +31,7 @@ export const updateMarker = (paths) => path.join(paths.root, 'update-in-progress
 /** Readers register before a second check; an updater excludes subsequent readers. */
 export async function acquireReviewLease(paths) {
   const marker = updateMarker(paths);
-  const refuse = () => new Error(`Sentinel is being updated. Retry after it finishes; inspect ${marker} if interrupted.`);
+  const refuse = () => new Error(`Sentinel is being updated (${marker}). Retry in five minutes; if this repeats, run: npx --no-install rove-sentinel repair`);
   if (await exists(marker)) throw refuse();
   const directory = path.join(paths.root, 'active-reviews');
   await mkdir(directory, { recursive: true });
@@ -50,7 +50,7 @@ export async function acquireUpdateLease(paths, details, { isAlive = alive, star
     await writeFile(marker, JSON.stringify({ ...details, pid: process.pid, startedAt: new Date().toISOString() }),
       { flag: 'wx', mode: 0o600 });
   } catch (error) {
-    if (error.code === 'EEXIST') throw new Error(`Another or interrupted update exists: ${marker}. Inspect it before retrying.`);
+    if (error.code === 'EEXIST') throw new Error(`Another or interrupted update exists: ${marker}. Run: npx --no-install rove-sentinel repair`);
     throw error;
   }
   const release = () => rm(marker, { force: true });
@@ -69,7 +69,7 @@ export async function acquireUpdateLease(paths, details, { isAlive = alive, star
       if (!Number.isInteger(owner?.pid) || owner.pid < 1) {
         // The exclusive filename identifies even a lease whose writer crashed mid-write.
         const match = entry.match(/^(\d+)-[0-9a-f-]{36}\.json$/i);
-        if (!match) throw new Error(`Unrecognized corrupt review lease: ${file}. Inspect it before updating.`);
+        if (!match) throw new Error(`${file} is not a review lease Sentinel writes, so it cannot tell whether a review runs. Delete that file, then run: npx --no-install rove-sentinel repair`);
         owner = { pid: Number(match[1]) };
       }
       let live = isAlive(owner?.pid);

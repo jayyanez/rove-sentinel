@@ -9,7 +9,7 @@ import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, processStartedAt, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
 import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
-import { runProcess } from './process.mjs';
+import { REPAIR_COMMAND, runProcess } from './process.mjs';
 import { checkForUpdates, compareVersions } from './updates.mjs';
 import { longPauseMessage, notifyUpdate, updateMessage } from './update-notifications.mjs';
 
@@ -23,7 +23,7 @@ const enabled = async (paths, env) => env.ROVE_SENTINEL_AUTO_UPDATE !== '0'
 /** A pause older than this is reported by review commands even with no update waiting. */
 export const LONG_PAUSE_MS = DAY;
 // The pause an activation writes for itself, and clears, while it runs.
-const UPDATE_PAUSE = 'Automatic Sentinel update to ';
+export const UPDATE_PAUSE = 'Automatic Sentinel update to ';
 const settle = (read) => read().then((value) => ({ value }), (error) => ({ error: error?.message || String(error) }));
 const processAlive = (pid) => {
   if (!Number.isInteger(pid) || pid < 1) return true;
@@ -35,7 +35,7 @@ const processAlive = (pid) => {
  * alive, and where the system reports a start time (Windows), that process
  * started before the marker was written, so a reused PID does not count.
  */
-async function activationRuns(marker, { isAlive, startedAt }) {
+export async function activationRuns(marker, { isAlive = processAlive, startedAt = processStartedAt } = {}) {
   if (!marker || !isAlive(marker.pid)) return false;
   const written = Date.parse(marker.startedAt);
   const started = Number.isFinite(written) ? await startedAt(marker.pid) : null;
@@ -77,37 +77,35 @@ export async function watcherHolds(paths, { isAlive = processAlive, startedAt = 
   if (unreadable.length) {
     holds.push({ kind: 'unreadable', since: null,
       reason: unreadable.map(([name, entry]) => `${name}: ${entry.error}`).join('; '),
-      action: 'Run npx --no-install rove-sentinel status, which names each record, and repair it.' });
+      action: `Run: ${REPAIR_COMMAND}` });
   }
   const lock = read.lock.value;
   const heartbeat = read.heartbeat.value;
   if (!daemonOwnerIsHealthy(lock, heartbeat, { maxAgeMs: 30_000, isAlive })) {
     holds.push({ kind: 'stopped', since: read.daemonError.value?.at ?? heartbeat?.at ?? null,
       reason: read.daemonError.value?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
-      action: 'Fix the reason, then run npx --no-install rove-sentinel install from your trusted checkout.' });
+      action: `Run: ${REPAIR_COMMAND}` });
   } else if (!read.policy.error && (heartbeat.gateVersion !== gateVersion || heartbeat.charterVersion !== charterVersion || !digest || heartbeat.policyDigest !== digest)) {
     holds.push({ kind: 'outdated', since: null,
       reason: `it runs ${heartbeat.gateVersion ?? 'an unknown version'} with ${digest && heartbeat.policyDigest === digest ? 'the installed policy' : 'another policy than the installed one'}, and this engine is ${gateVersion}`,
-      action: 'Run npx --no-install rove-sentinel install from your trusted checkout to restart it.' });
+      action: `Run: ${REPAIR_COMMAND}` });
   }
   const paused = read.paused.value;
   if (paused && !await liftsItself(paused, paths, { isAlive, startedAt })) {
     holds.push({ kind: 'paused', since: paused.pausedAt ?? null, reason: String(paused.reason ?? 'no reason recorded'),
-      action: String(paused.reason ?? '').startsWith(UPDATE_PAUSE)
-        ? 'An interrupted update left this pause: follow Isolation and recovery in the updates guide before running npx --no-install rove-sentinel resume.'
-        : 'Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.' });
+      action: `Run: ${REPAIR_COMMAND}` });
   }
   const submitter = read.queueSubmitLock.value;
   if (Number.isInteger(submitter?.pid) && submitter.pid > 0 && !isAlive(submitter.pid)) {
     holds.push({ kind: 'queue-lock', since: null,
       reason: `the review queue's submission lock belongs to the dead process ${submitter.pid}`,
-      action: `Confirm no Sentinel process has PID ${submitter.pid} and no submitter replaced the lock, then delete ${paths.queueSubmitLock}; recover removes it only while the watcher is stopped.` });
+      action: `Run: ${REPAIR_COMMAND}` });
   }
   const marker = read.marker.value;
   if (marker && !await activationRuns(marker, { isAlive, startedAt })) {
     holds.push({ kind: 'interrupted', since: marker.startedAt ?? null,
       reason: `an update to ${marker.version ?? 'another version'} stopped, its process ${marker.pid} gone, leaving ${updateMarker(paths)}`,
-      action: 'Follow Isolation and recovery in the updates guide: restore and verify the previous runtime, then remove the marker and its pause.' });
+      action: `Run: ${REPAIR_COMMAND}` });
   }
   return holds;
 }
@@ -124,7 +122,7 @@ export async function updateInformation(paths, { holds = watcherHolds } = {}) {
   const found = ['waiting', 'activating'].includes(phase) && pendingVersion ? await holds(paths) : [];
   if (settingsError && ['waiting', 'activating'].includes(phase) && pendingVersion) {
     found.unshift({ kind: 'unreadable', since: null, reason: `update-settings: ${settingsError}`,
-      action: 'Run npx --no-install rove-sentinel updates --enable or --disable to rewrite it.' });
+      action: `Run: ${REPAIR_COMMAND}` });
   }
   return { automatic, settingsError,
     runningVersion: GATE_VERSION, activeVersion: state?.activeVersion || GATE_VERSION,
@@ -144,7 +142,7 @@ export async function reviewNotices(paths, project, { now = Date.now(), holds = 
   const update = updateMessage(information, project);
   if (update) lines.push(update);
   if (information.settingsError && !information.blockedBy.some((hold) => hold.reason.startsWith('update-settings:'))) {
-    lines.push(`Rove Sentinel cannot read the update settings for ${project}: ${information.settingsError} Automatic updates stop until npx --no-install rove-sentinel updates --enable or --disable rewrites them.`);
+    lines.push(`Rove Sentinel cannot read the update settings for ${project}: ${information.settingsError} Automatic updates stop until they are rewritten. Run: ${REPAIR_COMMAND}`);
   }
   const paused = await readJson(paths.paused).catch(() => null);
   const since = Date.parse(paused?.pausedAt);
@@ -176,6 +174,45 @@ export async function maybeStartUpdateWorker(context, { now = Date.now(), start 
   child.on('error', () => {});
   child.unref();
   return true;
+}
+
+/**
+ * Rolls back an activation whose process is gone, as its own failure path
+ * would have: stops whatever watcher runs, puts back the policy and engine
+ * recorded in update-recovery.json, reinstalls with that engine, verifies its
+ * watcher, then removes the fence and the update's pause. The release stays
+ * downloaded; an `update` retries it. Refuses while the activation still runs.
+ */
+export async function rollBackInterruptedUpdate(context, {
+  stop = stopDaemon, run = runProcess, root = engineRoot(), isAlive = processAlive, startedAt = processStartedAt,
+  // A fence whose writer never finished it: the caller has judged it gone.
+  unfinished = false,
+} = {}) {
+  const { paths } = context;
+  const marker = unfinished ? { pid: null } : await readJson(updateMarker(paths));
+  if (!marker) return { rolledBack: false, reason: 'no update fence is left' };
+  if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) return { rolledBack: false, running: true, reason: `the activation's process ${marker.pid} still runs` };
+  const recovery = await readJson(path.join(paths.root, 'update-recovery.json'));
+  if (!recovery?.previousPolicy || !recovery?.previousCli || !recovery?.previousState) {
+    throw new Error(`The fence ${updateMarker(paths)} has no complete update-recovery.json beside it, so the engine before the update is unknown.`);
+  }
+  const exec = async (cli, args) => (await run(process.execPath, [cli, ...args, '--repo', context.repoRoot], {
+    cwd: context.repoRoot, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024,
+  })).stdout.trim();
+  const version = await exec(recovery.previousCli, ['--version']);
+  if (await stop(context) === false) throw new Error('The watcher runs from another checkout of this repository; run the repair there.');
+  await atomicWriteJson(paths.policy, recovery.previousPolicy);
+  await exec(recovery.previousCli, ['install', '--preserve-policy']);
+  const restored = JSON.parse(await exec(recovery.previousCli, ['status', '--no-update-check']));
+  if (!watcherAlive(restored) || restored.heartbeat?.gateVersion !== version) {
+    throw new Error(`The watcher of the engine before the update (${version}) did not come back healthy.`);
+  }
+  await publishEngineState(paths, { ...recovery.previousState, repoRoot: context.repoRoot, phase: 'failed',
+    failedVersion: recovery.nextVersion ?? null, lastError: 'An interrupted activation was rolled back by repair.' }, root);
+  const paused = await readJson(paths.paused).catch(() => null);
+  if (String(paused?.reason ?? '').startsWith(UPDATE_PAUSE)) await removeStoredJson(paths.paused);
+  await removeStoredJson(updateMarker(paths));
+  return { rolledBack: true, version, nextVersion: recovery.nextVersion ?? null, markerPid: marker.pid };
 }
 
 /** Side-by-side installation. Existing runtime files and consumer pins are never edited. */
@@ -289,7 +326,7 @@ export async function automaticUpdate({ repoRoot = process.cwd(), force = false 
         await clearPause();
       } catch (rollbackError) {
         preserveFence = true;
-        await save({ phase: 'recovery-required', lastError: `${error.message} Recovery failed: ${rollbackError.message}. Inspect ${updateMarker(paths)} and update-recovery.json.` });
+        await save({ phase: 'recovery-required', lastError: `${error.message} Recovery failed: ${rollbackError.message}. Run: ${REPAIR_COMMAND}` });
       }
       await notify(context, state).catch(() => {});
       return { status: preserveFence ? 'recovery-required' : 'failed', version: nextVersion, error: state.lastError };

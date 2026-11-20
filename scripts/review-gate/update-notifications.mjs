@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { runProcess } from './process.mjs';
+import { REPAIR_COMMAND, runProcess } from './process.mjs';
 import { atomicWriteJson, readJson } from './storage.mjs';
 import { compareVersions, stableVersion } from './updates.mjs';
 
@@ -12,38 +12,46 @@ const HOLDS = {
   interrupted: 'an earlier activation was interrupted',
 };
 
-/** One hold from `watcherHolds`, as a sentence. */
-export function describeHold({ kind, since, reason, action }) {
-  return `${HOLDS[kind] ?? 'the review watcher holds it'}${since ? ` (since ${since})` : ''}: ${String(reason).replace(/[.\s]+$/, '')}. ${action}`;
+const RUN_REPAIR = `Run: ${REPAIR_COMMAND}`;
+const clause = (text) => String(text).replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '');
+// A reason that already names the repair command: the line names it once, at its end.
+const reasonClause = (text) => clause(String(text).replace(/\s*Run: [^\n]*$/, ''));
+
+/** One hold from `watcherHolds`, as a clause; the line it ends up in names the command. */
+export function describeHold({ kind, since, reason }) {
+  return `${HOLDS[kind] ?? 'the review watcher holds it'}${since ? ` (since ${since})` : ''}: ${reasonClause(reason)}`;
 }
 
 export function longPauseMessage({ pausedAt, reason }, project) {
-  return `The review watcher for ${project} has been paused since ${pausedAt}: ${String(reason).replace(/[.\s]+$/, '')}. Pushes without a passing review are refused and no update activates until it resumes. Inspect the reason; once it is resolved, run npx --no-install rove-sentinel resume.`;
+  return `The review watcher for ${project} has been paused since ${pausedAt}: ${reasonClause(reason)}. Pushes without a passing review are refused and no update activates until it resumes. ${RUN_REPAIR}`;
 }
 
 const newer = (pending, running) => stableVersion(pending) && (!stableVersion(running) || compareVersions(pending, running) > 0);
 
-const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim();
+const lastAttempt = (lastError) => (lastError ? ` Last attempt: ${clause(lastError)}.` : '');
 
-export function updateMessage({ phase, activeVersion, pendingVersion, attemptedVersion, lastError, blockedBy, runningVersion, automatic, settingsError }, project) {
+/**
+ * One line per state, each ending with the command to run, so an agent that
+ * reads a review log acts on the line itself.
+ */
+export function updateMessage({ phase, activeVersion, pendingVersion, attemptedVersion, lastError, blockedBy, runningVersion, automatic }, project) {
   if (phase === 'active') return `Rove Sentinel updated to ${activeVersion} for ${project}. New reviews use it; existing agents can continue.`;
   // `automatic` is false only where updates are switched off; a notification's state has no such field.
   const current = phase === 'download-failed' ? attemptedVersion || pendingVersion : pendingVersion;
   if (automatic === false && ['waiting', 'download-failed'].includes(phase) && newer(current, runningVersion)) {
-    return `Rove Sentinel ${current} was downloading or downloaded for ${project}, but automatic updates are disabled here (updates --disable, or ROVE_SENTINEL_AUTO_UPDATE=0), so it will not activate. npx --no-install rove-sentinel updates --enable turns them back on where the variable is not set.`;
+    return `Rove Sentinel ${current} was downloading or downloaded for ${project}, but automatic updates are disabled here (updates --disable, or ROVE_SENTINEL_AUTO_UPDATE=0), so it will not activate. To turn them back on where that variable is not set, run: npx --no-install rove-sentinel updates --enable`;
   }
   if (['waiting', 'activating'].includes(phase) && blockedBy?.length) {
-    return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join(' Also, ')} Once that is resolved, the watcher activates it within about ten minutes.${lastError ? ` Last attempt: ${oneLine(lastError)}` : ''}`;
+    return `Rove Sentinel ${pendingVersion} is downloaded for ${project} but cannot activate: ${blockedBy.map(describeHold).join('; ')}.${lastAttempt(lastError)} ${RUN_REPAIR}`;
   }
   if (phase === 'waiting') {
-    return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.${lastError ? ` Last attempt: ${oneLine(lastError)}` : ''}`;
+    return `Rove Sentinel ${pendingVersion} is downloaded for ${project}. It will activate after current reviews finish.${lastAttempt(lastError)}`;
   }
   if (phase === 'download-failed' && newer(current, runningVersion)) {
-    // Unreadable settings stop every retry; their own line says how to repair them.
-    return `Rove Sentinel ${current} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${oneLine(lastError)}` : ''}${settingsError ? '' : ' The watcher retries daily; npx --no-install rove-sentinel update retries now.'}`;
+    return `Rove Sentinel ${current} could not be downloaded for ${project}; the running engine is unchanged.${lastError ? ` ${clause(lastError)}.` : ''} ${RUN_REPAIR}`;
   }
-  if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active. ${lastError || ''}`;
-  if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. Run rove-sentinel updates for details.`;
+  if (phase === 'failed') return `Rove Sentinel could not activate the update for ${project}. The previous version remains active.${lastError ? ` ${clause(lastError)}.` : ''} ${RUN_REPAIR}`;
+  if (phase === 'recovery-required') return `Rove Sentinel needs recovery for ${project}. Reviews are paused. ${RUN_REPAIR}`;
   return null;
 }
 

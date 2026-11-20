@@ -413,12 +413,12 @@ describe('starters meeting over a lock left by a restart', () => {
     expect(await exists(paths.takeover)).toBe(true);
   });
 
-  it('refuses beside a marker whose holder never finished, naming the file to delete', async () => {
+  it('refuses beside a marker whose holder never finished, naming the file and the repair', async () => {
     const paths = await leftByRestart();
     await writeFile(paths.takeover, '');
     await utimes(paths.takeover, new Date(BOOT), new Date(BOOT));
 
-    await expect(acquireDaemonLock(paths, proofOptions)).rejects.toThrow(`delete ${paths.takeover}`);
+    await expect(acquireDaemonLock(paths, proofOptions)).rejects.toThrow(`${paths.takeover} remains. Run: npx --no-install rove-sentinel repair`);
 
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
     expect(await exists(paths.takeover)).toBe(true);
@@ -610,7 +610,7 @@ describe('a person beside a takeover', () => {
     await writeFile(paths.takeover, '');
     await utimes(paths.takeover, new Date(BOOT), new Date(BOOT));
 
-    await expect(recover(paths)).rejects.toThrow(`delete ${paths.takeover}`);
+    await expect(recover(paths)).rejects.toThrow(`${paths.takeover} remains. Run: npx --no-install rove-sentinel repair`);
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
     expect(await exists(paths.takeover)).toBe(true);
 
@@ -626,7 +626,7 @@ describe('a person beside a takeover', () => {
     await writeFile(paths.takeover, '');
     await utimes(paths.takeover, new Date(BOOT), new Date(BOOT));
 
-    await expect(stopDaemon({ repoRoot: process.cwd(), paths }, { isAlive: () => false })).rejects.toThrow(`delete ${paths.takeover}`);
+    await expect(stopDaemon({ repoRoot: process.cwd(), paths }, { isAlive: () => false })).rejects.toThrow(`${paths.takeover} remains. Run: npx --no-install rove-sentinel repair`);
 
     await expect(readJson(paths.lock)).resolves.toMatchObject(LOCK);
     expect(await exists(paths.takeover)).toBe(true);

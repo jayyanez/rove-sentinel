@@ -93,8 +93,9 @@ machine, watcher, network, and the selected authenticated CLI(s) must remain ava
 | `gate --json --base origin/main --head HEAD` | Emit a structured result |
 | `watch --once --no-github` | Process the local queue without PR discovery |
 | `pause --reason "Maintenance"` | Pause new review work |
-| `resume` | Resume ordinary paused work |
-| `recover --reason "Investigated the stale watcher state"` | Recover stale locks and claims; refuses a healthy watcher and does not clear a pause |
+| `repair [--dry-run] [--stop-orphans]` | Verify and fix whatever keeps reviews or updates blocked, or name what stops it and the next command; see the [runbook](troubleshooting.md#runbook-for-agents) |
+| `resume` | Resume ordinary paused work, and start the watcher when none runs |
+| `recover --reason "Investigated the stale watcher state"` | Recover stale locks and claims, then start the watcher; refuses a healthy watcher and does not clear a pause |
 | `ledger --pr 123` | Draft an optional comparison ledger from external review comments |
 | `limits` | What the active engine accepts and where it stops, and which earlier workarounds no longer apply |
 | `tools [--install [--yes]]` | Linter tools this machine lacks, and installing them with winget or Homebrew after you confirm |

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LONG_PAUSE_MS, automaticUpdate, maybeStartUpdateWorker, reviewNotices, updateInformation, watcherHolds } from '../automatic-updates.mjs';
-import { engineCli, engineDirectory, engineStatePath, ensureEngine, publishEngineState, selectedEngine } from '../engine-store.mjs';
+import { engineCli, engineDirectory, engineStatePath, ensureEngine, inspectStoreLock, publishEngineState, removeStaleStoreLock, selectedEngine } from '../engine-store.mjs';
 import { acquireReviewLease, acquireUpdateLease, updateMarker } from '../maintenance.mjs';
 import { atomicWriteJson, ensureState, readJson } from '../storage.mjs';
 import { policyForEngineUpgrade } from '../install.mjs';
@@ -310,25 +310,63 @@ describe('shared immutable runtime distribution', () => {
     await expect(ensureEngine('1.12.0', { ...d, maxVersions: 4 })).rejects.toThrow();
     expect(await present(d.root)).toEqual(['1.10.0', '1.11.0', '1.12.0', '1.9.0']);
   });
-  it('neither reserves nor reuses a ready copy while another process\'s lock, live or left behind, holds the store', async () => {
+  it('waits for a live owner\'s lock, and removes one whose owner is provably gone, with its staging and a record', async () => {
     const d = await distribution();
     await ensureEngine('1.11.0', d);
     const lock = path.join(d.root, 'download.lock');
     const reserve = vi.fn(async () => {});
+    // A live owner: nothing is reserved or reused, and the refusal names the repair.
     await writeFile(lock, JSON.stringify({ pid: process.pid, version: '1.12.0' }));
-    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300, reserve })).rejects.toThrow('owns');
-    // A dead owner's lock, or one it never wrote its PID into, is refused at once.
-    await writeFile(lock, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
-    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 60_000, reserve })).rejects.toThrow('owns');
-    await writeFile(lock, '');
-    const old = new Date(Date.now() - 60_000);
-    await utimes(lock, old, old);
-    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 60_000, reserve })).rejects.toThrow('owns');
+    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300, reserve })).rejects.toThrow('Run: npx --no-install rove-sentinel repair');
     expect(reserve).not.toHaveBeenCalled();
-    await rm(lock);
-    expect(await ensureEngine('1.11.0', { ...d, reserve })).toBe(engineDirectory('1.11.0', d.root));
-    expect(reserve).toHaveBeenCalledOnce();
+    // A dead owner's lock, and the staging only it can have created, are removed.
+    await writeFile(lock, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    await mkdir(path.join(d.root, 'staging'));
+    expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 60_000, reserve })).toBe(engineDirectory('1.11.0', d.root));
+    await expect(readFile(path.join(d.root, 'staging'))).rejects.toMatchObject({ code: 'ENOENT' });
+    // A lock never given an owner is gone only once it is ten minutes old.
+    await writeFile(lock, '');
+    await expect(ensureEngine('1.11.0', { ...d, lockWaitMs: 300, reserve })).rejects.toThrow('holds');
+    const old = new Date(Date.now() - 11 * 60_000);
+    await utimes(lock, old, old);
+    expect(await ensureEngine('1.11.0', { ...d, lockWaitMs: 300, reserve })).toBe(engineDirectory('1.11.0', d.root));
+    const events = (await readFile(path.join(d.root, 'store-events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(events.map((event) => event.type)).toEqual(['stale-download-lock-removed', 'stale-download-lock-removed']);
+    expect(events[0].why).toContain('is not running');
     expect(d.npm).toHaveBeenCalledOnce();
+  });
+  it('tells a reused PID from the lock\'s owner by its start time, and an earlier engine\'s lock only by its PID', async () => {
+    const root = await temp();
+    const lockFile = path.join(root, 'download.lock');
+    await writeFile(lockFile, JSON.stringify({ pid: process.pid, startedAt: 1_000, version: '1.12.0' }));
+    expect(await inspectStoreLock(root, { startedAt: async () => 5_000_000 })).toMatchObject({ state: 'stale', why: expect.stringContaining('now belongs to a process') });
+    expect(await inspectStoreLock(root, { startedAt: async () => 1_500 })).toMatchObject({ state: 'live' });
+    await writeFile(lockFile, JSON.stringify({ pid: process.pid, version: '1.12.0' }));
+    expect(await inspectStoreLock(root, { startedAt: async () => 5_000_000 })).toMatchObject({ state: 'live' });
+  });
+  it('never removes a lock another start put in place after the verdict, and clears a dead remover\'s marker', async () => {
+    const root = await temp();
+    const lockFile = path.join(root, 'download.lock');
+    await writeFile(lockFile, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    const verdict = await inspectStoreLock(root);
+    expect(verdict.state).toBe('stale');
+    // Between the verdict and the removal, the dead lock went and a live start took the name.
+    const live = JSON.stringify({ pid: process.pid, version: '1.13.0' });
+    await writeFile(lockFile, live);
+    expect(await removeStaleStoreLock(root, verdict)).toBe(false);
+    expect(await readFile(lockFile, 'utf8')).toBe(live);
+    // A remover that died holding the marker leaves it; the next removal clears it.
+    await writeFile(path.join(root, 'download.takeover'), JSON.stringify({ pid: 2 ** 31 - 2 }));
+    await writeFile(lockFile, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    const second = await inspectStoreLock(root);
+    expect(await removeStaleStoreLock(root, second)).toBe(false);
+    expect(await removeStaleStoreLock(root, second)).toBe(true);
+    await expect(readFile(lockFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    // A live remover's marker is respected.
+    await writeFile(path.join(root, 'download.takeover'), JSON.stringify({ pid: process.pid }));
+    await writeFile(lockFile, JSON.stringify({ pid: 2 ** 31 - 2, version: '1.12.0' }));
+    expect(await removeStaleStoreLock(root, await inspectStoreLock(root))).toBe(false);
+    expect(await readFile(lockFile, 'utf8')).toContain('1.12.0');
   });
   it('writes the reservation while it holds the store, and trims a store an interrupted install left over its cap', async () => {
     const d = await distribution();
@@ -397,8 +435,10 @@ describe('an update the watcher keeps waiting is said', () => {
     const lines = await reviewNotices(f.context.paths, 'example');
     expect(lines[0]).toContain('99.0.0 is downloaded for example but cannot activate');
     expect(lines[0]).toContain(`paused (since ${pause.pausedAt}): ${SAFETY.slice(0, -1)}`);
-    expect(lines[0]).toContain('rove-sentinel resume');
+    expect(lines[0]).toMatch(/Run: npx --no-install rove-sentinel repair$/);
     expect(lines[0]).not.toContain('after current reviews finish');
+    // An agent reading the log acts on one command, at the end of the line.
+    expect(lines[0].match(/rove-sentinel repair/g)).toHaveLength(1);
     // Days old, so the pushes it refuses are said too.
     expect(lines[1]).toContain('Pushes without a passing review are refused');
     expect(await readJson(f.context.paths.paused)).toEqual(pause);
@@ -412,7 +452,7 @@ describe('an update the watcher keeps waiting is said', () => {
     ]);
     const [line] = await reviewNotices(f.context.paths, 'example');
     expect(line).toContain('the review watcher is not running (since 2026-11-05T10:00:00.000Z): Review daemon lock belongs to dead PID 4242');
-    expect(line).toContain('rove-sentinel install');
+    expect(line).toMatch(/Run: npx --no-install rove-sentinel repair$/);
   });
   it('names a live watcher of another engine or policy, which activation also waits out', async () => {
     const f = await waiting(); await liveWatcher(f.context.paths, { policyDigest: 'another' });
@@ -436,7 +476,7 @@ describe('an update the watcher keeps waiting is said', () => {
     expect(await kinds(f.context.paths)).toEqual(['paused', 'interrupted']);
     const [line] = await reviewNotices(f.context.paths, 'example');
     expect(line).toContain('an earlier activation was interrupted');
-    expect(line).toContain('Isolation and recovery');
+    expect(line).toMatch(/Run: npx --no-install rove-sentinel repair$/);
     // A live process that started after the marker reused its PID: still interrupted.
     await atomicWriteJson(updateMarker(f.context.paths), { version: '99.0.0', pid: process.pid, startedAt: '2026-11-10T00:00:00.000Z' });
     const reused = await watcherHolds(f.context.paths, { startedAt: async () => Date.parse('2026-11-12T00:00:00.000Z') });
@@ -462,7 +502,7 @@ describe('an update the watcher keeps waiting is said', () => {
     await atomicWriteJson(f.context.paths.queueSubmitLock, { pid: DEAD_PID });
     expect(await kinds(f.context.paths)).toEqual(['queue-lock']);
     const [line] = await reviewNotices(f.context.paths, 'example');
-    expect(line).toContain(`then delete ${f.context.paths.queueSubmitLock}`);
+    expect(line).toMatch(/Run: npx --no-install rove-sentinel repair$/);
     await atomicWriteJson(f.context.paths.queueSubmitLock, { pid: process.pid });
     expect(await kinds(f.context.paths)).toEqual([]);
   });
@@ -502,7 +542,7 @@ describe('an update the watcher keeps waiting is said', () => {
     const lines = await reviewNotices(f.context.paths, 'example', { now });
     expect(lines).toHaveLength(2);
     expect(lines[1]).toContain('The review watcher for example has been paused since 2026-11-17T11:00:00.000Z');
-    expect(lines[1]).toContain('rove-sentinel resume');
+    expect(lines[1]).toMatch(/Run: npx --no-install rove-sentinel repair$/);
     expect(await reviewNotices(f.context.paths, 'example', { now: now - 2 * HOUR })).toHaveLength(1);
   });
   it('reports a download that failed, with its reason, while it is still newer than the running engine', async () => {
@@ -511,7 +551,7 @@ describe('an update the watcher keeps waiting is said', () => {
     const [line] = await reviewNotices(f.context.paths, 'example');
     expect(line).toContain('99.0.0 could not be downloaded for example');
     expect(line).toContain(full);
-    expect(line).toContain('rove-sentinel update');
+    expect(line).toMatch(/Run: npx --no-install rove-sentinel repair$/);
     const old = await waiting('download-failed', { pendingVersion: '1.0.0', lastError: full });
     expect(await reviewNotices(old.context.paths, 'example')).toEqual([]);
     // A failed attempt names its version without reserving it.

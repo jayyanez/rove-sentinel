@@ -1,9 +1,13 @@
 # Changelog
 
-## 1.20.1 — updates that cannot proceed say so
+## 1.20.1 — updates that cannot proceed say so, and `repair` fixes them
 
 Two ways automatic updates stopped for days without anyone noticing, seen on a host with
-eight consumer projects. Nothing needs doing to receive the fix: it arrives as an ordinary
+eight consumer projects. Every blocked state now either fixes itself when that is provably
+safe, or ends its message with `Run: npx --no-install rove-sentinel repair`, a command an
+agent runs and follows without judgement calls. Project agent instructions need one line:
+when any Sentinel output reports a blocked or paused state, run that command and follow its
+output ([runbook](docs/troubleshooting.md#runbook-for-agents)). Nothing needs doing to receive the fix: it arrives as an ordinary
 automatic update once the store has room and the watcher can acknowledge it. A host whose
 store is already full needs one manual step (below), because the fix is in the engine that
 cannot download.
@@ -21,7 +25,7 @@ cannot download.
   project reserves a version and checks for a ready copy while it holds the store's lock, so
   a collection either reads that reservation or has already removed the copy, which is then
   downloaded again. A reservation whose install fails is taken back under the same lock. A
-  lock left by a process that is gone now stops reuse too, until a person removes it. A
+  lock whose owner is provably gone is removed (see below). A
   collection an interrupted install left undone is retried, at best effort, by the next
   install that holds the store's lock. When only required versions remain, the error names
   them. On a host already stuck: move one version that no project has active out of the
@@ -41,6 +45,36 @@ cannot download.
   that failed while its release is still newer than the running engine; where automatic
   updates are disabled, they say the release will not activate instead.
   `ROVE_SENTINEL_UPDATE_NOTIFICATIONS=0` silences these lines as before.
+- **`rove-sentinel repair [--dry-run] [--json] [--stop-orphans]`.** For one repository it
+  finds each blocked state, verifies it with the checks a careful person would make, acts
+  when they pass and records the action with its evidence in the repository's events, or
+  stops with the processes or records that failed the check and the exact next command. A
+  safety pause is resumed once no process of this repository's reviews remains (by the
+  review directory a process's command line names and that directory's owner record, by
+  descent from the provider recorded in the pause, which safety pauses now record, and by
+  descent from those); otherwise it lists them, and `--stop-orphans` stops only those,
+  each while its PID keeps the start time it was listed with, then resumes. A stopped
+  watcher whose lock owner is gone or a reused PID is recovered and started the way install
+  starts it (the Windows scheduled task); a hung watcher of this repository is stopped only
+  with `--stop-orphans`. It also removes a dead submitter's queue lock, a stale store lock, a
+  daemon-lock takeover marker over ten minutes old and unreadable counters; rolls back an
+  activation whose process is gone, from `update-recovery.json`; restarts a watcher of
+  another engine or policy with `install --preserve-policy` once no review runs; and retries
+  a waiting or failed update, naming the projects that hold a full store. It never lifts a
+  person's pause (`rove-sentinel pause`).
+- **A download lock whose owner is gone is removed.** The lock records its owner's PID and
+  start time; a download removes it, with the staging folder only that owner can have
+  created, when the PID is not running or runs a process started at another time, taking
+  `download.takeover` exclusively and removing only the lock it judged. A lock from an
+  earlier engine is removed only when its PID is not running. Removals are logged in the
+  store's `store-events.jsonl`. A download still waits while the owner may be alive, and its
+  error then ends with the repair command.
+- **`recover` starts the watcher** after clearing its state, and **`resume` starts one that is
+  not running**, as install does; both report it under `watcher`. Recovering by hand needed a
+  manual start of the scheduled task before.
+- Every message about a paused, stopped or locked watcher, a stale lock or an interrupted
+  update now ends with `Run: npx --no-install rove-sentinel repair` instead of asking a person
+  to inspect something; safety pauses carry the same line in their reason.
 
 ## 1.20.0 — GPT-6.2 Sol by default
 

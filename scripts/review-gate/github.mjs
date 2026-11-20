@@ -1,7 +1,7 @@
 import { COMMENT_MARKER, LIMITS } from './constants.mjs';
 import { ensureCommitAvailable, inferAuthor, mergeBase, repoSlugFromRemote } from './git.mjs';
 import { applyRecordedDeferrals } from './dispositions.mjs';
-import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
+import { processTreeCleanupFailureCode, providerCleanupFailureRecord, runProcess, safetyPauseReason } from './process.mjs';
 import { formatProviderFallback } from './usageLimits.mjs';
 import { formatAccounts } from './accounts.mjs';
 import {
@@ -34,12 +34,8 @@ function githubCodeText(value, max) {
 async function pauseForUnverifiedProcessTree(context, error, pause) {
   const cleanupCode = processTreeCleanupFailureCode(error);
   if (!cleanupCode) return false;
-  await pause(
-    context.paths,
-    cleanupCode === 'ORPHANED_PROCESS_TREE'
-      ? 'Windows provider parent exited before inherited pipes closed; inspect remaining provider processes before resuming.'
-      : 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.',
-  );
+  await pause(context.paths, safetyPauseReason(cleanupCode),
+    { kind: 'provider-cleanup', provider: providerCleanupFailureRecord() });
   return true;
 }
 

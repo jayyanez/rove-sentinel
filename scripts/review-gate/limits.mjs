@@ -95,6 +95,11 @@ export function sentinelLimits() {
         text: 'Automatic updates keep at most 5 engine versions per OS user. When the store is full, a new release first removes versions nothing uses, then copies kept only for a project\'s rollback, oldest first; versions a project has active or pending, or a running process uses, are never removed, and the download fails with the versions that hold it. A downloaded release activates only when the watcher is running and not paused: review commands, status and updates say what holds it and the command that lifts it, and review commands report a pause older than a day.',
       },
       {
+        id: 'repair',
+        limit: 'one command',
+        text: 'Every blocked state (a paused or stopped watcher, a stale lock, an interrupted or failed update, a full store) either fixes itself when that is provably safe, or ends its message with: Run: npx --no-install rove-sentinel repair. repair verifies each state, acts when the checks pass, and otherwise prints the processes or records that stopped it and the next command. It never lifts a person\'s pause, and stops processes only with --stop-orphans and only those it can trace to this repository\'s reviews (or, with no review running anywhere for this OS user, to a review directory left without an owner record).',
+      },
+      {
         id: 'review-accounts',
         limit: `${LIMITS.maxAccountsPerProvider} accounts per provider`,
         text: `A user may declare up to ${LIMITS.maxAccountsPerProvider} accounts of each CLI (a CLAUDE_CONFIG_DIR or CODEX_HOME folder and a label) in a per-user accounts file, never in the repository. Reviewers avoid the author's own account while another is usable, and rotate through the rest. An account that fails or reports its usage limit is held, as a provider would be, and the review restarts from scratch with the provider's next account, under any provider requirement: one restart per failing account, plus the one provider restart under auto. Only labels reach reports.`,
@@ -150,6 +155,16 @@ export function sentinelLimits() {
         rule: 'Move an old version out of the engine store by hand when updates stop with "Runtime storage is full"',
         unnecessarySince: '1.20.1',
         why: 'A full store removes copies kept only for a project\'s rollback, oldest first, and a project whose checkout is gone keeps only its active version. Active, pending and running versions are never removed.',
+      },
+      {
+        rule: 'List provider processes by hand before resuming after a safety pause, and start the watcher\'s scheduled task by hand after recover',
+        unnecessarySince: '1.20.1',
+        why: 'rove-sentinel repair checks for processes left by this repository\'s reviews and resumes when none remain; recover and resume start the watcher the way install does.',
+      },
+      {
+        rule: 'Delete a download.lock or queue lock left by a process that is gone',
+        unnecessarySince: '1.20.1',
+        why: 'A download removes a store lock whose owner is provably gone (by PID and start time), and repair removes a dead submitter\'s queue lock.',
       },
       {
         rule: 'Run install from an elevated shell on Windows',

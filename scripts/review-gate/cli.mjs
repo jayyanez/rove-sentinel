@@ -17,6 +17,7 @@ import { describeAccountHold, loadAccounts, readAccountState, requesterAccountKe
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, reviewNotices, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
+import { formatRepair, repairRepository } from './repair.mjs';
 
 import { runWatcher } from './daemon.mjs';
 import {
@@ -423,6 +424,12 @@ async function main() {
     result.engine = await updateInformation((await createGateContext(repoRoot)).paths);
     warnOfWatcher(result.watcher, result.scheduler);
     print(result, true);
+    return;
+  }
+  if (command === 'repair') {
+    const report = await repairRepository({ repoRoot, dryRun: Boolean(options['dry-run']), stopOrphans: Boolean(options['stop-orphans']) });
+    print(options.json ? report : formatRepair(report), Boolean(options.json));
+    if (!report.ok) process.exitCode = 1;
     return;
   }
   if (command === 'pause') {

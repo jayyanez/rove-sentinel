@@ -1,26 +1,48 @@
 # Standalone validation record
 
-## 1.20.1 updates that cannot proceed say so — 2026-11-18
+## 1.20.1 updates that cannot proceed say so, and `repair` fixes them — 2026-11-19
 
 Deterministic tests cover a full engine store removing copies kept only for a rollback,
 oldest by version rather than by name, before refusing a new release, and none when the
-download fails; active, pending and running versions never removed, and the refusal naming
-them; nothing removed when the verified runtime cannot be put in place; a project record
-whose checkout is gone keeping only its active version; reuse of a ready copy waiting for a
-download lock, and refused at once under a dead or never-written one; no reservation written outside the store's lock, and a failed install's taken back under it; the reservation written while
-the store's lock is held, and a store left over its cap trimmed on the next install; `updates` listing a safety pause
-(time, reason, command), a stopped watcher (its error), a live watcher of another engine or
-policy, a dead submitter's queue lock, an interrupted activation's pause and fence (a reused
-PID included, where the system reports start times), and every
-unreadable record, update settings and fence included, without hiding a pause,
-under `blockedBy` and without lifting anything; no hold for a running watcher, or for the
-pause a live activation writes for itself; the review-command line for a pause older than a
-day and none for a fresh one; the line for a failed download only while its release is newer
-than the running engine; and disabled updates said as such. The 19 new tests fail on 1.20.0. 1,048 tests passed on Windows, and the package smoke passed.
+download fails or the verified runtime cannot be put in place; active, pending and running
+versions never removed, and the refusal naming them; a project record whose checkout is gone
+keeping only its active version; reservations written and taken back only while the store's
+lock is held, and a store left over its cap trimmed on the next install.
 
-Not run live: the fix was not installed on a host with consumer projects, and no full store
-or paused watcher was reproduced outside the tests. The two failures it addresses were read
-from one host's state, not from these tests.
+Store locks: a live owner's lock waited for, with an error ending in the repair command; a
+dead owner's lock and its staging removed and logged; a lock never given an owner removed
+only after ten minutes; a reused PID told from the owner by its start time, and an earlier
+engine's lock judged by its PID alone; a lock another start put in place after the verdict
+never removed; a dead remover's takeover marker cleared and a live one respected.
+
+Holds and lines: `updates` listing a safety pause, a stopped watcher, a live watcher of
+another engine or policy, a dead submitter's queue lock, an interrupted activation's pause
+and fence (a reused PID included, where the system reports start times) and every
+unreadable record, without lifting anything; every such line ending with
+`Run: npx --no-install rove-sentinel repair`, once; no hold for a running watcher or a live
+activation's own pause; the long-pause, failed-download and disabled-updates lines.
+
+`repair`: review directories read from quoted, spaced and `--flag=` command lines; a
+process counted as this repository's only when its review directory's owner names this
+repository and runs no review, or it descends from the provider a safety pause recorded and
+started before it, never one of another repository; children stopped first and only while a
+PID keeps its listed start time; a safety pause (and one from an earlier engine) resumed
+when no such process remains, kept with the processes listed and `--stop-orphans` named
+while they do, and resumed after that command stops them; a person's pause never lifted; an
+update's leftover pause lifted; a watcher whose lock owner is dead or a reused PID
+recovered and started; a hung watcher stopped only with `--stop-orphans`; a watcher that
+cannot start named with its command, and a repository without a watcher left alone; a
+watcher of another engine restarted only while no review runs; a dead submitter's queue
+lock, a stale store lock, an old takeover marker and an unreadable watcher lock handled; an
+interrupted activation rolled back and a running one waited for; a waiting or failed update
+retried and a full store's holders named; a dry run changing nothing. `recover` and
+`resume` start the watcher, through the installed scheduled task or by naming install.
+The 42 new tests fail on 1.20.0. 1,071 tests passed on Windows, and the package smoke passed.
+
+Not run live: the fix was not installed on a host with consumer projects, and no full store,
+paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in
+dry-run mode against a real installation, where it reported a watcher of another engine
+running from another checkout. The failures it addresses were read from one host's state.
 
 ## 1.20.0 GPT-6.2 Sol by default — 2026-11-18
 

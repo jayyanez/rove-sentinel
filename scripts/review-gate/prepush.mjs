@@ -463,7 +463,7 @@ export async function runPrePush({
   // must not trip the pause guard; review 1.7.0).
   const stillUnattested = unattested.filter((plan) => !plan.attestation);
   if (paused && stillUnattested.length) {
-    throw new Error(`Shared review gate is paused: ${paused.reason}. Resume it or use the documented exact-SHA emergency bypass.`);
+    throw new Error(`Shared review gate is paused: ${String(paused.reason).replace(/\s*Run: [^\n]*$/, '').replace(/[.\s]+$/, '')}. Run: npx --no-install rove-sentinel repair`);
   }
   const refusal = unattestedRefusal(stillUnattested.map((plan) => plan.branch));
   if (refusal) throw new Error(refusal);

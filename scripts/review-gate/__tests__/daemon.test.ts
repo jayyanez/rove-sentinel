@@ -241,7 +241,8 @@ describe('review watcher heartbeat coverage', () => {
     )).resolves.toBe(true);
     expect(pause).toHaveBeenCalledWith(
       context.paths,
-      expect.stringContaining('inspect remaining provider processes'),
+      expect.stringContaining('Run: npx --no-install rove-sentinel repair'),
+      expect.objectContaining({ kind: 'provider-cleanup' }),
     );
   });
 
@@ -260,6 +261,7 @@ describe('review watcher heartbeat coverage', () => {
     expect(pause).toHaveBeenCalledWith(
       context.paths,
       expect.stringContaining('cleanup could not be verified'),
+      expect.objectContaining({ kind: 'provider-cleanup' }),
     );
   });
 
@@ -392,6 +394,7 @@ describe('review watcher queue control', () => {
       expect(pause).toHaveBeenCalledWith(
         paths,
         expect.stringContaining('cleanup could not be verified'),
+        expect.objectContaining({ kind: 'provider-cleanup' }),
       );
     } finally {
       await rm(stateRoot, { recursive: true, force: true });

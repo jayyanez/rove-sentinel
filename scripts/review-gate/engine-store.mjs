@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { processStartedAt } from './maintenance.mjs';
 import { runProcess } from './process.mjs';
 import { atomicWriteJson, readJson, stateRootFor } from './storage.mjs';
 import { RELEASE_REPOSITORY, compareVersions, releaseUrls, stableVersion } from './updates.mjs';
@@ -162,34 +163,121 @@ async function removeDisplaced(root, versions) {
   for (const old of versions) await rm(engineDirectory(old, root), { recursive: true, force: true }).catch(() => {});
 }
 
-// An owner writes its PID right after creating the lock; one that has not after
-// this long was interrupted between the two.
-const UNWRITTEN_LOCK_MS = 10_000;
+// An owner writes its PID within milliseconds of creating the lock; a lock
+// still without one after this long belongs to a start that died in between.
+const UNWRITTEN_LOCK_MS = 10 * 60_000;
+// Two start times of one process, read by two system calls, agree within this.
+const START_TOLERANCE_MS = 2_000;
+
+let ownStart;
+const ownStartedAt = () => (ownStart ??= processStartedAt(process.pid).catch(() => null));
+
+/**
+ * Who holds the store's lock, and whether that owner is provably gone: its PID
+ * is not alive, or is alive with another start time than the one it recorded
+ * (a reused PID). A lock written before 1.20.1 records no start time, so only a
+ * dead PID proves it gone; one with no readable owner is gone once it is
+ * UNWRITTEN_LOCK_MS old. `raw` is the content the verdict was made on.
+ */
+export async function inspectStoreLock(root, { isAlive = processAlive, startedAt = processStartedAt, now = Date.now() } = {}) {
+  const lockFile = path.join(root, 'download.lock');
+  let raw;
+  let modified;
+  try {
+    modified = (await stat(lockFile)).mtimeMs;
+    raw = await readFile(lockFile, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return { state: 'free' };
+    throw error;
+  }
+  let owner = null;
+  try { owner = JSON.parse(raw); } catch { owner = null; }
+  if (!Number.isInteger(owner?.pid) || owner.pid < 1) {
+    return now - modified > UNWRITTEN_LOCK_MS
+      ? { state: 'stale', raw, owner, why: `it records no owner and is ${Math.round((now - modified) / 60_000)} minutes old` }
+      : { state: 'live', raw, owner, why: 'its owner is still writing it' };
+  }
+  if (!isAlive(owner.pid)) return { state: 'stale', raw, owner, why: `its owner PID ${owner.pid} is not running` };
+  if (Number.isFinite(owner.startedAt)) {
+    const observed = await startedAt(owner.pid).catch(() => null);
+    if (observed !== null && Math.abs(observed - owner.startedAt) > START_TOLERANCE_MS) {
+      return { state: 'stale', raw, owner, why: `PID ${owner.pid} now belongs to a process started at ${new Date(observed).toISOString()}, not its owner` };
+    }
+  }
+  return { state: 'live', raw, owner, why: `PID ${owner.pid} still runs` };
+}
+
+/** A bounded log of what Sentinel itself removed from the shared store, with its evidence. */
+export async function recordStoreEvent(root, event) {
+  const file = path.join(root, 'store-events.jsonl');
+  try {
+    if ((await stat(file)).size > 256 * 1024) await rename(file, `${file}.1`);
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  await appendFile(file, `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`, { mode: 0o600 });
+}
+
+/**
+ * Removes a lock whose owner is provably gone, and the staging directory only
+ * that owner can have created. Removers take `download.takeover` exclusively,
+ * then remove the lock only while it still holds the content the verdict was
+ * made on: a lock another start created in its place is never removed. A
+ * takeover marker left by a dead remover is cleared the same way.
+ */
+export async function removeStaleStoreLock(root, verdict, { reason = 'automatic', isAlive = processAlive } = {}) {
+  const lockFile = path.join(root, 'download.lock');
+  const marker = path.join(root, 'download.takeover');
+  let handle;
+  try { handle = await open(marker, 'wx', 0o600); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const holder = await readFile(marker, 'utf8').then((text) => JSON.parse(text), () => null);
+    if (Number.isInteger(holder?.pid) && !isAlive(holder.pid)) {
+      await rm(marker, { force: true });
+      await recordStoreEvent(root, { type: 'takeover-marker-removed', reason, holderPid: holder.pid });
+    }
+    return false;
+  }
+  try {
+    await handle.writeFile(JSON.stringify({ pid: process.pid }));
+    const current = await readFile(lockFile, 'utf8').catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+    if (current !== verdict.raw) return false;
+    await rm(path.join(root, 'staging'), { recursive: true, force: true });
+    await rm(lockFile, { force: true });
+    await recordStoreEvent(root, { type: 'stale-download-lock-removed', reason, owner: verdict.owner, why: verdict.why });
+    return true;
+  } finally {
+    await handle.close().catch(() => {});
+    await rm(marker, { force: true }).catch(() => {});
+  }
+}
 
 /**
  * The store's lock, which every collection and reservation holds. Waits up to
- * `waitMs` while a live process holds it; returns `stale` at once when its owner
- * is gone, since waiting cannot help: a person inspects it before the store is
- * used again.
+ * `waitMs` while its owner may be alive; removes it, and retries, when that
+ * owner is provably gone.
  */
-async function lockStore(lockFile, version, waitMs) {
+async function lockStore(root, lockFile, version, waitMs) {
   const deadline = Date.now() + waitMs;
+  let last = null;
   while (true) {
     try {
       const handle = await open(lockFile, 'wx', 0o600);
-      try { await handle.writeFile(JSON.stringify({ pid: process.pid, version })); }
+      try { await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: await ownStartedAt(), version })); }
       catch (error) { await handle.close(); await rm(lockFile, { force: true }); throw error; }
       const release = async () => { try { await handle.close(); } finally { await rm(lockFile, { force: true }); } };
       return { release };
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
-    let owner = null;
-    let modified = Date.now();
-    try {
-      modified = (await stat(lockFile)).mtimeMs;
-      owner = JSON.parse(await readFile(lockFile, 'utf8'));
-    } catch (error) { if (error.code === 'ENOENT') continue; }
-    if (Number.isInteger(owner?.pid) ? !processAlive(owner.pid) : Date.now() - modified > UNWRITTEN_LOCK_MS) return { stale: true };
-    if (Date.now() >= deadline) return { busy: true };
+    // One verdict per lock content: the start-time probe is a process launch.
+    const raw = await readFile(lockFile, 'utf8').catch(() => null);
+    if (raw === null) continue;
+    if (last?.raw !== raw) last = await inspectStoreLock(root);
+    if (last.state === 'stale') {
+      await removeStaleStoreLock(root, last);
+      last = null;
+      continue;
+    }
+    if (last.state === 'free') continue;
+    if (Date.now() >= deadline) return { busy: true, owner: last.owner };
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
@@ -216,10 +304,12 @@ export async function ensureEngine(version, { root = engineRoot(), fetchImpl = g
     catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false; throw error; }
   };
   await mkdir(root, { recursive: true });
-  const lock = await lockStore(lockFile, version, lockWaitMs);
-  // Nothing is reserved or reused without the lock: a lock left by a dead
-  // owner holds the store until a person inspects and removes it.
-  if (!lock.release) throw new Error(`Another or interrupted runtime download owns ${lockFile}; retry later or inspect its recorded PID.`);
+  const lock = await lockStore(root, lockFile, version, lockWaitMs);
+  // Nothing is reserved or reused without the lock.
+  if (!lock.release) {
+    const owner = lock.owner;
+    throw new Error(`Another Sentinel process (PID ${owner?.pid ?? 'unknown'}${Number.isFinite(owner?.startedAt) ? `, started ${new Date(owner.startedAt).toISOString()}` : ''}) holds ${lockFile} while it installs engine ${owner?.version ?? 'unknown'}, and this command waited ${Math.round(lockWaitMs / 60_000)} minutes. Run: npx --no-install rove-sentinel repair`);
+  }
   const stage = path.join(root, 'staging');
   let createdStage = false;
   let installing = false;

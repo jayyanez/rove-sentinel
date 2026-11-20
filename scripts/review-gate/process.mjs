@@ -73,6 +73,27 @@ export function providerCleanupFailureDetail() {
   return `${command}${pid === null ? '' : ` (pid ${pid})`}: ${reason}`;
 }
 
+/** The provider whose cleanup failed, for the pause record: repair traces its descendants. */
+export function providerCleanupFailureRecord() {
+  if (!providerCleanupFailure) return null;
+  return { pid: providerCleanupFailure.pid, command: providerCleanupFailure.command };
+}
+
+export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
+// The two safety pauses a failed provider cleanup writes. Earlier engines wrote
+// the same openings, so repair recognises their pauses too.
+export const SAFETY_PAUSE_REASONS = {
+  orphaned: 'Windows provider parent exited before inherited pipes closed',
+  unverified: 'Provider process-tree cleanup could not be verified',
+};
+export function safetyPauseReason(code) {
+  return `${code === 'ORPHANED_PROCESS_TREE' ? SAFETY_PAUSE_REASONS.orphaned : SAFETY_PAUSE_REASONS.unverified}; provider processes may remain. Run: ${REPAIR_COMMAND}`;
+}
+export function isSafetyPause(record) {
+  const reason = String(record?.reason ?? '');
+  return record?.kind === 'provider-cleanup' || Object.values(SAFETY_PAUSE_REASONS).some((opening) => reason.startsWith(opening));
+}
+
 export function resetProviderCleanupLatch() {
   providerCleanupFailure = null;
 }
@@ -176,7 +197,7 @@ export async function terminateProcessTree(
   if (!child.pid) return;
   if (platform === 'win32') {
     const throwOrphanedTree = () => {
-      const error = new Error(`Provider process ${child.pid} exited before its inherited pipes closed. Windows can no longer identify that process tree by the recorded parent PID; stop the watcher and inspect remaining provider processes before retrying.`);
+      const error = new Error(`Provider process ${child.pid} exited before its inherited pipes closed. Windows can no longer identify that process tree by the recorded parent PID, and provider processes may remain. Run: npx --no-install rove-sentinel repair`);
       error.code = 'ORPHANED_PROCESS_TREE';
       throw error;
     };
