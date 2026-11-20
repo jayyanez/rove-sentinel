@@ -3,7 +3,7 @@ import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { appendFile, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { processStartedAt } from './maintenance.mjs';
-import { REPAIR_BOOTSTRAP_HINT, runProcess } from './process.mjs';
+import { runProcess } from './process.mjs';
 import { atomicWriteJson, readJson, stateRootFor } from './storage.mjs';
 import { RELEASE_REPOSITORY, compareVersions, releaseUrls, stableVersion } from './updates.mjs';
 
@@ -61,7 +61,7 @@ export async function repairEngine(paths, bundledCli, bundledVersion, root = eng
   }
   const eligible = candidates.filter((candidate) => !active || compareVersions(candidate.version, active) >= 0)
     .sort((a, b) => compareVersions(b.version, a.version));
-  if (!eligible.length) throw new Error(`No engine as new as the active ${active} is installed to repair this repository. ${REPAIR_BOOTSTRAP_HINT}`);
+  if (!eligible.length) throw new Error(`No copy of the active engine ${active}, or of a newer one, is installed to repair this repository. Run from the repository's trusted checkout: npx --no-install rove-sentinel install`);
   return eligible[0].cli;
 }
 

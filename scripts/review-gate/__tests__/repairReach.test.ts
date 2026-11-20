@@ -42,7 +42,7 @@ describe('which engine a repair runs on', () => {
     await publishEngineState(paths, { activeVersion: '1.21.0' }, root);
     expect(await repairEngine(paths, 'bundled-cli', '1.20.1', root)).toBe(engineCli('1.21.0', root));
     await rm(engineDirectory('1.21.0', root), { recursive: true });
-    await expect(repairEngine(paths, 'bundled-cli', '1.20.1', root)).rejects.toThrow('predates 1.20.1');
+    await expect(repairEngine(paths, 'bundled-cli', '1.20.1', root)).rejects.toThrow('No copy of the active engine 1.21.0');
   });
   it('frees one slot of a full store for an older engine\'s download, keeping what projects need', async () => {
     const base = await temp();
@@ -56,6 +56,20 @@ describe('which engine a repair runs on', () => {
     expect(await makeStoreRoom(root)).toEqual({ removed: ['1.16.0'] });
     expect((await readdir(path.join(root, 'versions'))).sort()).toEqual(['1.15.0', '1.17.0', '1.18.0', '1.19.0']);
     expect(await makeStoreRoom(root)).toEqual({ removed: [] });
+  });
+});
+
+describe('the watcher a repair on a newer engine judges', () => {
+  it('is judged by its engine version only, not by a policy snapshot only its own engine can read', async () => {
+    const { watcherHolds } = await import('../automatic-updates.mjs');
+    const base = await temp();
+    const paths = await ensureState(path.join(base, 'state'));
+    // A snapshot an older engine wrote, which this engine cannot check.
+    await atomicWriteJson(paths.policy, { gateVersion: '1.18.0', charter: 'x', lessons: 'y', config: {}, policyDigest: 'older' });
+    await atomicWriteJson(paths.lock, { ownerToken: 'owner-token', pid: process.pid });
+    await atomicWriteJson(paths.heartbeat, { ownerToken: 'owner-token', pid: process.pid, at: new Date().toISOString(), gateVersion: '1.18.0', policyDigest: 'older' });
+    expect(await watcherHolds(paths, { gateVersion: '1.18.0', startedAt: async () => null })).toEqual([]);
+    expect((await watcherHolds(paths, { gateVersion: '1.19.0', startedAt: async () => null })).map((hold) => hold.kind)).toEqual(['outdated']);
   });
 });
 

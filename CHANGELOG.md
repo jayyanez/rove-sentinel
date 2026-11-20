@@ -81,8 +81,8 @@ cannot download.
   an older engine's download fits. For a repository whose active engine predates 1.20.1,
   [troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201) gives one line
   for PowerShell and one for macOS that download the 1.20.1 archive, refuse it unless its
-  SHA-256 matches the release's `SHA256SUMS`, and run its `repair`. `updates` and `status`
-  name that line under `repair.ifUnknownCommand` beside every hold.
+  SHA-256 matches the release's `SHA256SUMS`, and run its `repair`. From 1.20.1, `updates`
+  and `status` name those lines under `repair.ifUnknownCommand` beside every hold.
 - **`recover` starts the watcher** after clearing its state, and **`resume` starts one that is
   not running**, as install does; both report it under `watcher`. Recovering by hand needed a
   manual start of the scheduled task before.

@@ -68,7 +68,10 @@ export async function watcherHolds(paths, { isAlive = processAlive, startedAt = 
   const read = Object.fromEntries(await Promise.all(Object.entries(records).map(async ([name, file]) => [name, await settle(() => readJson(file))])));
   read.queue = await settle(() => readdir(paths.requests).catch((error) => { if (error.code === 'ENOENT') return []; throw error; }));
   let digest = null;
-  if (read.policy.value) {
+  // Only the engine that wrote the installed policy can check it: a repair on a
+  // newer engine judges the watcher by its engine version alone.
+  const ownEngine = gateVersion === GATE_VERSION;
+  if (read.policy.value && ownEngine) {
     try { digest = reviewPolicySnapshot(read.policy.value).policyDigest; }
     catch (error) { read.policy = { error: error?.message || String(error) }; }
   }
@@ -85,7 +88,8 @@ export async function watcherHolds(paths, { isAlive = processAlive, startedAt = 
     holds.push({ kind: 'stopped', since: read.daemonError.value?.at ?? heartbeat?.at ?? null,
       reason: read.daemonError.value?.message ?? (lock ? `no fresh heartbeat from the lock's PID ${lock.pid}` : 'no watcher is running'),
       action: `Run: ${REPAIR_COMMAND}` });
-  } else if (!read.policy.error && (heartbeat.gateVersion !== gateVersion || heartbeat.charterVersion !== charterVersion || !digest || heartbeat.policyDigest !== digest)) {
+  } else if (!read.policy.error && (heartbeat.gateVersion !== gateVersion
+    || (ownEngine && (heartbeat.charterVersion !== charterVersion || !digest || heartbeat.policyDigest !== digest)))) {
     holds.push({ kind: 'outdated', since: null,
       reason: `it runs ${heartbeat.gateVersion ?? 'an unknown version'} with ${digest && heartbeat.policyDigest === digest ? 'the installed policy' : 'another policy than the installed one'}, and this engine is ${gateVersion}`,
       action: `Run: ${REPAIR_COMMAND}` });

@@ -82,19 +82,22 @@ archive's `repair`, which the 1.20.1 launcher runs on the newest engine at hand.
 Windows (PowerShell):
 
 ```powershell
-$v='1.20.1'; $u="https://github.com/jayyanez/rove-sentinel/releases/download/v$v"; $f=Join-Path $env:TEMP "rove-sentinel-$v.tgz"; Invoke-WebRequest "$u/rove-sentinel-$v.tgz" -OutFile $f -UseBasicParsing; Invoke-WebRequest "$u/SHA256SUMS" -OutFile "$f.sums" -UseBasicParsing; $h=((Get-Content "$f.sums" | Where-Object { $_ -match " rove-sentinel-$v\.tgz$" }) -split '\s+')[0]; if (-not $h -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $h) { throw "Checksum mismatch: do not run $f" }; npx --yes --package $f -- rove-sentinel repair
+$ErrorActionPreference='Stop'; $v='1.20.1'; $u="https://github.com/jayyanez/rove-sentinel/releases/download/v$v"; $f=Join-Path $env:TEMP ("rove-sentinel-$v-" + [guid]::NewGuid() + '.tgz'); Invoke-WebRequest "$u/rove-sentinel-$v.tgz" -OutFile $f -UseBasicParsing; Invoke-WebRequest "$u/SHA256SUMS" -OutFile "$f.sums" -UseBasicParsing; $h=((Get-Content "$f.sums" | Where-Object { $_ -match " rove-sentinel-$v\.tgz$" }) -split '\s+')[0]; if (-not $h -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $h) { throw "Checksum mismatch: do not run $f" }; npx --yes --package $f -- rove-sentinel repair
 ```
 
 macOS:
 
 ```sh
-v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="${TMPDIR:-/tmp}/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" | grep " rove-sentinel-$v.tgz$" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair
+v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="$(mktemp -d)/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" | grep " rove-sentinel-$v.tgz$" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair
 ```
 
-The checksum comes from the same release, so this is an integrity check, not
-an independent signature: it trusts GitHub and the release publisher, as the
-updater does. The repair then retries the update, after which the repository's
-own `repair` works.
+Each run downloads into a new temporary file, and stops at the first failed
+download. The checksum comes from the same release, so this is an integrity
+check, not an independent signature: it trusts GitHub and the release
+publisher, as the updater does. On Windows the repair then retries the update,
+after which the repository's own `repair` works. On macOS, which has no
+automatic updates, it repairs the watcher, pauses and locks; the engine moves
+on through the project's dependency, as before.
 
 Engines before 1.20.1 print these for the states above; each means: run the
 line above.
@@ -107,7 +110,6 @@ line above.
 | `Another or interrupted runtime download owns …download.lock` | A stale store lock |
 | `Another or interrupted update exists: …` or `Sentinel is being updated. Retry after it finishes; inspect … if interrupted.` | An interrupted activation |
 | `updates` shows `"phase": "waiting"` or `"download-failed"` for days | An update the watcher keeps waiting |
-
 
 ## A shard reviewer failed and the gate failed closed
 

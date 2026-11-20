@@ -53,7 +53,7 @@ carry this, as written:
 > `Next:` lines say. If `repair` is an unknown command, the active engine
 > predates 1.20.1: run the bootstrap line for your system from Rove Sentinel's
 > troubleshooting guide, section "Repair on an engine before 1.20.1"
-> (https://github.com/jayyanez/rove-sentinel/blob/main/docs/troubleshooting.md#repair-on-an-engine-before-1201),
+> (<https://github.com/jayyanez/rove-sentinel/blob/main/docs/troubleshooting.md#repair-on-an-engine-before-1201>),
 > in that repository, then follow its output the same way.
 
 See the [runbook](troubleshooting.md#runbook-for-agents) for what `repair` checks.

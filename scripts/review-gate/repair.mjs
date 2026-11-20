@@ -537,7 +537,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       // The selected engine installs its own watcher.
       if (onSelected) await reinstall(context.repoRoot);
       else await sentinel(context.repoRoot, ['install', '--preserve-policy']);
-      await audit('outdated-watcher-restarted', { from: heartbeat.gateVersion ?? null, to: GATE_VERSION });
+      await audit('outdated-watcher-restarted', { from: heartbeat.gateVersion ?? null, to: selectedVersion });
       step({ state: 'watcher', status: 'fixed', detail: `${detail} Restarted it with the installed policy.` });
     } catch (error) {
       step({ state: 'watcher', status: 'blocked', detail: `${detail} Restarting it failed: ${error?.message || String(error)}`, next: `Run again in ten minutes: ${REPAIR_COMMAND}` });
@@ -623,8 +623,10 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       return;
     }
     if (dryRun) { step({ state: 'update', status: 'would-fix', detail: `The update is ${phase}. Repair retries it now.` }); return; }
-    // A full store refuses an older engine's download, which cannot free a slot itself.
-    const room = await makeRoom(root).catch((error) => ({ error }));
+    // A full store refuses an older engine's download, which cannot free a slot
+    // itself; the selected engine's own download frees one only once it succeeds.
+    const room = !onSelected && /^Runtime storage is full/.test(String(information.lastError ?? ''))
+      ? await makeRoom(root).catch((error) => ({ error })) : {};
     if (room.removed?.length) {
       await audit('store-room-made', { removed: room.removed });
       step({ state: 'store', status: 'fixed', detail: `Freed a slot of the full engine store: removed ${room.removed.join(', ')}, kept only for a rollback or by nothing.` });
