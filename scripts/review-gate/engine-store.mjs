@@ -82,8 +82,10 @@ export async function makeStoreRoom(root = engineRoot(), { maxVersions = 5, lock
     if (stableVersion(unlessReady)) {
       // Ready as a download reuses a copy: its record and its CLI.
       const ready = await readJson(path.join(engineDirectory(unlessReady, root), 'ready.json')).catch(() => null);
-      if (ready?.version === unlessReady && ready?.schemaVersion === 1
-        && await stat(engineCli(unlessReady, root)).then(() => true, () => false)) return { removed: [] };
+      // A CLI that cannot be checked may be there: nothing is removed for it.
+      const cliPresent = await stat(engineCli(unlessReady, root))
+        .then(() => true, (error) => !['ENOENT', 'ENOTDIR'].includes(error?.code));
+      if (ready?.version === unlessReady && ready?.schemaVersion === 1 && cliPresent) return { removed: [] };
     }
     const removed = await collectionPlan(root, maxVersions);
     await removeDisplaced(root, removed);
