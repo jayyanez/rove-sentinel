@@ -53,9 +53,11 @@ export async function listProcesses({ platform = process.platform, run = runProc
       startedAt: Number.isFinite(entry.startedAt) ? entry.startedAt : null,
     }));
   }
-  // In UTC and the C locale: a start time then reads the same in any time zone or season.
-  const result = await run('ps', ['-axo', 'pid=,ppid=,lstart=,args='], { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 * 1024,
-    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } });
+  // Times in UTC and the C time format: a start time then reads the same in any
+  // zone or season. Only LC_TIME changes, so command lines keep their characters.
+  const env = { ...process.env, TZ: 'UTC', LC_TIME: 'C' };
+  delete env.LC_ALL;
+  const result = await run('ps', ['-axo', 'pid=,ppid=,lstart=,args='], { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 * 1024, env });
   return result.stdout.split(/\r?\n/).map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/))
     .filter(Boolean).map(([, pid, ppid, lstart, args]) => ({
       pid: Number(pid), ppid: Number(ppid), name: path.basename(args.split(/\s+/)[0] || ''), commandLine: args,
