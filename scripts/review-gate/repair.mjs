@@ -253,36 +253,35 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   // One repair at a time for a state folder: its checks and removals assume no
   // other remover. Each repair writes a lease of its own, then looks for any
   // other live one; two that start together both see each other and both stop,
-  // so two never run. A lease whose process is gone, or whose PID now runs a
-  // process started at another time, is removed: its name is unique, so nobody
-  // else can own it. A lease is never expired by age: a suspended repair keeps it.
+  // so two never run. A lease whose PID no longer runs a Sentinel repair is
+  // removed: its name is unique, so nobody else can own it. A lease is never
+  // expired by age: a suspended repair keeps it.
   const leaseDirectory = path.join(paths.root, 'repairs');
   let lease = null;
   if (!dryRun) {
     await mkdir(leaseDirectory, { recursive: true });
     lease = path.join(leaseDirectory, `${process.pid}-${randomUUID()}.json`);
-    // Start times from the process listing, which every platform gives; both
-    // sides of a comparison come from it, so one process gives one value.
-    const own = (await fresh()).find((proc) => proc.pid === process.pid)?.startedAt ?? null;
-    await writeFile(lease, JSON.stringify({ pid: process.pid, startedAt: own, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
+    await writeFile(lease, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
     let other = null;
-    let entries;
-    // A listing that fails proves nothing about other repairs: stop.
-    try { entries = await readdir(leaseDirectory); }
-    catch (error) { await rm(lease, { force: true }).catch(() => {}); throw error; }
-    // Listed after the leases were read: a lease's process, if alive, is in it.
-    const listed = new Map((await fresh()).map((proc) => [proc.pid, proc]));
-    for (const entry of entries) {
-      const file = path.join(leaseDirectory, entry);
-      if (file === lease) continue;
-      const record = await readJson(file).catch(() => null);
-      const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
-      const proc = listed.get(pid);
-      // Gone when its PID is not listed, or is listed with another start time.
-      const gone = !Number.isInteger(pid) || !proc
-        || (Number.isFinite(record?.startedAt) && proc.startedAt !== null && proc.startedAt !== record.startedAt);
-      if (gone) await rm(file, { force: true }).catch(() => {});
-      else other ??= pid;
+    try {
+      // A listing that fails proves nothing about other repairs: stop.
+      const entries = await readdir(leaseDirectory);
+      // Listed after the leases were read: a lease's process, if alive, is in it.
+      // A lease is live while its PID runs a Sentinel repair: a PID reused by any
+      // other process does not, and a command line does not move with the clock.
+      const listed = new Map((await fresh()).map((proc) => [proc.pid, proc]));
+      for (const entry of entries) {
+        const file = path.join(leaseDirectory, entry);
+        if (file === lease) continue;
+        const record = await readJson(file).catch(() => null);
+        const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
+        const proc = listed.get(pid);
+        if (proc && /(?:^|\s)repair(?:\s|$)/.test(proc.commandLine)) other ??= pid;
+        else await rm(file, { force: true }).catch(() => {});
+      }
+    } catch (error) {
+      await rm(lease, { force: true }).catch(() => {});
+      throw error;
     }
     // Later steps list processes afresh.
     processes = null;
