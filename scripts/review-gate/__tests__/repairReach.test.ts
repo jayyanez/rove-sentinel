@@ -56,6 +56,10 @@ describe('which engine a repair runs on', () => {
     expect(await makeStoreRoom(root)).toEqual({ removed: ['1.16.0'] });
     expect((await readdir(path.join(root, 'versions'))).sort()).toEqual(['1.15.0', '1.17.0', '1.18.0', '1.19.0']);
     expect(await makeStoreRoom(root)).toEqual({ removed: [] });
+    // A full store whose missing release has become ready since gives nothing.
+    await readyCopy(root, '1.20.0');
+    expect(await makeStoreRoom(root, { unlessReady: '1.20.0' })).toEqual({ removed: [] });
+    expect((await readdir(path.join(root, 'versions'))).length).toBe(5);
   });
 });
 

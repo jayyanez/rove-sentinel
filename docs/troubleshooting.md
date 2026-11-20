@@ -77,8 +77,9 @@ full store and its release is still missing, repair first frees a slot as a
 For a local installation (`install --local`), whose launcher is outside the
 repository, run that launcher instead of `npx --no-install rove-sentinel`:
 `status` gives the Node and the launcher the installation recorded as
-`installation.node` and `installation.launcher`, and the command is
-`<installation.node> <installation.launcher> repair --repo <repository>`.
+`installation.node` and `installation.launcher`. In PowerShell the command is
+`& "<installation.node>" "<installation.launcher>" repair --repo "<repository>"`;
+on macOS, `"<installation.node>" "<installation.launcher>" repair --repo "<repository>"`.
 
 A repository whose active engine predates 1.20.1 (its launcher pinned earlier
 and its update blocked) answers `repair` with `Unknown review-gate command:

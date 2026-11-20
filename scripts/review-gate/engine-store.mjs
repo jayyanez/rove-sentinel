@@ -71,13 +71,18 @@ export async function repairEngine(paths, bundledCli, bundledVersion, root = eng
  * active or pending or a running process uses. An older engine's download then
  * fits. Returns what it removed; throws the store-full error when nothing can go.
  */
-export async function makeStoreRoom(root = engineRoot(), { maxVersions = 5, lockWaitMs = 30_000 } = {}) {
+export async function makeStoreRoom(root = engineRoot(), { maxVersions = 5, lockWaitMs = 30_000, unlessReady = null } = {}) {
   const lockFile = path.join(root, 'download.lock');
   await mkdir(path.join(root, 'versions'), { recursive: true });
   if ((await readdir(path.join(root, 'versions'))).filter(stableVersion).length < maxVersions) return { removed: [] };
   const lock = await lockStore(root, lockFile, 'repair', lockWaitMs);
   if (!lock.release) return { busy: true, owner: lock.owner };
   try {
+    // Checked under the lock: a release now ready needs no slot.
+    if (stableVersion(unlessReady)) {
+      const ready = await readJson(path.join(engineDirectory(unlessReady, root), 'ready.json')).catch(() => null);
+      if (ready?.version === unlessReady) return { removed: [] };
+    }
     const removed = await collectionPlan(root, maxVersions);
     await removeDisplaced(root, removed);
     if (removed.length) await recordStoreEvent(root, { type: 'store-room-made', removed });

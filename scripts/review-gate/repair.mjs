@@ -636,9 +636,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     // Only while the release that failed to fit is still missing from the store.
     const fullStore = !onSelected && /^Runtime storage is full/.test(String(information.lastError ?? ''));
     const target = [information.attemptedVersion, information.pendingVersion].find((version) => stableVersion(version));
-    const targetReady = fullStore && target
-      ? await readJson(path.join(root, 'versions', target, 'ready.json')).then((ready) => ready?.version === target, () => false) : false;
-    const room = fullStore && !targetReady ? await makeRoom(root).catch((error) => ({ error })) : {};
+    const room = fullStore ? await makeRoom(root, { unlessReady: target ?? null }).catch((error) => ({ error })) : {};
     if (room.removed?.length) {
       await audit('store-room-made', { removed: room.removed });
       step({ state: 'store', status: 'fixed', detail: `Freed a slot of the full engine store: removed ${room.removed.join(', ')}, kept only for a rollback or by nothing.` });
