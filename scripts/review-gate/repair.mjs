@@ -279,11 +279,18 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
         // before the marker is released.
         const takeover = path.join(paths.root, 'repair.takeover');
         let marker = null;
-        try { marker = await open(takeover, 'wx', 0o600); }
-        catch (markerError) {
+        try {
+          marker = await open(takeover, 'wx', 0o600);
+          await marker.writeFile(JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+        } catch (markerError) {
           if (markerError.code !== 'EEXIST') throw markerError;
-          const markerAge = await ageOf(takeover, now());
-          if (markerAge !== null && markerAge > TAKEOVER_ABANDONED_MS) await rm(takeover, { force: true });
+          // An abandoned marker goes only while it is the same file judged: its
+          // content and write time. A marker another taker made since differs in both.
+          const before = await stat(takeover).then((info) => info.mtimeMs, () => null);
+          const content = await readFile(takeover, 'utf8').catch(() => null);
+          if (before !== null && now() - before > TAKEOVER_ABANDONED_MS
+            && await stat(takeover).then((info) => info.mtimeMs, () => null) === before
+            && await readFile(takeover, 'utf8').catch(() => null) === content) await rm(takeover, { force: true });
         }
         if (marker) {
           try {
