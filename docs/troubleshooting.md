@@ -80,7 +80,8 @@ repository, run that launcher instead of `npx --no-install rove-sentinel`:
 `installation.node` and `installation.launcher`. In PowerShell the command is
 `& '<installation.node>' '<installation.launcher>' repair --repo '<repository>'`;
 on macOS, `'<installation.node>' '<installation.launcher>' repair --repo '<repository>'`.
-Single quotes keep each path literal.
+Single quotes keep each path literal. Inside them, write each `'` in a path as
+`''` in PowerShell, and as `'\''` on macOS.
 
 A repository whose active engine predates 1.20.1 (its launcher pinned earlier
 and its update blocked) answers `repair` with `Unknown review-gate command:

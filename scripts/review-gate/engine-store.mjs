@@ -80,8 +80,11 @@ export async function makeStoreRoom(root = engineRoot(), { maxVersions = 5, lock
   try {
     // Checked under the lock: a release now ready needs no slot.
     if (stableVersion(unlessReady)) {
-      // Ready as a download reuses a copy: its record and its CLI.
-      const ready = await readJson(path.join(engineDirectory(unlessReady, root), 'ready.json')).catch(() => null);
+      // Ready as a download reuses a copy: its record and its CLI. A record that
+      // cannot be read (other than malformed) may be there: nothing is removed for it.
+      let ready;
+      try { ready = await readJson(path.join(engineDirectory(unlessReady, root), 'ready.json')); }
+      catch (error) { if (!(error instanceof SyntaxError)) return { removed: [] }; ready = null; }
       // A CLI that cannot be checked may be there: nothing is removed for it.
       const cliPresent = await stat(engineCli(unlessReady, root))
         .then(() => true, (error) => !['ENOENT', 'ENOTDIR'].includes(error?.code));
