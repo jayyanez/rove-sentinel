@@ -177,6 +177,27 @@ export async function maybeStartUpdateWorker(context, { now = Date.now(), start 
 }
 
 /**
+ * The recovery journal beside a fence, and whether it is that fence's. The
+ * fence is written before its journal, and a journal outlives the update that
+ * wrote it: from 1.20.1 it names its fence (PID and start time); an earlier
+ * one is matched by time and version. A journal that is not the fence's means
+ * the activation died before it changed anything. An unreadable one throws.
+ */
+export async function fenceJournal(paths, marker) {
+  const journalPath = path.join(paths.root, 'update-recovery.json');
+  let recovery = null;
+  try { recovery = await readJson(journalPath); }
+  catch (error) { throw new Error(`update-recovery.json beside ${updateMarker(paths)} cannot be read (${error?.message || String(error)}), so the engine before the update is unknown. Run from the repository's trusted checkout: npx --no-install rove-sentinel install`); }
+  const [fenceTime, journalTime] = await Promise.all([updateMarker(paths), journalPath]
+    .map((file) => stat(file).then((info) => info.mtimeMs, () => null)));
+  const named = Number.isInteger(recovery?.fence?.pid) && Number.isFinite(Date.parse(recovery?.fence?.startedAt));
+  const journalIsThisUpdate = Boolean(recovery) && (named
+    ? recovery.fence.pid === marker.pid && recovery.fence.startedAt === marker.startedAt
+    : journalTime !== null && (fenceTime === null || journalTime >= fenceTime) && (!marker.version || recovery.nextVersion === marker.version));
+  return { recovery, journalIsThisUpdate };
+}
+
+/**
  * Rolls back an activation whose process is gone, as its own failure path
  * would have: stops whatever watcher runs, puts back the policy and engine
  * recorded in update-recovery.json, reinstalls with that engine, verifies its
@@ -192,20 +213,7 @@ export async function rollBackInterruptedUpdate(context, {
   const marker = unfinished ? { pid: null } : await readJson(updateMarker(paths));
   if (!marker) return { rolledBack: false, reason: 'no update fence is left' };
   if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) return { rolledBack: false, running: true, reason: `the activation's process ${marker.pid} still runs` };
-  // The fence is written before its journal, and a journal outlives the update
-  // that wrote it: one older than the fence, or for another version, is an
-  // earlier update's. Then the activation died before it changed anything, and
-  // removing the fence is the whole recovery.
-  const journalPath = path.join(paths.root, 'update-recovery.json');
-  let recovery = null;
-  try { recovery = await readJson(journalPath); }
-  catch (error) { throw new Error(`update-recovery.json beside ${updateMarker(paths)} cannot be read (${error?.message || String(error)}), so the engine before the update is unknown. Run from the repository's trusted checkout: npx --no-install rove-sentinel install`); }
-  const [fenceTime, journalTime] = await Promise.all([updateMarker(paths), journalPath]
-    .map((file) => stat(file).then((info) => info.mtimeMs, () => null)));
-  // From 1.20.1 the journal names its fence; an earlier one is matched by time and version.
-  const journalIsThisUpdate = recovery && (Number.isInteger(recovery.fence?.pid) && typeof recovery.fence?.startedAt === 'string'
-    ? recovery.fence.pid === marker.pid && recovery.fence.startedAt === marker.startedAt
-    : journalTime !== null && (fenceTime === null || journalTime >= fenceTime) && (!marker.version || recovery.nextVersion === marker.version));
+  const { recovery, journalIsThisUpdate } = await fenceJournal(paths, marker);
   if (!journalIsThisUpdate) {
     await removeStoredJson(updateMarker(paths));
     return { rolledBack: true, version: null, nextVersion: marker.version ?? null, markerPid: marker.pid, unchanged: true };

@@ -2,7 +2,7 @@ import { open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  activationRuns, automaticUpdate, rollBackInterruptedUpdate, updateInformation,
+  activationRuns, automaticUpdate, fenceJournal, rollBackInterruptedUpdate, updateInformation,
 } from './automatic-updates.mjs';
 import { engineRoot, engineStatePath, inspectStoreLock, removeStaleStoreLock, retainedVersions } from './engine-store.mjs';
 import { createGateContext } from './gate.mjs';
@@ -262,18 +262,32 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
         catch (error) { await held.close().catch(() => {}); held = null; await rm(lockFile, { force: true }); throw error; }
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
-        const holder = await readJson(lockFile).catch(() => null);
+        const raw = await readFile(lockFile, 'utf8').catch(() => null);
+        const holder = raw === null ? null : parse(raw);
         const age = await ageOf(lockFile, now());
         // A repair ends within REPAIR_BOUND_MS, so an older lock's PID may be another
         // process's now; a lock that never got its owner is abandoned sooner.
         const gone = Number.isInteger(holder?.pid)
           ? !isAlive(holder.pid) || (age !== null && age > REPAIR_BOUND_MS)
           : age !== null && age > UNFINISHED_RECORD_MS;
-        if (gone && attempt === 0) {
-          await rm(lockFile, { force: true });
-          continue;
+        if (!gone || attempt > 0 || raw === null) break;
+        // Takers serialize on repair.takeover, and remove the lock only while it
+        // still holds what was judged: a lock another taker just made stays.
+        const takeover = path.join(paths.root, 'repair.takeover');
+        let marker;
+        try { marker = await open(takeover, 'wx', 0o600); }
+        catch (markerError) {
+          if (markerError.code !== 'EEXIST') throw markerError;
+          const markerAge = await ageOf(takeover, now());
+          if (markerAge !== null && markerAge > TAKEOVER_ABANDONED_MS) await rm(takeover, { force: true });
+          break;
         }
-        break;
+        try {
+          if (await readFile(lockFile, 'utf8').catch(() => null) === raw) await rm(lockFile, { force: true });
+        } finally {
+          await marker.close().catch(() => {});
+          await rm(takeover, { force: true }).catch(() => {});
+        }
       }
     }
     if (!held) {
@@ -313,7 +327,13 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) {
       step({ state: 'interrupted-activation', status: 'busy', detail: `An update to ${marker.version} is activating now (PID ${marker.pid}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
     } else if (dryRun) {
-      step({ state: 'interrupted-activation', status: 'would-fix', detail: `The activation of ${marker.version} stopped (PID ${marker.pid} is gone). When update-recovery.json belongs to this fence, repair restores the engine and policy it records, verifies their watcher and removes the fence and the update's pause; otherwise the activation changed nothing and repair removes only the fence.` });
+      const journal = await fenceJournal(paths, marker).catch((error) => ({ error }));
+      step({ state: 'interrupted-activation', status: journal.error ? 'blocked' : 'would-fix', detail: journal.error
+        ? `The activation of ${marker.version} stopped (PID ${marker.pid} is gone), but ${journal.error.message}`
+        : journal.journalIsThisUpdate
+          ? `The activation of ${marker.version} stopped (PID ${marker.pid} is gone). Repair restores the engine and policy update-recovery.json records, verifies their watcher, then removes the fence and the update's pause.`
+          : `The activation of ${marker.version} stopped (PID ${marker.pid} is gone) before it changed anything. Repair removes its fence.`,
+      ...(journal.error ? { next: "Run from the repository's trusted checkout: npx --no-install rove-sentinel install" } : {}) });
     } else {
       try {
         const result = await rollBack(context, { isAlive: unfinished ? () => false : isAlive, startedAt, root, unfinished });
