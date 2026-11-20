@@ -458,7 +458,8 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       if (!entry.next) continue;
       if (!onSelected) {
         entry.next = entry.next.replace(/npx --no-install rove-sentinel repair((?: --[a-z-]+)*)/g, (_match, options) => repairBootstrap(split(options)));
-      } else if (installation?.mode === 'local') {
+      }
+      if (installation?.mode === 'local') {
         // install stays as printed: a local installation reinstalls with install --local.
         entry.next = entry.next.replace(/npx --no-install rove-sentinel (repair|resume|updates)((?: --[a-z-]+)*)/g, (_match, name, options) => local(name, split(options)));
       }
