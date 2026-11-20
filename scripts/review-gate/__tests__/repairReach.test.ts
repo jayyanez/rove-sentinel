@@ -56,9 +56,16 @@ describe('which engine a repair runs on', () => {
     expect(await makeStoreRoom(root)).toEqual({ removed: ['1.16.0'] });
     expect((await readdir(path.join(root, 'versions'))).sort()).toEqual(['1.15.0', '1.17.0', '1.18.0', '1.19.0']);
     expect(await makeStoreRoom(root)).toEqual({ removed: [] });
+    // A copy with a ready record but no CLI is not ready: the slot is still freed for it.
+    await mkdir(engineDirectory('1.21.0', root), { recursive: true });
+    await writeFile(path.join(engineDirectory('1.21.0', root), 'ready.json'), JSON.stringify({ schemaVersion: 1, version: '1.21.0' }));
+    expect((await makeStoreRoom(root, { unlessReady: '1.21.0' })).removed).toHaveLength(1);
+    await rm(engineDirectory('1.21.0', root), { recursive: true });
     // A full store whose missing release has become ready since gives nothing.
     await readyCopy(root, '1.20.0');
-    expect(await makeStoreRoom(root, { unlessReady: '1.20.0' })).toEqual({ removed: [] });
+    await readyCopy(root, '1.20.1');
+    expect((await readdir(path.join(root, 'versions'))).length).toBe(5);
+    expect(await makeStoreRoom(root, { unlessReady: '1.20.1' })).toEqual({ removed: [] });
     expect((await readdir(path.join(root, 'versions'))).length).toBe(5);
   });
 });

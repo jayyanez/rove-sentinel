@@ -80,8 +80,10 @@ export async function makeStoreRoom(root = engineRoot(), { maxVersions = 5, lock
   try {
     // Checked under the lock: a release now ready needs no slot.
     if (stableVersion(unlessReady)) {
+      // Ready as a download reuses a copy: its record and its CLI.
       const ready = await readJson(path.join(engineDirectory(unlessReady, root), 'ready.json')).catch(() => null);
-      if (ready?.version === unlessReady) return { removed: [] };
+      if (ready?.version === unlessReady && ready?.schemaVersion === 1
+        && await stat(engineCli(unlessReady, root)).then(() => true, () => false)) return { removed: [] };
     }
     const removed = await collectionPlan(root, maxVersions);
     await removeDisplaced(root, removed);
