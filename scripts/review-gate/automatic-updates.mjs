@@ -203,7 +203,7 @@ export async function rollBackInterruptedUpdate(context, {
   const [fenceTime, journalTime] = await Promise.all([updateMarker(paths), journalPath]
     .map((file) => stat(file).then((info) => info.mtimeMs, () => null)));
   // From 1.20.1 the journal names its fence; an earlier one is matched by time and version.
-  const journalIsThisUpdate = recovery && (Number.isInteger(recovery.fence?.pid)
+  const journalIsThisUpdate = recovery && (Number.isInteger(recovery.fence?.pid) && typeof recovery.fence?.startedAt === 'string'
     ? recovery.fence.pid === marker.pid && recovery.fence.startedAt === marker.startedAt
     : journalTime !== null && (fenceTime === null || journalTime >= fenceTime) && (!marker.version || recovery.nextVersion === marker.version));
   if (!journalIsThisUpdate) {

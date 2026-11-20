@@ -313,7 +313,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) {
       step({ state: 'interrupted-activation', status: 'busy', detail: `An update to ${marker.version} is activating now (PID ${marker.pid}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
     } else if (dryRun) {
-      step({ state: 'interrupted-activation', status: 'would-fix', detail: `The activation of ${marker.version} stopped (PID ${marker.pid} is gone). Repair restores the engine and policy recorded in update-recovery.json, verifies its watcher, then removes the fence and its pause.` });
+      step({ state: 'interrupted-activation', status: 'would-fix', detail: `The activation of ${marker.version} stopped (PID ${marker.pid} is gone). When update-recovery.json belongs to this fence, repair restores the engine and policy it records, verifies their watcher and removes the fence and the update's pause; otherwise the activation changed nothing and repair removes only the fence.` });
     } else {
       try {
         const result = await rollBack(context, { isAlive: unfinished ? () => false : isAlive, startedAt, root, unfinished });
@@ -420,11 +420,12 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       }
     }
     if (dryRun) {
-      if (!['win32', 'darwin'].includes(platform) && !lock && !heartbeat && !(await readJson(paths.daemonError).catch(() => null))) {
+      // As the applying run: a repository whose watcher never ran is left alone.
+      if (!lock && !heartbeat && !(await readJson(paths.daemonError).catch(() => null))) {
         step({ state: 'watcher', status: 'ok', detail: 'No watcher has run for this repository on this computer.' });
         return { running: false, installed: false };
       }
-      step({ state: 'watcher', status: 'would-fix', detail: `The watcher is not running (${why}). Repair clears its stale state and starts it the way install does.` });
+      step({ state: 'watcher', status: 'would-fix', detail: `The watcher is not running (${why}). Repair clears its stale state and starts an installed watcher the way install does; without one it names install.` });
       return { running: false };
     }
     if (lock && ownerGone) {
