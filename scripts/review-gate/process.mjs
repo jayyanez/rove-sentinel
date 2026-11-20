@@ -81,15 +81,16 @@ export function providerCleanupFailureRecord() {
 
 export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
 // For a repository whose active engine predates 1.20.1, which has no `repair`:
-// fetch the 1.20.1 release, check it against that release's SHA256SUMS as the
-// updater checks an engine, and run its repair, which the 1.20.1 launcher runs
-// on the newest engine it finds. One line for PowerShell, one for macOS. The
-// PowerShell line uses .NET only, so a Windows PowerShell started from
-// PowerShell 7 (whose module path it cannot load) runs it too.
-export const REPAIR_BOOTSTRAP = {
-  windows: "$ErrorActionPreference='Stop'; $v='1.20.1'; $u=\"https://github.com/jayyanez/rove-sentinel/releases/download/v$v\"; $f=[IO.Path]::Combine([IO.Path]::GetTempPath(), \"rove-sentinel-$v-\" + [guid]::NewGuid() + '.tgz'); $w=[Net.WebClient]::new(); $w.DownloadFile(\"$u/rove-sentinel-$v.tgz\", $f); $w.DownloadFile(\"$u/SHA256SUMS\", \"$f.sums\"); $h=(([IO.File]::ReadAllLines(\"$f.sums\") | Where-Object { $_ -match \" rove-sentinel-$v\\.tgz$\" }) -split '\\s+')[0]; $a=-join ([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($f)) | ForEach-Object { $_.ToString('x2') }); if (-not $h -or $a -ne $h) { throw \"Checksum mismatch: do not run $f\" }; npx --yes --package $f -- rove-sentinel repair",
-  macos: 'v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="$(mktemp -d)/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" -o "$f.sums" && grep " rove-sentinel-$v.tgz$" "$f.sums" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair',
-};
+// one line, the same in PowerShell, Windows PowerShell and a POSIX shell.
+// Node (which npx needs anyway) downloads the 1.20.1 archive and that release's
+// SHA256SUMS, refuses the archive unless its SHA-256 matches, as the updater
+// checks an engine, writes it to a new temporary folder and runs its repair
+// through npx; the 1.20.1 launcher then runs repair on the newest engine at
+// hand. The script holds no double quote, $, backtick or !, so no shell
+// rewrites it, and it calls no PowerShell module, so a constrained or
+// module-less PowerShell runs it as well.
+export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.1',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',r=x.spawnSync(w?process.execPath:'npx',(w?[p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js')]:[]).concat(['--yes','--package',t,'--','rove-sentinel','repair']),{stdio:'inherit'});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
+export const REPAIR_BOOTSTRAP = `node -e "${REPAIR_BOOTSTRAP_SCRIPT}"`;
 // The two safety pauses a failed provider cleanup writes. Earlier engines wrote
 // the same openings, so repair recognises their pauses too.
 export const SAFETY_PAUSE_REASONS = {

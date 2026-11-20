@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { engineCli, engineDirectory, makeStoreRoom, publishEngineState, repairEngine } from '../engine-store.mjs';
 import { repairRepository } from '../repair.mjs';
-import { REPAIR_BOOTSTRAP } from '../process.mjs';
+import { REPAIR_BOOTSTRAP, REPAIR_BOOTSTRAP_SCRIPT } from '../process.mjs';
 import { atomicWriteJson, ensureState } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { GATE_VERSION } from '../constants.mjs';
@@ -115,8 +115,7 @@ describe('the way to repair from an engine before 1.20.1 is written down', () =>
   it('the runbook carries the exact bootstrap lines, and the agent instructions point to them', async () => {
     const { readFile } = await import('node:fs/promises');
     const runbook = await readFile('docs/troubleshooting.md', 'utf8');
-    expect(runbook).toContain(REPAIR_BOOTSTRAP.windows);
-    expect(runbook).toContain(REPAIR_BOOTSTRAP.macos);
+    expect(runbook).toContain(REPAIR_BOOTSTRAP);
     expect(runbook).toContain('### Repair on an engine before 1.20.1');
     const guide = await readFile('docs/multiple-projects.md', 'utf8');
     expect(guide).toContain('docs/troubleshooting.md#repair-on-an-engine-before-1201');
@@ -131,20 +130,16 @@ describe('the way to repair from an engine before 1.20.1 is written down', () =>
   });
 });
 
-describe.runIf(process.platform === 'win32')('the bootstrap for an engine before 1.20.1', () => {
-  // The published one-liner, pointed at a local server, with its last command
-  // replaced: the verification is what is tested, not the repair it then runs.
-  it('refuses an archive whose SHA-256 does not match, and runs one that does', async () => {
-    const bad = await serveAsync(() => `${'0'.repeat(64)}  rove-sentinel-1.20.1.tgz\n`);
-    expect(bad.status).not.toBe(0);
-    expect(bad.stdout + bad.stderr).toContain('Checksum mismatch');
-    expect(bad.stdout).not.toContain('VERIFIED');
-    const ok = await serveAsync((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`);
-    expect(ok.stdout).toContain('VERIFIED');
-  }, 120_000);
+describe('the bootstrap for an engine before 1.20.1', () => {
+  it('holds nothing a shell would rewrite inside its double quotes', () => {
+    expect(REPAIR_BOOTSTRAP).toBe(`node -e "${REPAIR_BOOTSTRAP_SCRIPT}"`);
+    expect(REPAIR_BOOTSTRAP_SCRIPT).not.toMatch(/["$`!%]/);
+  });
 
-  // The server answers while PowerShell runs, so PowerShell is spawned, not run synchronously.
-  async function serveAsync(sums: (digest: string) => string) {
+  // The published line, through this platform's shell, pointed at a local
+  // server and with its npx run replaced by a marker: the verification is what
+  // is tested, not the repair it then runs.
+  async function bootstrap(sums: (digest: string) => string) {
     const archive = Buffer.from('synthetic release archive');
     const digest = createHash('sha256').update(archive).digest('hex');
     const server = createServer((request, response) => {
@@ -154,14 +149,16 @@ describe.runIf(process.platform === 'win32')('the bootstrap for an engine before
     });
     await new Promise<void>((resolve) => server.listen(0, 'localhost', resolve));
     const { port } = server.address() as { port: number };
-    const command = REPAIR_BOOTSTRAP.windows
+    const command = REPAIR_BOOTSTRAP
       .replace('https://github.com/jayyanez/rove-sentinel/releases/download', `http://localhost:${port}`)
-      .replace(/npx --yes --package \$f -- rove-sentinel repair$/, "Write-Output 'VERIFIED'");
-    const temporary = await temp();
+      .replace(/const w=process\.platform.*?process\.exitCode=r\.status\?\?1/, "console.log('VERIFIED')");
+    expect(command).toContain("console.log('VERIFIED')");
+    const shell = process.platform === 'win32'
+      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${command}; exit $LASTEXITCODE`]]
+      : ['sh', ['-c', command]];
     try {
       return await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command],
-          { env: { ...process.env, TEMP: temporary }, windowsHide: true });
+        const child = spawn(shell[0] as string, shell[1] as string[], { windowsHide: true });
         let stdout = ''; let stderr = '';
         child.stdout.on('data', (chunk) => { stdout += chunk; });
         child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -170,4 +167,15 @@ describe.runIf(process.platform === 'win32')('the bootstrap for an engine before
       });
     } finally { server.close(); }
   }
+  it('refuses an archive whose SHA-256 does not match, and goes on with one that does', async () => {
+    const bad = await bootstrap(() => `${'0'.repeat(64)}  rove-sentinel-1.20.1.tgz\n`);
+    expect(bad.status).not.toBe(0);
+    expect(bad.stderr).toContain('Checksum mismatch');
+    expect(bad.stdout).not.toContain('VERIFIED');
+    const missing = await bootstrap(() => 'nothing for this archive\n');
+    expect(missing.stderr).toContain('Checksum mismatch');
+    const ok = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain('VERIFIED');
+  }, 120_000);
 });
