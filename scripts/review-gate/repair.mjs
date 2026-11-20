@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -37,6 +37,9 @@ const parse = (raw) => { try { return JSON.parse(raw); } catch { return undefine
 const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').replace(/[.\s]+$/, '');
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
+// A running repair touches its lease this often; one untouched this long is abandoned.
+const LEASE_BEAT_MS = 10_000;
+const LEASE_STALE_MS = 60_000;
 
 /**
  * Every process of this OS user that the system lists: PID, parent PID, name,
@@ -211,15 +214,6 @@ export async function stopProcesses(targets, { platform = process.platform, run 
   return stopped;
 }
 
-/**
- * A Sentinel repair's command line: Sentinel's launcher or CLI with a `repair`
- * argument, quoted or not (Windows lists the raw command line).
- */
-export function isSentinelRepair(commandLine) {
-  const text = String(commandLine || '');
-  return /(?:review-gate[\\/](?:cli|launcher)\.mjs|rove-sentinel)/i.test(text) && /(?:^|[\s"'])repair(?:[\s"']|$)/.test(text);
-}
-
 /** Whether the process holding the watcher lock is the one that wrote it, and is this repository's watcher. */
 function watcherLockOwner(lock, byPid, repoRoot) {
   const proc = byPid.get(lock?.pid);
@@ -267,6 +261,15 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   // expired by age: a suspended repair keeps it.
   const leaseDirectory = path.join(paths.root, 'repairs');
   let lease = null;
+  let beat = null;
+  // Before each step that changes state: a repair that was suspended past
+  // LEASE_STALE_MS may have lost its lease to another, and then stops.
+  const leaseHeld = async () => {
+    if (!lease) return true;
+    if (await stat(lease).then(() => true, () => false)) return true;
+    step({ state: 'repair', status: 'busy', detail: 'This repair lost its lease to another repair while it was suspended.', next: `Run again in five minutes: ${REPAIR_COMMAND}` });
+    return false;
+  };
   if (!dryRun) {
     await mkdir(leaseDirectory, { recursive: true });
     lease = path.join(leaseDirectory, `${process.pid}-${randomUUID()}.json`);
@@ -275,25 +278,26 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     try {
       // A listing that fails proves nothing about other repairs: stop.
       const entries = await readdir(leaseDirectory);
-      // Listed after the leases were read: a lease's process, if alive, is in it.
-      // A lease is live while its PID runs a Sentinel repair: a PID reused by any
-      // other process does not, and a command line does not move with the clock.
-      const listed = new Map((await fresh()).map((proc) => [proc.pid, proc]));
+      // A running repair touches its lease every LEASE_BEAT_MS. A lease is live
+      // while its PID runs and it was touched within LEASE_STALE_MS: a PID reused
+      // by another process does not touch it, and neither does a repair that died.
       for (const entry of entries) {
         const file = path.join(leaseDirectory, entry);
         if (file === lease) continue;
         const record = await readJson(file).catch(() => null);
         const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
-        const proc = listed.get(pid);
-        if (proc && isSentinelRepair(proc.commandLine)) other ??= pid;
+        const age = await ageOf(file, now());
+        if (Number.isInteger(pid) && isAlive(pid) && age !== null && age <= LEASE_STALE_MS) other ??= pid;
         else await rm(file, { force: true }).catch(() => {});
       }
     } catch (error) {
       await rm(lease, { force: true }).catch(() => {});
       throw error;
     }
-    // Later steps list processes afresh.
-    processes = null;
+    if (other === null) {
+      beat = setInterval(() => { const at = new Date(); utimes(lease, at, at).catch(() => {}); }, LEASE_BEAT_MS);
+      beat.unref?.();
+    }
     if (other !== null) {
       await rm(lease, { force: true }).catch(() => {});
       step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
@@ -327,7 +331,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       marker = null;
     }
   }
-  if (marker) {
+  if (marker && await leaseHeld()) {
     if (!unfinished && await activationRuns(marker, { isAlive, startedAt })) {
       step({ state: 'interrupted-activation', status: 'busy', detail: `An update to ${marker.version} is activating now (PID ${marker.pid}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
     } else if (dryRun) {
@@ -384,15 +388,16 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   }
   // 4. A pause, before any recovery removes the review directories that tell
   // this repository's leftover processes apart.
-  await repairPause();
+  if (await leaseHeld()) await repairPause();
   // 5. The watcher.
-  const watcher = await repairWatcher();
+  const watcher = await leaseHeld() ? await repairWatcher() : null;
   // 6. The review queue's submission lock.
-  await repairQueueLock(watcher);
+  if (watcher && await leaseHeld()) await repairQueueLock(watcher);
   // 7. An update waiting, or failed.
-  await repairUpdate();
+  if (watcher && await leaseHeld()) await repairUpdate();
 
   } finally {
+    if (beat) clearInterval(beat);
     if (lease) await rm(lease, { force: true }).catch(() => {});
   }
   for (const entry of steps) if (entry.status === 'would-fix' && !entry.next) entry.next = `Run: ${REPAIR_COMMAND}${stopOrphans ? ' --stop-orphans' : ''}`;

@@ -42,7 +42,7 @@ processes that fill a store named; a waiting or failed update
 retried and a full store's holders named; a dry run changing nothing. `recover` and
 `resume` start the watcher, through the installed scheduled task or by naming install, and
 a failing scheduler is reported rather than thrown.
-The 49 new tests fail on 1.20.0. 1,078 tests passed on Windows, and the package smoke passed.
+The 48 new tests fail on 1.20.0. 1,077 tests passed on Windows, and the package smoke passed.
 
 Not run live: the fix was not installed on a host with consumer projects, and no full store,
 paused watcher or orphaned provider was reproduced outside the tests. `repair` ran once in
