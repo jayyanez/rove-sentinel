@@ -211,6 +211,15 @@ export async function stopProcesses(targets, { platform = process.platform, run 
   return stopped;
 }
 
+/**
+ * A Sentinel repair's command line: Sentinel's launcher or CLI with a `repair`
+ * argument, quoted or not (Windows lists the raw command line).
+ */
+export function isSentinelRepair(commandLine) {
+  const text = String(commandLine || '');
+  return /(?:review-gate[\\/](?:cli|launcher)\.mjs|rove-sentinel)/i.test(text) && /(?:^|[\s"'])repair(?:[\s"']|$)/.test(text);
+}
+
 /** Whether the process holding the watcher lock is the one that wrote it, and is this repository's watcher. */
 function watcherLockOwner(lock, byPid, repoRoot) {
   const proc = byPid.get(lock?.pid);
@@ -276,7 +285,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
         const record = await readJson(file).catch(() => null);
         const pid = Number.isInteger(record?.pid) ? record.pid : Number(entry.match(/^(\d+)-/)?.[1]);
         const proc = listed.get(pid);
-        if (proc && /(?:^|\s)repair(?:\s|$)/.test(proc.commandLine)) other ??= pid;
+        if (proc && isSentinelRepair(proc.commandLine)) other ??= pid;
         else await rm(file, { force: true }).catch(() => {});
       }
     } catch (error) {

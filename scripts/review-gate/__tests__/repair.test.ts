@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { findOrphans, formatRepair, repairRepository, reviewDirectoriesIn, reviewDirectoryCandidates, stopProcesses } from '../repair.mjs';
+import { findOrphans, formatRepair, isSentinelRepair, repairRepository, reviewDirectoriesIn, reviewDirectoryCandidates, stopProcesses } from '../repair.mjs';
 import { recoverReviewGate, resumeReviewGate, startWatcher } from '../install.mjs';
 import { rollBackInterruptedUpdate } from '../automatic-updates.mjs';
 import { updateMarker } from '../maintenance.mjs';
@@ -49,6 +49,13 @@ const repair = (f, options = {}) => repairRepository({ repoRoot: f.repoRoot, ...
 const events = async (paths) => Promise.all((await readdir(paths.events).catch(() => [])).map((name) => readJson(path.join(paths.events, name))));
 
 describe('which processes a repair may count as this repository\'s', () => {
+  it('tells a Sentinel repair by its command line, quoted or not, and nothing else that says repair', () => {
+    expect(isSentinelRepair('"C:\\Program Files\\nodejs\\node.exe" "C:\\p\\node_modules\\pkg\\scripts\\review-gate\\launcher.mjs" "repair"')).toBe(true);
+    expect(isSentinelRepair('node /p/scripts/review-gate/cli.mjs repair --dry-run')).toBe(true);
+    expect(isSentinelRepair('npx --no-install rove-sentinel repair')).toBe(true);
+    expect(isSentinelRepair('git repair')).toBe(false);
+    expect(isSentinelRepair('node /p/scripts/review-gate/cli.mjs watch --daemon')).toBe(false);
+  });
   it('reads Sentinel review directories from command lines, quoted, with spaces or after an equals sign', () => {
     expect(reviewDirectoriesIn('claude.exe -p --add-dir "C:\\Build Area\\Temp\\rove-review-abc123\\checkout" C:\\Temp\\rove-review-context-x1Y2 --effort high'))
       .toEqual(['C:\\Build Area\\Temp\\rove-review-abc123', 'C:\\Temp\\rove-review-context-x1Y2']);
@@ -151,7 +158,7 @@ describe('repair', () => {
   });
   it('runs one repair at a time for a repository, and takes over from one whose process is gone', async () => {
     const f = await fixture(); await f.healthy({ activity: 'idle' });
-    f.list.processes = [{ pid: process.pid, ppid: 1, name: 'node.exe', commandLine: 'node launcher.mjs repair --stop-orphans', startedAt: 5 }];
+    f.list.processes = [{ pid: process.pid, ppid: 1, name: 'node.exe', commandLine: 'node scripts/review-gate/launcher.mjs repair --stop-orphans', startedAt: 5 }];
     const leases = path.join(f.paths.root, 'repairs');
     await mkdir(leases, { recursive: true });
     await writeFile(path.join(leases, `${process.pid}-other.json`), JSON.stringify({ pid: process.pid }));
@@ -162,7 +169,7 @@ describe('repair', () => {
     f.list.processes = [{ pid: process.pid, ppid: 1, name: 'chrome.exe', commandLine: 'chrome --type=renderer', startedAt: 5 }];
     expect(await repair(f)).toMatchObject({ ok: true, steps: [] });
     expect(await readdir(leases)).toEqual([]);
-    f.list.processes = [{ pid: process.pid, ppid: 1, name: 'node.exe', commandLine: 'node launcher.mjs repair', startedAt: 5 }];
+    f.list.processes = [{ pid: process.pid, ppid: 1, name: 'node.exe', commandLine: 'node scripts/review-gate/launcher.mjs repair', startedAt: 5 }];
     await writeFile(path.join(leases, `${process.pid}-other.json`), JSON.stringify({ pid: DEAD }));
     expect(await repair(f)).toMatchObject({ ok: true, steps: [] });
     expect(await readdir(leases)).toEqual([]);
