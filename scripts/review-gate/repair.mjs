@@ -261,14 +261,17 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
   if (!dryRun) {
     await mkdir(leaseDirectory, { recursive: true });
     lease = path.join(leaseDirectory, `${process.pid}-${randomUUID()}.json`);
-    // Start times from the process listing, which every platform gives.
-    const listed = new Map((await snapshot()).map((proc) => [proc.pid, proc]));
-    await writeFile(lease, JSON.stringify({ pid: process.pid, startedAt: listed.get(process.pid)?.startedAt ?? null, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
+    // Start times from the process listing, which every platform gives; both
+    // sides of a comparison come from it, so one process gives one value.
+    const own = (await fresh()).find((proc) => proc.pid === process.pid)?.startedAt ?? null;
+    await writeFile(lease, JSON.stringify({ pid: process.pid, startedAt: own, at: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
     let other = null;
     let entries;
     // A listing that fails proves nothing about other repairs: stop.
     try { entries = await readdir(leaseDirectory); }
     catch (error) { await rm(lease, { force: true }).catch(() => {}); throw error; }
+    // Listed after the leases were read: a lease's process, if alive, is in it.
+    const listed = new Map((await fresh()).map((proc) => [proc.pid, proc]));
     for (const entry of entries) {
       const file = path.join(leaseDirectory, entry);
       if (file === lease) continue;
@@ -277,10 +280,12 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       const proc = listed.get(pid);
       // Gone when its PID is not listed, or is listed with another start time.
       const gone = !Number.isInteger(pid) || !proc
-        || (Number.isFinite(record?.startedAt) && proc.startedAt !== null && Math.abs(proc.startedAt - record.startedAt) > START_TOLERANCE_MS);
+        || (Number.isFinite(record?.startedAt) && proc.startedAt !== null && proc.startedAt !== record.startedAt);
       if (gone) await rm(file, { force: true }).catch(() => {});
       else other ??= pid;
     }
+    // Later steps list processes afresh.
+    processes = null;
     if (other !== null) {
       await rm(lease, { force: true }).catch(() => {});
       step({ state: 'repair', status: 'busy', detail: `Another repair of this repository runs (PID ${other}).`, next: `Run again in five minutes: ${REPAIR_COMMAND}` });
