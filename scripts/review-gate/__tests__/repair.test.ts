@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:f
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { findOrphans, formatRepair, repairRepository, reviewDirectoriesIn, reviewDirectoryCandidates, stopProcesses } from '../repair.mjs';
+import { findOrphans, formatRepair, listProcesses, repairRepository, reviewDirectoriesIn, reviewDirectoryCandidates, stopProcesses } from '../repair.mjs';
 import { recoverReviewGate, resumeReviewGate, startWatcher } from '../install.mjs';
 import { rollBackInterruptedUpdate } from '../automatic-updates.mjs';
 import { updateMarker } from '../maintenance.mjs';
@@ -91,6 +91,20 @@ describe('which processes a repair may count as this repository\'s', () => {
       { pid: 302, ppid: 300, name: 'notepad.exe', commandLine: 'notepad', startedAt: 5_000 },
     ];
     expect((await findOrphans(f.context, { processes, pause })).orphans.map((entry) => entry.pid)).toEqual([301]);
+  });
+  it('lists macOS and Linux processes with times in UTC and the C format, keeping the user\'s characters', async () => {
+    const run = vi.fn(async () => ({ stdout: '  42     1 Wed Nov 19 08:00:00 2026 /usr/bin/codex exec --cd /tmp/rove-review-context-é1\n' }));
+    const saved = process.env.LC_ALL;
+    process.env.LC_ALL = 'fr_FR.UTF-8';
+    try {
+      const [proc] = await listProcesses({ platform: 'darwin', run });
+      expect(proc).toMatchObject({ pid: 42, ppid: 1, startedAt: Date.parse('2026-11-19T08:00:00Z'), commandLine: '/usr/bin/codex exec --cd /tmp/rove-review-context-é1' });
+      const { env } = run.mock.calls[0][2];
+      expect(env).toMatchObject({ TZ: 'UTC', LC_TIME: 'C', LC_CTYPE: 'fr_FR.UTF-8' });
+      expect(env.LC_ALL).toBeUndefined();
+    } finally {
+      if (saved === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = saved;
+    }
   });
   it('stops only processes whose PID still has the start time it was listed with, children first, and counts only confirmed stops', async () => {
     const run = vi.fn(async (_command, args) => ({ code: args[1] === '4' ? 128 : 0 }));
