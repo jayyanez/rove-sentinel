@@ -12,6 +12,7 @@ import { readInstallation } from './local.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
 import { pauseKind, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
+import { stableVersion } from './updates.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
 import {
   daemonOwnerIsHealthy, isProcessAlive, readJson, recordEvent, removeStoredJson,
@@ -633,10 +634,11 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     // A full store refuses an older engine's download, which cannot free a slot
     // itself; the selected engine's own download frees one only once it succeeds.
     // Only while the release that failed to fit is still missing from the store.
-    const target = information.attemptedVersion ?? information.pendingVersion;
-    const targetReady = target && await readJson(path.join(root, 'versions', target, 'ready.json')).then((ready) => ready?.version === target, () => false);
-    const room = !onSelected && !targetReady && /^Runtime storage is full/.test(String(information.lastError ?? ''))
-      ? await makeRoom(root).catch((error) => ({ error })) : {};
+    const fullStore = !onSelected && /^Runtime storage is full/.test(String(information.lastError ?? ''));
+    const target = [information.attemptedVersion, information.pendingVersion].find((version) => stableVersion(version));
+    const targetReady = fullStore && target
+      ? await readJson(path.join(root, 'versions', target, 'ready.json')).then((ready) => ready?.version === target, () => false) : false;
+    const room = fullStore && !targetReady ? await makeRoom(root).catch((error) => ({ error })) : {};
     if (room.removed?.length) {
       await audit('store-room-made', { removed: room.removed });
       step({ state: 'store', status: 'fixed', detail: `Freed a slot of the full engine store: removed ${room.removed.join(', ')}, kept only for a rollback or by nothing.` });
