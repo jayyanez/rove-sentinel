@@ -86,7 +86,7 @@ export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
 // on the newest engine it finds. One line for PowerShell, one for macOS.
 export const REPAIR_BOOTSTRAP = {
   windows: "$ErrorActionPreference='Stop'; $v='1.20.1'; $u=\"https://github.com/jayyanez/rove-sentinel/releases/download/v$v\"; $f=Join-Path $env:TEMP (\"rove-sentinel-$v-\" + [guid]::NewGuid() + '.tgz'); Invoke-WebRequest \"$u/rove-sentinel-$v.tgz\" -OutFile $f -UseBasicParsing; Invoke-WebRequest \"$u/SHA256SUMS\" -OutFile \"$f.sums\" -UseBasicParsing; $h=((Get-Content \"$f.sums\" | Where-Object { $_ -match \" rove-sentinel-$v\\.tgz$\" }) -split '\\s+')[0]; if (-not $h -or (Get-FileHash $f -Algorithm SHA256).Hash -ne $h) { throw \"Checksum mismatch: do not run $f\" }; npx --yes --package $f -- rove-sentinel repair",
-  macos: 'v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="$(mktemp -d)/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" | grep " rove-sentinel-$v.tgz$" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair',
+  macos: 'v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="$(mktemp -d)/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" -o "$f.sums" && grep " rove-sentinel-$v.tgz$" "$f.sums" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair',
 };
 // The two safety pauses a failed provider cleanup writes. Earlier engines wrote
 // the same openings, so repair recognises their pauses too.

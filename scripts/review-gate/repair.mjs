@@ -8,6 +8,7 @@ import {
 import { engineRoot, engineStatePath, inspectStoreLock, makeStoreRoom, removeStaleStoreLock, retainedVersions } from './engine-store.mjs';
 import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
+import { readInstallation } from './local.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
 import { pauseKind, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
@@ -246,9 +247,15 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     reinstall = async (repo) => run(process.execPath, [ownCli, 'install', '--preserve-policy', '--repo', repo],
       { cwd: repo, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024 }),
     // The repository's own command, through its launcher: its selected engine.
-    sentinel = async (repo, args) => (platform === 'win32'
-      ? run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `& npx --no-install rove-sentinel ${args.map((arg) => `'${arg}'`).join(' ')}; exit $LASTEXITCODE`], { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 })
-      : run('npx', ['--no-install', 'rove-sentinel', ...args], { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 })),
+    // A local installation records its Node and launcher; a project's is its dependency.
+    sentinel = async (repo, args) => {
+      const options = { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 };
+      const installation = await readInstallation(paths).catch(() => null);
+      if (installation?.mode === 'local') return run(installation.node, [installation.launcher, ...args, '--repo', repo], options);
+      return platform === 'win32'
+        ? run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `& npx --no-install rove-sentinel ${args.map((arg) => `'${arg}'`).join(' ')}; exit $LASTEXITCODE`], options)
+        : run('npx', ['--no-install', 'rove-sentinel', ...args], options);
+    },
     selectedVersionOf = async (repo) => {
       const recorded = (await readJson(engineStatePath(paths)).catch(() => null))?.activeVersion;
       if (recorded) return recorded;
@@ -625,7 +632,10 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (dryRun) { step({ state: 'update', status: 'would-fix', detail: `The update is ${phase}. Repair retries it now.` }); return; }
     // A full store refuses an older engine's download, which cannot free a slot
     // itself; the selected engine's own download frees one only once it succeeds.
-    const room = !onSelected && /^Runtime storage is full/.test(String(information.lastError ?? ''))
+    // Only while the release that failed to fit is still missing from the store.
+    const target = information.attemptedVersion ?? information.pendingVersion;
+    const targetReady = target && await readJson(path.join(root, 'versions', target, 'ready.json')).then((ready) => ready?.version === target, () => false);
+    const room = !onSelected && !targetReady && /^Runtime storage is full/.test(String(information.lastError ?? ''))
       ? await makeRoom(root).catch((error) => ({ error })) : {};
     if (room.removed?.length) {
       await audit('store-room-made', { removed: room.removed });

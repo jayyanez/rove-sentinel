@@ -77,8 +77,8 @@ cannot download.
 - **`repair` reaches any repository.** The launcher runs it on the newest engine at hand
   (its own, the active one, or a verified store copy), never one older than the active
   engine. A repair on a newer engine judges the watcher against the selected engine,
-  updates through the repository's own command, and first frees a slot of a full store, so
-  an older engine's download fits. For a repository whose active engine predates 1.20.1,
+  updates through the repository's own command, and frees a slot of a full store when that
+  engine's download failed on it, since an older engine cannot. For a repository whose active engine predates 1.20.1,
   [troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201) gives one line
   for PowerShell and one for macOS that download the 1.20.1 archive, refuse it unless its
   SHA-256 matches the release's `SHA256SUMS`, and run its `repair`. From 1.20.1, `updates`

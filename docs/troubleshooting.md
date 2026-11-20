@@ -67,10 +67,17 @@ From 1.20.1 the launcher runs `repair` on the newest engine at hand: its own,
 the repository's active engine, or a verified copy in the shared engine store,
 and never one older than the active engine, which it repairs. A repair on a
 newer engine judges the watcher against the engine the repository selects, and
-runs the update through the repository's own command, on that engine; when the
-store is full it first frees a slot, as a 1.20.1 download would.
+runs the update through the repository's own command (a local installation's
+recorded launcher), on that engine. When that engine's last download failed on a
+full store and its release is still missing, repair first frees a slot as a
+1.20.1 download would, since an older engine cannot.
 
 ### Repair on an engine before 1.20.1
+
+For a local installation (`install --local`), whose launcher is outside the
+repository, run that launcher instead of `npx --no-install rove-sentinel`:
+`status` gives it as `installation.launcher`, and the command is
+`node <that launcher> repair --repo <repository>`.
 
 A repository whose active engine predates 1.20.1 (its launcher pinned earlier
 and its update blocked) answers `repair` with `Unknown review-gate command:
@@ -88,14 +95,15 @@ $ErrorActionPreference='Stop'; $v='1.20.1'; $u="https://github.com/jayyanez/rove
 macOS:
 
 ```sh
-v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="$(mktemp -d)/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" | grep " rove-sentinel-$v.tgz$" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair
+v=1.20.1; u=https://github.com/jayyanez/rove-sentinel/releases/download/v$v; f="$(mktemp -d)/rove-sentinel-$v.tgz"; curl -fsSL "$u/rove-sentinel-$v.tgz" -o "$f" && curl -fsSL "$u/SHA256SUMS" -o "$f.sums" && grep " rove-sentinel-$v.tgz$" "$f.sums" | sed "s|rove-sentinel-$v.tgz|$f|" | shasum -a 256 -c - && npx --yes --package "$f" -- rove-sentinel repair
 ```
 
 Each run downloads into a new temporary file, and stops at the first failed
 download. The checksum comes from the same release, so this is an integrity
 check, not an independent signature: it trusts GitHub and the release
-publisher, as the updater does. On Windows the repair then retries the update,
-after which the repository's own `repair` works. On macOS, which has no
+publisher, as the updater does. On Windows the repair then retries the update
+when automatic updates are on; once it activates, the repository's own `repair`
+works, and until then run this line again. On macOS, which has no
 automatic updates, it repairs the watcher, pauses and locks; the engine moves
 on through the project's dependency, as before.
 
