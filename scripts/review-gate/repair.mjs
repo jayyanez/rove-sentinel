@@ -713,7 +713,14 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (orphans.length && stopOrphans && !dryRun) {
       const stopped = await stop(orphans, { platform, run, list });
       await audit('orphans-stopped', { pause: paused, stopped, processes: orphans });
+      const before = orphans;
       ({ orphans, unattributed } = await findOrphans(context, { processes: await fresh(), pause: paused, heartbeat }));
+      // A leftover that was not stopped stays one while it runs, though stopping its parent cut its trace.
+      const listed = new Map((await snapshot()).map((proc) => [proc.pid, proc]));
+      for (const orphan of before) {
+        if (stopped.includes(orphan.pid) || orphans.some((entry) => entry.pid === orphan.pid)) continue;
+        if (listed.has(orphan.pid) && listed.get(orphan.pid).startedAt === orphan.rawStartedAt) orphans.push(orphan);
+      }
     }
     if (orphans.length) {
       // Stopping them resumes only when no process the listing could not read whole remains.

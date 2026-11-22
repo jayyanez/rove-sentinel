@@ -210,6 +210,13 @@ describe('repair', () => {
       expect(held.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked' })]);
       expect(held.steps[0].processes.map((proc: { pid: number }) => proc.pid)).toEqual([301, 302]);
     }
+    // And a repair that stops the parent keeps the pause for the child, though the child's trace is gone.
+    f.list.processes = f.list.processes.map(({ unreadable: _, ...proc }) => proc);
+    f.deps.stop = vi.fn(async () => { f.list.processes = f.list.processes.filter((proc) => proc.pid !== 301); return [301]; });
+    const live = await repair(f, { stopOrphans: true });
+    expect(live.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked' })]);
+    expect(live.steps[0].processes.map((proc: { pid: number }) => proc.pid)).toEqual([302]);
+    expect(await readJson(f.paths.paused)).toEqual(traced);
   });
   it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);

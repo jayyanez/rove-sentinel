@@ -10,18 +10,19 @@ one whose text is not UTF-8, while a leading U+FEFF is kept; other PowerShell ou
 ignored, and a listing without its end line, with another count, or with a process line
 without a PID failing; a safety pause kept, in a dry run and a repair, while an unreadable
 process is listed, and a dry run with `--stop-orphans` not promising to resume then, unless
-that process is one it stops; the repository's own command run without any `npm_` variable
-of the environment, such as the `npm_config_package` and `npm_config_yes` that `npx
---package` leaves, and with the rest kept: `--version` on Windows and macOS, `update` on
-Windows (its result mocked); a repair that stops before it can report, from the CLI and from
-the launcher, giving a blocked `repair` step (as text, a `blocked: repair:` line; as JSON,
-the report's first step) whose next command is the bootstrap in the checkout `--repo` named
-(unless a later `--no-repo` cancels it), with the options as the CLI reads them (the last of
-`--stop-orphans` and `--no-stop-orphans` wins), and exiting 1; the same repair run by the
-bootstrap printing no `Next:` line and saying to stop and report; the bootstrap downloading
-1.20.3 or later. On Windows, a test starts a process whose command line holds `→ • ↑ ↓ § ¶ ✓
-✘ ×` and 5,000 more characters and finds it whole in the listing. The 9 new or changed tests
-fail on 1.20.2's sources.
+that process is one it stops, nor past a leftover without a start time, which a repair with
+`--stop-orphans` keeps counting after stopping its parent; the repository's own command run
+without any `npm_` variable of the environment, such as the `npm_config_package` and
+`npm_config_yes` that `npx --package` leaves, and with the rest kept: `--version` on Windows
+and macOS, `update` on Windows (its result mocked); a repair that stops before it can
+report, from the CLI and from the launcher, giving a blocked `repair` step (as text, a
+`blocked: repair:` line; as JSON, the report's first step) whose next command is the
+bootstrap in the checkout `--repo` named (unless a later `--no-repo` cancels it), with the
+options as the CLI reads them (the last of `--stop-orphans` and `--no-stop-orphans` wins),
+and exiting 1; the same repair run by the bootstrap printing no `Next:` line and saying to
+stop and report; the bootstrap downloading 1.20.3 or later. On Windows, a test starts a
+process whose command line holds `→ • ↑ ↓ § ¶ ✓ ✘ ×` and 5,000 more characters and finds it
+whole in the listing. The 9 new or changed tests fail on 1.20.2's sources.
 1,095 tests passed and 5 were skipped (linters not installed there) on Windows 11 on Arm,
 run there because the development host was loaded. The package smoke passed.
 
