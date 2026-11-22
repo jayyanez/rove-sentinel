@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.20.2 — `repair` never resumes a pause a person may have set
+## 1.20.2 — `repair` lifts only the pauses Sentinel recorded as its own
 
 Two ways 1.20.1's `repair` could lift a pause a person set, found by an external review.
 Agents run every `Next:` line `repair` prints as printed, so a line that resumes reviews

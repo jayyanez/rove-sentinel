@@ -1,6 +1,6 @@
 # Standalone validation record
 
-## 1.20.2 `repair` never resumes a pause a person may have set — 2026-11-22
+## 1.20.2 `repair` lifts only the pauses Sentinel recorded as its own — 2026-11-22
 
 Deterministic tests cover: an unreadable pause record answered with the conditional `resume`
 line and never a plain `Run:` one, and kept; the corrupt-record error of a push or the
