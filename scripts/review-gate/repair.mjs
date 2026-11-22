@@ -42,32 +42,38 @@ const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').rep
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
 
-// One line a process, after the marker `P`: PID, parent PID, start time (empty
-// when unknown), and the UTF-8 bytes of its name and of its command line in
-// base64. Windows PowerShell writes to a pipe in the console's code page, where
-// a character such as U+2192 becomes a control byte, so every text field
-// leaves it as ASCII, and no command line can change a line's shape.
-const WINDOWS_PROCESS_LIST = "$ErrorActionPreference = 'Stop'; $sentinelUtf8 = [Text.Encoding]::UTF8; foreach ($sentinelProcess in @(Get-CimInstance Win32_Process)) { $sentinelStarted = if ($sentinelProcess.CreationDate) { ([DateTimeOffset]$sentinelProcess.CreationDate).ToUnixTimeMilliseconds() } else { '' }; 'P {0} {1} {2} {3} {4}' -f [int]$sentinelProcess.ProcessId, [int]$sentinelProcess.ParentProcessId, $sentinelStarted, [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.Name)), [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.CommandLine)) }";
+// One line a process: the marker `P`, PID, parent PID, start time (empty when
+// unknown), the UTF-8 bytes of its name and of its command line in base64, and
+// the marker `E`; then `END` and the number of process lines. Windows
+// PowerShell writes to a pipe in the console's code page, where a character
+// such as U+2192 becomes a control byte, so every text field leaves it as
+// ASCII, and no command line can change a line's shape.
+const WINDOWS_PROCESS_LIST = "$ErrorActionPreference = 'Stop'; $sentinelUtf8 = [Text.Encoding]::UTF8; $sentinelCount = 0; foreach ($sentinelProcess in @(Get-CimInstance Win32_Process)) { $sentinelCount += 1; $sentinelStarted = if ($sentinelProcess.CreationDate) { ([DateTimeOffset]$sentinelProcess.CreationDate).ToUnixTimeMilliseconds() } else { '' }; 'P {0} {1} {2} {3} {4} E' -f [int]$sentinelProcess.ProcessId, [int]$sentinelProcess.ParentProcessId, $sentinelStarted, [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.Name)), [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.CommandLine)) }; 'END {0}' -f $sentinelCount";
 // The latest time a Date holds.
 const LAST_DATE_MS = 8.64e15;
 
 /**
- * The processes in the Windows listing's output; lines without its marker
+ * The processes in the Windows listing's output; lines without its markers
  * (anything else PowerShell printed) are not processes. A field that does not
  * decode is left empty or unknown and the process is marked `unreadable`, so
- * repair never takes it as evidence that something is absent. A process line
- * without a readable PID would leave a process out unseen: the listing fails.
+ * repair never takes it as evidence that something is absent. A listing that
+ * did not end, or whose count or a PID cannot be read, would leave a process
+ * out unseen: it fails.
  */
 export function parseWindowsProcessList(stdout) {
   const processes = [];
-  let missing = 0;
-  const utf8 = new TextDecoder('utf-8', { fatal: true });
-  // Not trimmed: an empty command line is the line's trailing space.
+  let lines = 0;
+  let end = null;
+  // A leading U+FEFF is a character of the command line, not a byte order mark.
+  const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  // Not trimmed: an empty command line is a field of its own.
   for (const line of String(stdout || '').split(/\r?\n/)) {
     const [marker, ...fields] = line.split(' ');
+    if (marker === 'END') { end = /^\d+$/.test(fields[0] ?? '') && fields.length === 1 ? Number(fields[0]) : NaN; continue; }
     if (marker !== 'P') continue;
-    // Each line has five fields; one with fewer or more was cut short or damaged.
-    let unreadable = fields.length !== 5;
+    lines += 1;
+    // Six fields, the last its end marker: a line cut short lacks it.
+    let unreadable = fields.length !== 6 || fields[5] !== 'E';
     const text = (field = '') => {
       if (/^[A-Za-z0-9+/]*={0,2}$/.test(field) && field.length % 4 === 0) {
         try { return utf8.decode(Buffer.from(field, 'base64')); } catch { /* not UTF-8 */ }
@@ -75,19 +81,21 @@ export function parseWindowsProcessList(stdout) {
       unreadable = true;
       return '';
     };
-    const number = (field = '', limit = Number.MAX_SAFE_INTEGER) => {
-      if (field === '') return null;
+    // Only the start time may be empty: the listing writes every other number.
+    const number = (field = '', { optional = false, limit = Number.MAX_SAFE_INTEGER } = {}) => {
+      if (optional && field === '') return null;
       const value = /^\d+$/.test(field) ? Number(field) : NaN;
       if (Number.isSafeInteger(value) && value <= limit) return value;
       unreadable = true;
       return null;
     };
     const [pid, ppid, startedAt, name, commandLine] = fields;
-    const entry = { pid: number(pid), ppid: number(ppid), name: text(name), commandLine: text(commandLine), startedAt: number(startedAt, LAST_DATE_MS) };
-    if (entry.pid === null) { missing += 1; continue; }
-    processes.push(unreadable ? { ...entry, unreadable: true } : entry);
+    const entry = { pid: number(pid), ppid: number(ppid), name: text(name), commandLine: text(commandLine), startedAt: number(startedAt, { optional: true, limit: LAST_DATE_MS }) };
+    if (entry.pid !== null) processes.push(unreadable ? { ...entry, unreadable: true } : entry);
   }
-  if (missing) throw new Error(`The Windows process listing gave ${missing} process line(s) without a readable PID, so it cannot show which processes run.`);
+  if (end !== lines || processes.length !== lines) {
+    throw new Error(`The Windows process listing ${end === null ? 'did not end' : `gave ${processes.length} readable PID(s) for ${Number.isNaN(end) ? 'an unreadable count of' : end} process line(s)`}, so it cannot show which processes run.`);
+  }
   return processes;
 }
 
@@ -709,7 +717,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     }
     if (orphans.length) {
       // Stopping them resumes only when no process the listing could not read whole remains.
-      const resumes = !legacy && !(await snapshot()).some((proc) => proc.unreadable);
+      const resumes = !legacy && !(await snapshot()).some((proc) => proc.unreadable && !orphans.some((orphan) => orphan.pid === proc.pid));
       step({ state: 'pause', status: dryRun && stopOrphans && resumes ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
       return;
     }

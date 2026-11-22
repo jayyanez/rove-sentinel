@@ -11,11 +11,12 @@ the fix: it arrives as an ordinary automatic update, and the bootstrap line down
   console's code page, where symbols such as `→`, `•`, `↑`, `↓`, `§` and `¶` become control
   bytes, so one process whose command line held one stopped every repair with `Bad control
   character in string literal in JSON` before it printed any step. The listing now writes
-  one ASCII line a process, its name and command line as base64 of their UTF-8 bytes. A
-  line that cannot be read whole keeps its process with what can be read, marked so that
-  `repair` never resumes a safety pause while one is listed (it says to run it again in a
-  minute); a process line with no readable PID fails the listing, as it would hide a
-  process. No other
+  one ASCII line a process, its name and command line as base64 of their UTF-8 bytes, each
+  line with an end marker and the listing with a closing count. A line that cannot be read
+  whole keeps its process with what can be read, marked so that `repair` never resumes a
+  safety pause while one is listed that it does not stop (it says to run it again in a
+  minute); a listing that did not end, or a process line with no readable PID, fails, as
+  it would hide a process. No other
   PowerShell output Sentinel reads carries text: a start time, exit codes, and the output
   of npm and of the repository's own command, which PowerShell passes through unchanged.
 - **A repair the bootstrap line runs can activate the update.** The bootstrap runs `repair`
