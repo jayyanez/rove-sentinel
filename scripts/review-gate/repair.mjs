@@ -15,7 +15,7 @@ import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { stableVersion } from './updates.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
 import {
-  daemonOwnerIsHealthy, isProcessAlive, readJson, recordEvent, removeStoredJson,
+  daemonOwnerIsHealthy, isProcessAlive, readJson, recordEvent, removeStoredJsonIf,
 } from './storage.mjs';
 
 const ownCli = fileURLToPath(new URL('./cli.mjs', import.meta.url));
@@ -611,12 +611,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     step({ state: 'queue-lock', status: 'fixed', detail: `Removed the review queue's submission lock of PID ${owner.pid}, which is not running.` });
   }
 
-  /** Lifts the pause only while it is still the record that was judged. */
+  /** Lifts the pause only if it is still the record that was judged: one written since is put back. */
   async function liftPause(judged) {
-    const current = await readJson(paths.paused).catch(() => undefined);
-    if (JSON.stringify(current) !== JSON.stringify(judged)) return false;
-    await removeStoredJson(paths.paused);
-    return true;
+    return removeStoredJsonIf(paths.paused, judged);
   }
 
   async function repairPause() {

@@ -40,6 +40,7 @@ import {
   readWatcherStartLog,
   recoverClaims,
   resumeGate,
+  removeStoredJsonIf,
   replaceExistingFile,
   stateRootFor,
   submitRequest,
@@ -675,6 +676,27 @@ describe('shared review local state', () => {
     await expect(readPause(paths)).rejects.not.toThrow('rove-sentinel resume');
     await expect(resumeGate(paths)).resolves.toMatchObject({ corrupt: true });
     await expect(readPause(paths)).resolves.toBeNull();
+  });
+
+  it('removes a record only while it is still the one judged, and puts back one written since', async () => {
+    const paths = await ensureState(await temporaryDirectory());
+    const judged = { pausedAt: '2026-11-01T00:00:00.000Z', reason: 'Automatic Sentinel update to 1.20.1', kind: 'update' };
+    const person = { pausedAt: '2026-11-01T00:00:01.000Z', reason: 'Holding reviews during a release', kind: 'manual' };
+    await atomicWriteJson(paths.paused, person);
+    await expect(removeStoredJsonIf(paths.paused, judged)).resolves.toBe(false);
+    expect(await readPause(paths)).toEqual(person);
+    // A person pauses after the caller judged the update's record, just before the removal.
+    await atomicWriteJson(paths.paused, judged);
+    const move = vi.fn(async (from: string, to: string) => {
+      if (from === paths.paused) await atomicWriteJson(paths.paused, person);
+      await rename(from, to);
+    });
+    await expect(removeStoredJsonIf(paths.paused, judged, { move })).resolves.toBe(false);
+    expect(await readPause(paths)).toEqual(person);
+    await expect(removeStoredJsonIf(paths.paused, person)).resolves.toBe(true);
+    expect(await readPause(paths)).toBeNull();
+    expect((await readdir(path.dirname(paths.paused))).filter((name) => name.includes('.claim'))).toEqual([]);
+    await expect(removeStoredJsonIf(paths.paused, person)).resolves.toBe(false);
   });
 
   it('cancels an unclaimed request when watcher startup fails', async () => {
