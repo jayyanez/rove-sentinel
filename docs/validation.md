@@ -3,16 +3,21 @@
 ## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
 
 Deterministic tests cover: the Windows listing read one line a process, a name and command
-line holding `→ • ✓ ×` decoded from base64, and a damaged line keeping its process with an
-unknown start time and an empty command line, while a line with no PID is left out; the
-repository's own command (`--version` and `update`) run, on Windows and macOS, without any
-`npm_` variable of the environment, such as the `npm_config_package` and `npm_config_yes`
-that `npx --package` leaves, and with the rest kept; a repair that stops before its first
-step, from the CLI and from the launcher, printing a `blocked: repair:` line whose `Next:`
-line is the bootstrap with the options given, as text and as JSON, and exiting 1; the
-bootstrap downloading 1.20.3 or later. On Windows, a test starts a process whose command
-line holds `→ • ↑ ↓ § ¶ ✓ ✘ ×` and 5,000 more characters and finds it whole in the listing.
-The 7 new or changed tests fail on 1.20.2's sources.
+line holding `→ • ✓ ×` decoded from base64; a damaged line keeping its process, marked
+unreadable, with an unknown parent PID or start time (one beyond what a Date holds) and an
+empty command line; other PowerShell output ignored, and a process line with no PID failing
+the listing; a safety pause kept, in a dry run and a repair, while an unreadable process is
+listed; the repository's own command run without any `npm_` variable of the environment,
+such as the `npm_config_package` and `npm_config_yes` that `npx --package` leaves, and with
+the rest kept: `--version` on Windows and macOS, `update` on Windows, where it activates; a
+repair that stops before it can report, from the CLI and from the launcher, as text and as
+JSON, printing a `blocked: repair:` line whose `Next:` line is the bootstrap in the checkout
+`--repo` named, with the options as the CLI reads them (the last of `--stop-orphans` and
+`--no-stop-orphans` wins), and exiting 1; the same repair run by the bootstrap printing no
+`Next:` line and saying to stop and report; the bootstrap downloading 1.20.3 or later. On
+Windows, a test starts a process whose command line holds `→ • ↑ ↓ § ¶ ✓ ✘ ×` and 5,000
+more characters and finds it whole in the listing. The 9 new or changed tests fail on
+1.20.2's sources. SUITE_RESULT
 
 Live on a Windows development host: 1.20.2's listing failed there with `Bad control character
 in string literal in JSON`, and the new one listed every process. Inside `npx --yes

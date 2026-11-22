@@ -258,7 +258,7 @@ describe('a repair the bootstrap line runs', () => {
   });
 });
 
-describe('a repair that stops before it checks anything', () => {
+describe('a repair that stops before it can report', () => {
   const launch = (script: string, args: string[], env: NodeJS.ProcessEnv = process.env) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [script, ...args], { windowsHide: true, env });
     let stdout = ''; let stderr = '';
@@ -267,19 +267,31 @@ describe('a repair that stops before it checks anything', () => {
     child.on('error', reject);
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
-  it('ends with the bootstrap as its Next line, with the options it was given', async () => {
+  const cli = path.resolve('scripts/review-gate/cli.mjs');
+  const environment = { ...process.env };
+  delete environment.ROVE_SENTINEL_REPAIR_BOOTSTRAP;
+  it('ends with the bootstrap as its Next line, with the options it was given, in the checkout it was given', async () => {
     // Not a Git checkout: the repair stops before its first step.
     const outside = await temp();
-    const cli = path.resolve('scripts/review-gate/cli.mjs');
-    const text = await launch(cli, ['repair', '--repo', outside, '--stop-orphans']);
+    const text = await launch(cli, ['repair', '--repo', outside, '--stop-orphans'], environment);
     expect(text.code).toBe(1);
     expect(text.stderr).toContain('Shared review gate:');
-    expect(text.stdout).toContain('blocked: repair: Repair stopped before it checked anything: ');
-    expect(text.stdout).toContain('if it also stops before printing a Next line, stop and report both outputs');
-    expect(text.stdout).toContain(`    Next: ${REPAIR_BOOTSTRAP} -- --stop-orphans\n`);
-    const json = await launch(cli, ['repair', '--repo', outside, '--json']);
+    expect(text.stdout).toContain('blocked: repair: Repair stopped with an error before it could report: ');
+    expect(text.stdout).toContain('if it also stops without a Next line, stop and report both outputs');
+    expect(text.stdout).toContain(`    Next: Run in ${outside}: ${REPAIR_BOOTSTRAP} -- --stop-orphans\n`);
+    // As the CLI reads them, the last of --name and --no-name wins.
+    const json = await launch(cli, ['repair', '--stop-orphans', '--json', '--no-stop-orphans', '--dry-run', '--repo', outside], environment);
     expect(json.code).toBe(1);
-    expect(JSON.parse(json.stdout)).toMatchObject({ repository: outside, ok: false, steps: [{ state: 'repair', status: 'blocked', next: `${REPAIR_BOOTSTRAP} -- --json` }] });
+    expect(JSON.parse(json.stdout)).toMatchObject({ repository: outside, dryRun: true, ok: false,
+      steps: [{ state: 'repair', status: 'blocked', next: `Run in ${outside}: ${REPAIR_BOOTSTRAP} -- --dry-run --json` }] });
+  }, 60_000);
+  it('run by the bootstrap line, asks for a report instead of the same line again', async () => {
+    const outside = await temp();
+    const result = await launch(cli, ['repair', '--repo', outside], { ...environment, ROVE_SENTINEL_REPAIR_BOOTSTRAP: '1.20.3' });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain('running that line again would stop the same way: stop and report this output');
+    expect(result.stdout).not.toContain('Next:');
+    expect(result.stdout).toContain('Result: blocked; stop and report this output.');
   }, 60_000);
   it('says the same when the launcher cannot choose an engine', async () => {
     const { execFileSync } = await import('node:child_process');
@@ -291,16 +303,20 @@ describe('a repair that stops before it checks anything', () => {
     execFileSync('git', ['init', '-q', checkout]);
     execFileSync('git', ['-C', checkout, 'remote', 'add', 'origin', 'https://github.com/example-owner/example-repo.git']);
     const home = path.join(base, 'home');
-    const env = { ...process.env, LOCALAPPDATA: home, XDG_STATE_HOME: home, HOME: home, USERPROFILE: home };
+    const env = { ...environment, LOCALAPPDATA: home, XDG_STATE_HOME: home, HOME: home, USERPROFILE: home };
     const root = await findRepoRoot(checkout);
     const stateRoot = stateRootFor(normalizeRepositoryIdentity((await primaryRemote(root)).url, root), { env, home });
     // An active engine of which no copy is installed: the launcher cannot choose one.
     await ensureState(stateRoot);
     await writeFile(path.join(stateRoot, 'engine.json'), JSON.stringify({ schemaVersion: 1, activeVersion: '99.0.0' }));
-    const result = await launch(path.resolve('scripts/review-gate/launcher.mjs'), ['repair', '--repo', checkout], env);
+    const launcher = path.resolve('scripts/review-gate/launcher.mjs');
+    const result = await launch(launcher, ['repair', '--repo', checkout], env);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('Rove Sentinel launcher: No copy of the active engine 99.0.0');
-    expect(result.stdout).toContain('blocked: repair: Repair stopped before it checked anything: No copy of the active engine 99.0.0');
-    expect(result.stdout).toContain(`    Next: ${REPAIR_BOOTSTRAP}\n`);
+    expect(result.stdout).toContain('blocked: repair: Repair stopped with an error before it could report: No copy of the active engine 99.0.0');
+    expect(result.stdout).toContain(`    Next: Run in ${checkout}: ${REPAIR_BOOTSTRAP}\n`);
+    const json = await launch(launcher, ['repair', '--json', '--repo', checkout], env);
+    expect(json.code).toBe(1);
+    expect(JSON.parse(json.stdout)).toMatchObject({ ok: false, steps: [{ state: 'repair', status: 'blocked', next: `Run in ${checkout}: ${REPAIR_BOOTSTRAP} -- --json` }] });
   }, 60_000);
 });

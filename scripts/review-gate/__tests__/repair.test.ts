@@ -109,22 +109,28 @@ describe('which processes a repair may count as this repository\'s', () => {
       if (saved === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = saved;
     }
   });
-  it('reads the Windows listing one line a process, and keeps every process a damaged line still names', async () => {
+  it('reads the Windows listing one line a process, and keeps every process a damaged line still names, marked unreadable', async () => {
     const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
     const run = vi.fn(async () => ({ stdout: [
-      `0 0 1000 ${b64('System Idle Process')} `,
-      `42 7 2000 ${b64('node.exe')} ${b64('node watch \u2192 \u2022 \u2713 \u00d7 "C:\\rove-review-context-1"')}`,
-      `43 42  ${b64('codex.exe')} not*base64`,
-      'not a process line',
+      `P 0 0 1000 ${b64('System Idle Process')} `,
+      `P 42 7 2000 ${b64('node.exe')} ${b64('node watch \u2192 \u2022 \u2713 \u00d7 "C:\rove-review-context-1"')}`,
+      `P 43 42  ${b64('codex.exe')} not*base64`,
+      // A parent PID and a start time beyond what a Date holds, which no listing gives.
+      `P 44 4x2 99999999999999999 ${b64('node.exe')} ${b64('node')}`,
+      'WARNING: anything else PowerShell printed',
       '',
     ].join('\r\n') }));
     expect(await listProcesses({ platform: 'win32', run })).toEqual([
       { pid: 0, ppid: 0, name: 'System Idle Process', commandLine: '', startedAt: 1000 },
-      { pid: 42, ppid: 7, name: 'node.exe', commandLine: 'node watch \u2192 \u2022 \u2713 \u00d7 "C:\\rove-review-context-1"', startedAt: 2000 },
+      { pid: 42, ppid: 7, name: 'node.exe', commandLine: 'node watch \u2192 \u2022 \u2713 \u00d7 "C:\rove-review-context-1"', startedAt: 2000 },
       // A start time the system did not give, and a command line that does not decode.
-      { pid: 43, ppid: 42, name: 'codex.exe', commandLine: '', startedAt: null },
+      { pid: 43, ppid: 42, name: 'codex.exe', commandLine: '', startedAt: null, unreadable: true },
+      { pid: 44, ppid: null, name: 'node.exe', commandLine: 'node', startedAt: null, unreadable: true },
     ]);
     expect(run.mock.calls[0][0]).toBe('powershell.exe');
+    // A process line without a PID would hide a process: the listing fails rather than leave it out.
+    await expect(listProcesses({ platform: 'win32', run: async () => ({ stdout: `P 42 7 2000 ${b64('node.exe')} ${b64('node')}\r\nP x 7 2000 ${b64('node.exe')} ${b64('node')}\r\n` }) }))
+      .rejects.toThrow('1 process line(s) without a readable PID');
   });
   // Windows PowerShell writes to a pipe in the console's code page, where U+2192
   // and U+2022 become the control bytes 0x1A and 0x07 that broke the JSON listing.
@@ -157,6 +163,18 @@ describe('repair', () => {
     expect(report.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'fixed' })]);
     expect(await readJson(f.paths.paused)).toBeNull();
     expect((await events(f.paths)).map((event) => event.action)).toContain('safety-pause-lifted');
+  });
+  it('keeps a safety pause while a process the listing could not read whole might be one of its reviews', async () => {
+    const f = await fixture({ processes: [{ pid: 77, ppid: 1, name: 'codex.exe', commandLine: '', startedAt: null, unreadable: true } as Proc] });
+    await f.healthy();
+    const pause = { pausedAt: new Date().toISOString(), reason: safetyPauseReason('ORPHANED_PROCESS_TREE'), kind: 'provider-cleanup' };
+    await atomicWriteJson(f.paths.paused, pause);
+    for (const dryRun of [true, false]) {
+      const report = await repair(f, { dryRun });
+      expect(report.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked', next: 'Run again in one minute: npx --no-install rove-sentinel repair' })]);
+      expect(report.steps[0].detail).toContain('PID 77');
+      expect(await readJson(f.paths.paused)).toEqual(pause);
+    }
   });
   it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);

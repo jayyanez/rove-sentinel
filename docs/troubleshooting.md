@@ -43,12 +43,12 @@ what it would do; `--json` gives the same report as data.
 with the exact command. Run that command; when it is `repair` again, run it
 again after the time it names. Exit code 0 means every state is fixed or fine;
 1 means a `Next:` line waits. When `repair` stops with an error before it
-checks anything, from 1.20.3 it says so in a `blocked: repair:` line whose
-`Next:` line is the bootstrap line of
+can report, from 1.20.3 it says so in a `blocked: repair:` line whose `Next:`
+line is the bootstrap line of
 [Repair on an engine before 1.20.1](#repair-on-an-engine-before-1201); an
 earlier engine prints only the error. Either way, run that line in the
-repository, and if it also stops before printing a `Next:` line, stop and
-report both outputs. One repair runs at a time per repository. A pause
+repository. If the repair it runs stops the same way, it prints no `Next:`
+line and says to stop: stop and report both outputs. One repair runs at a time per repository. A pause
 records who set it (from 1.20.1): repair lifts a safety pause or an update's,
 never one a person set with `rove-sentinel pause`, whatever its reason says. A
 pause an engine before 1.20.1 wrote records no kind, and a person may type any
@@ -115,7 +115,7 @@ the updater checks an engine, writes it to a new temporary folder and runs its
 hand.
 
 ```sh
-node -e "const v='1.20.3',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\r?\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})"
+node -e "const v='1.20.3',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\r?\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),e=Object.assign({},process.env,{ROVE_SENTINEL_REPAIR_BOOTSTRAP:v}),r=w===false?x.spawnSync('npx',q,{stdio:'inherit',env:e}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit',env:e}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true,env:e});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})"
 ```
 
 `repair`'s options go after `--` at the end of the line, as in

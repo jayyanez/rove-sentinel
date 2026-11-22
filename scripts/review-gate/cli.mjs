@@ -17,7 +17,7 @@ import { describeAccountHold, loadAccounts, readAccountState, requesterAccountKe
 import { checkForUpdates, formatUpdateCheck } from './updates.mjs';
 import { automaticUpdate, configureAutomaticUpdates, reviewNotices, updateInformation } from './automatic-updates.mjs';
 import { registerEngineProcess } from './engine-store.mjs';
-import { repairStoppedStep } from './process.mjs';
+import { repairOptions, repairStoppedStep } from './process.mjs';
 import { formatRepair, repairRepository } from './repair.mjs';
 
 import { runWatcher } from './daemon.mjs';
@@ -465,12 +465,12 @@ if (detachedLog) {
 
 main().catch((error) => {
   process.stderr.write(`Shared review gate: ${error?.message || String(error)}\n`);
-  // A repair that stops before any step still ends with the command to run next.
+  // A repair that stops before it can report still says what to do next.
   if (process.argv[2] === 'repair') {
     const argv = process.argv.slice(3);
-    const at = argv.indexOf('--repo');
-    const report = { repository: at >= 0 && argv[at + 1] ? argv[at + 1] : process.cwd(), dryRun: argv.includes('--dry-run'), ok: false, steps: [repairStoppedStep(error, argv)] };
-    print(argv.includes('--json') ? report : formatRepair(report), argv.includes('--json'));
+    const options = repairOptions(argv);
+    const report = { repository: options.repo ?? process.cwd(), dryRun: options.dryRun, ok: false, steps: [repairStoppedStep(error, argv)] };
+    print(options.json ? report : formatRepair(report), options.json);
   }
   process.exitCode = 1;
 });

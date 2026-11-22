@@ -42,25 +42,48 @@ const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').rep
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
 
-// One line a process: PID, parent PID, start time (empty when unknown), and the
-// UTF-8 bytes of its name and of its command line in base64. Windows
-// PowerShell writes to a pipe in the console's code page, where a character
-// such as U+2192 becomes a control byte, so every text field leaves it as ASCII.
-const WINDOWS_PROCESS_LIST = "$ErrorActionPreference = 'Stop'; $sentinelUtf8 = [Text.Encoding]::UTF8; foreach ($sentinelProcess in @(Get-CimInstance Win32_Process)) { $sentinelStarted = if ($sentinelProcess.CreationDate) { ([DateTimeOffset]$sentinelProcess.CreationDate).ToUnixTimeMilliseconds() } else { '' }; '{0} {1} {2} {3} {4}' -f [int]$sentinelProcess.ProcessId, [int]$sentinelProcess.ParentProcessId, $sentinelStarted, [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.Name)), [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.CommandLine)) }";
+// One line a process, after the marker `P`: PID, parent PID, start time (empty
+// when unknown), and the UTF-8 bytes of its name and of its command line in
+// base64. Windows PowerShell writes to a pipe in the console's code page, where
+// a character such as U+2192 becomes a control byte, so every text field
+// leaves it as ASCII, and no command line can change a line's shape.
+const WINDOWS_PROCESS_LIST = "$ErrorActionPreference = 'Stop'; $sentinelUtf8 = [Text.Encoding]::UTF8; foreach ($sentinelProcess in @(Get-CimInstance Win32_Process)) { $sentinelStarted = if ($sentinelProcess.CreationDate) { ([DateTimeOffset]$sentinelProcess.CreationDate).ToUnixTimeMilliseconds() } else { '' }; 'P {0} {1} {2} {3} {4}' -f [int]$sentinelProcess.ProcessId, [int]$sentinelProcess.ParentProcessId, $sentinelStarted, [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.Name)), [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.CommandLine)) }";
+// The latest time a Date holds.
+const LAST_DATE_MS = 8.64e15;
 
 /**
- * The processes in the Windows listing's output. A line that cannot be read
- * whole keeps what can be read: a field that does not decode is left empty or
- * unknown, and only a line with no PID is left out.
+ * The processes in the Windows listing's output; lines without its marker
+ * (anything else PowerShell printed) are not processes. A field that does not
+ * decode is left empty or unknown and the process is marked `unreadable`, so
+ * repair never takes it as evidence that something is absent. A process line
+ * without a readable PID would leave a process out unseen: the listing fails.
  */
 export function parseWindowsProcessList(stdout) {
-  const text = (field = '') => (/^[A-Za-z0-9+/]*={0,2}$/.test(field) ? Buffer.from(field, 'base64').toString('utf8') : '');
-  const number = (field) => (/^\d+$/.test(field ?? '') ? Number(field) : null);
-  return String(stdout || '').split(/\r?\n/).map((line) => line.trim().split(' '))
-    .filter(([pid]) => number(pid) !== null)
-    .map(([pid, ppid, startedAt, name, commandLine]) => ({
-      pid: number(pid), ppid: number(ppid), name: text(name), commandLine: text(commandLine), startedAt: number(startedAt),
-    }));
+  const processes = [];
+  let missing = 0;
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const [marker, ...fields] = line.trim().split(' ');
+    if (marker !== 'P') continue;
+    let unreadable = false;
+    const text = (field = '') => {
+      if (/^[A-Za-z0-9+/]*={0,2}$/.test(field) && field.length % 4 === 0) return Buffer.from(field, 'base64').toString('utf8');
+      unreadable = true;
+      return '';
+    };
+    const number = (field = '', limit = Number.MAX_SAFE_INTEGER) => {
+      if (field === '') return null;
+      const value = /^\d+$/.test(field) ? Number(field) : NaN;
+      if (Number.isSafeInteger(value) && value <= limit) return value;
+      unreadable = true;
+      return null;
+    };
+    const [pid, ppid, startedAt, name, commandLine] = fields;
+    const entry = { pid: number(pid), ppid: number(ppid), name: text(name), commandLine: text(commandLine), startedAt: number(startedAt, LAST_DATE_MS) };
+    if (entry.pid === null) { missing += 1; continue; }
+    processes.push(unreadable ? { ...entry, unreadable: true } : entry);
+  }
+  if (missing) throw new Error(`The Windows process listing gave ${missing} process line(s) without a readable PID, so it cannot show which processes run.`);
+  return processes;
 }
 
 /**
@@ -687,6 +710,12 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       step({ state: 'pause', status: 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process left by this repository's reviews remains (${(await snapshot()).length} processes checked). ${unknownOrigin}`, unattributed, next: RESUME_IF_ASKED });
       return;
     }
+    // A process whose line could not be read whole may be one of them: never resume on it.
+    const unreadable = (await snapshot()).filter((proc) => proc.unreadable);
+    if (unreadable.length) {
+      step({ state: 'pause', status: 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process left by this repository's reviews was found, but the system's listing of ${unreadable.length} process(es) could not be read whole (PID ${unreadable.map((proc) => proc.pid).join(', ')}), so one of them may be.`, unattributed, next: `Run again in one minute: ${REPAIR_COMMAND}` });
+      return;
+    }
     if (dryRun) { step({ state: 'pause', status: 'would-fix', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process of this repository's reviews remains; repair resumes.`, unattributed }); return; }
     if (!await liftPause(paused)) { step({ state: 'pause', status: 'busy', detail: 'The pause changed while repair read it.', next: `Run again: ${REPAIR_COMMAND}` }); return; }
     const checked = (await snapshot()).length;
@@ -766,8 +795,9 @@ export function formatRepair(report) {
     for (const proc of entry.unattributed ?? []) lines.push(`    (not counted: PID ${proc.pid} ${proc.name} ${proc.why})`);
     if (entry.next) lines.push(`    Next: ${entry.next}`);
   }
-  lines.push(report.ok ? 'Result: nothing is blocked now.' : report.steps.some((entry) => entry.status === 'blocked')
-    ? 'Result: blocked; run each Next command above.' : 'Result: not finished; run each Next command above.');
+  lines.push(report.ok ? 'Result: nothing is blocked now.' : !report.steps.some((entry) => entry.next)
+    ? 'Result: blocked; stop and report this output.' : report.steps.some((entry) => entry.status === 'blocked')
+      ? 'Result: blocked; run each Next command above.' : 'Result: not finished; run each Next command above.');
   return lines.join('\n');
 }
 

@@ -85,30 +85,46 @@ export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
 // Node (which npx needs anyway) downloads the 1.20.3 archive and that release's
 // SHA256SUMS, refuses the archive unless its SHA-256 matches, as the updater
 // checks an engine, writes it to a new temporary folder and runs its repair
-// through npx (npm's npx-cli.js beside Node on Windows, else the npx on PATH);
+// through npx (npm's npx-cli.js beside Node on Windows, else the npx on PATH),
+// with ROVE_SENTINEL_REPAIR_BOOTSTRAP set, so that repair, should it stop
+// before it can report, asks for a report instead of this line again;
 // the 1.20.3 launcher then runs repair on the newest engine at hand (not 1.20.1,
 // which misread the pauses those repositories may hold, nor 1.20.2, whose
 // process listing and update failed from this line). It uses
 // Node's fetch, as the updater does, with the same proxy support. The script holds no double quote, $, backtick or !, so no shell
 // rewrites it, and it calls no PowerShell module, so a constrained or
 // module-less PowerShell runs it as well.
-export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.3',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
+export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.3',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),e=Object.assign({},process.env,{ROVE_SENTINEL_REPAIR_BOOTSTRAP:v}),r=w===false?x.spawnSync('npx',q,{stdio:'inherit',env:e}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit',env:e}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true,env:e});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
 export const REPAIR_BOOTSTRAP = `node -e "${REPAIR_BOOTSTRAP_SCRIPT}"`;
 // repair's options pass after `--`; the script refuses any other.
 export const repairBootstrap = (options = []) => (options.length ? `${REPAIR_BOOTSTRAP} -- ${options.join(' ')}` : REPAIR_BOOTSTRAP);
-const REPAIR_OPTIONS = ['--stop-orphans', '--dry-run', '--json'];
+// Set by the bootstrap for the repair it runs.
+export const REPAIR_BOOTSTRAP_VARIABLE = 'ROVE_SENTINEL_REPAIR_BOOTSTRAP';
+
+/** repair's options as the CLI reads them: the last of `--name` and `--no-name` wins. */
+export function repairOptions(argv = []) {
+  const on = (name) => argv.lastIndexOf(`--${name}`) > argv.lastIndexOf(`--no-${name}`);
+  const at = argv.lastIndexOf('--repo');
+  return { stopOrphans: on('stop-orphans'), dryRun: on('dry-run'), json: on('json'), repo: at >= 0 && argv[at + 1] && !argv[at + 1].startsWith('--') ? argv[at + 1] : null };
+}
 
 /**
- * The step a repair that stopped before checking anything reports, so that
- * whoever runs it always has a next command: the bootstrap, in the repository,
- * with the options repair was given.
+ * The step a repair that stopped with an error before it could report gives,
+ * so that whoever runs it always knows what to do next: the bootstrap, with
+ * the options repair was given, in the checkout it was given; or, when the
+ * bootstrap's own repair stopped, no command but to stop and report.
  */
-export function repairStoppedStep(error, argv = []) {
+export function repairStoppedStep(error, argv = [], { env = process.env } = {}) {
   const message = String(error?.message || error || 'unknown error').trim().replace(/[.\s]+$/, '');
+  if (env[REPAIR_BOOTSTRAP_VARIABLE]) {
+    return { state: 'repair', status: 'blocked', detail: `Repair stopped with an error before it could report: ${message}. This is the repair the bootstrap line runs, so running that line again would stop the same way: stop and report this output.` };
+  }
+  const options = repairOptions(argv);
+  const line = repairBootstrap([options.stopOrphans && '--stop-orphans', options.dryRun && '--dry-run', options.json && '--json'].filter(Boolean));
   return {
     state: 'repair', status: 'blocked',
-    detail: `Repair stopped before it checked anything: ${message}. The Next line, run in the repository, downloads a verified release and runs its repair (docs/troubleshooting.md, "Repair on an engine before 1.20.1"); if it also stops before printing a Next line, stop and report both outputs.`,
-    next: repairBootstrap(REPAIR_OPTIONS.filter((option) => argv.includes(option))),
+    detail: `Repair stopped with an error before it could report: ${message}. The Next line, run in the repository, downloads a verified release and runs its repair (docs/troubleshooting.md, "Repair on an engine before 1.20.1"); if it also stops without a Next line, stop and report both outputs.`,
+    next: options.repo ? `Run in ${options.repo}: ${line}` : line,
   };
 }
 // The two safety pauses a failed provider cleanup writes. Earlier engines wrote

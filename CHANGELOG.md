@@ -3,7 +3,7 @@
 ## 1.20.3 — `repair` lists every Windows process and updates when the bootstrap runs it
 
 Two ways `repair` failed on a Windows host, both found by running it for real, and a repair
-that stops before any step now still ends with a `Next:` line. Nothing needs doing to receive
+that stops with an error before it can report now still says what to do next. Nothing needs doing to receive
 the fix: it arrives as an ordinary automatic update, and the bootstrap line downloads it.
 
 - **The process listing no longer fails on one command line.** `repair` listed processes
@@ -11,8 +11,11 @@ the fix: it arrives as an ordinary automatic update, and the bootstrap line down
   console's code page, where symbols such as `→`, `•`, `↑`, `↓`, `§` and `¶` become control
   bytes, so one process whose command line held one stopped every repair with `Bad control
   character in string literal in JSON` before it printed any step. The listing now writes
-  one ASCII line a process, its name and command line as base64 of their UTF-8 bytes, and
-  a line that cannot be read whole keeps its process with what can be read. No other
+  one ASCII line a process, its name and command line as base64 of their UTF-8 bytes. A
+  line that cannot be read whole keeps its process with what can be read, marked so that
+  `repair` never resumes a safety pause while one is listed (it says to run it again in a
+  minute); a process line with no readable PID fails the listing, as it would hide a
+  process. No other
   PowerShell output Sentinel reads carries text: a start time, exit codes, and the output
   of npm and of the repository's own command, which PowerShell passes through unchanged.
 - **A repair the bootstrap line runs can activate the update.** The bootstrap runs `repair`
@@ -22,10 +25,12 @@ the fix: it arrives as an ordinary automatic update, and the bootstrap line down
   to missing packages and no YES option`. The repository's own command (`update`, and
   `--version` to learn the engine it selects) now runs without any `npm_` setting in its
   environment, and reads npm's configuration from its files, as in a new shell.
-- **A repair that stops before it checks anything says what to run.** An error before the
-  first step (from `repair` or from the launcher choosing its engine) ends with a
-  `blocked: repair:` line whose `Next:` line is the bootstrap line, with the options
-  `repair` was given, and says to stop and report both outputs if that stops too.
+- **A repair that stops before it can report says what to do next.** An error that stops
+  `repair` (or the launcher choosing its engine) ends with a `blocked: repair:` line whose
+  `Next:` line is the bootstrap line, with the options `repair` was given as it reads them
+  and in the checkout `--repo` named, and says to stop and report both outputs if that
+  stops too. The bootstrap marks the repair it runs (`ROVE_SENTINEL_REPAIR_BOOTSTRAP`):
+  when that repair stops, it prints no `Next:` line and says to stop and report.
 - **The bootstrap for an engine before 1.20.1 downloads 1.20.3**
   ([troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201)). Run it
   too when `repair` on 1.20.1 or 1.20.2 stops with an error before printing a `Next:` line.
