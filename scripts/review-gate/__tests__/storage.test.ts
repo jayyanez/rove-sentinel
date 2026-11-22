@@ -666,11 +666,13 @@ describe('shared review local state', () => {
     expect(await readdir(paths.auditEvents)).toHaveLength(2);
   });
 
-  it('fails closed on a corrupt pause record while resume repairs it', async () => {
+  it('fails closed on a corrupt pause record, sends it to repair, and resume clears it', async () => {
     const paths = await ensureState(await temporaryDirectory());
     await writeFile(paths.paused, '{');
 
-    await expect(readPause(paths)).rejects.toThrow('npx --no-install rove-sentinel resume');
+    // A person may have set that pause: the message never says to resume it.
+    await expect(readPause(paths)).rejects.toThrow(/Run: npx --no-install rove-sentinel repair$/);
+    await expect(readPause(paths)).rejects.not.toThrow('rove-sentinel resume');
     await expect(resumeGate(paths)).resolves.toMatchObject({ corrupt: true });
     await expect(readPause(paths)).resolves.toBeNull();
   });

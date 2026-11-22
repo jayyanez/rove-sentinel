@@ -109,7 +109,10 @@ do not delete them merely to unblock a push. `npx --no-install rove-sentinel rep
 recovers it once the process that wrote the fence is gone (its PID, and on Windows
 its start time): it stops any watcher, restores the previous policy and runtime
 from the backup, reinstalls with that runtime, verifies its watcher, then removes
-the fence and its update pause, and retries the update. Other projects remain
+the fence and its update pause, and retries the update. A pause an engine
+before 1.20.1 wrote records no kind, so a person may have written the same
+reason: repair keeps it, and its `Next:` line resumes reviews only on the word
+of the person who asked for the repair. Other projects remain
 independent.
 
 The shared engine store retains at most five installed versions. A version a

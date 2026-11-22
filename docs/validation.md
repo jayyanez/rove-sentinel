@@ -1,5 +1,26 @@
 # Standalone validation record
 
+## 1.20.2 `repair` and the pauses it cannot attribute — 2026-11-22
+
+Deterministic tests cover: an unreadable pause record answered with the conditional `resume`
+line and never a plain `Run:` one, and kept; the corrupt-record error of a push or the
+watcher ending with the repair command, never `resume`; pauses with no kind, as engines
+before 1.20.1 wrote every pause, never lifted, whether their reason only opens like the
+updater's or a safety pause's or is one of those engines' sentences in full; a kindless
+safety sentence still checked for leftover processes, which are listed and stopped with
+`--stop-orphans`, after which the pause stays with the conditional `resume` line, and a dry
+run that says so; a kindless updater's reason left alone while an activation runs and
+kept, with the conditional line, once none does; the rollback of an interrupted activation
+removing no pause, a person's or a kindless one included, and the pause step then lifting
+one recorded as the update's; the bootstrap downloading 1.20.2 or later, its checksum test
+following the version it names. The 9 changed or new tests fail on 1.20.1's sources.
+1,088 tests passed and 5 were skipped (linters not installed there) on Windows 11 on Arm,
+run there because the development host was loaded; on the loaded host the same suite timed
+out in 12 tests unrelated to this change. The package smoke passed.
+
+Not run live: no pause left by an engine before 1.20.1 was reproduced outside the tests,
+and the bootstrap line cannot download 1.20.2 until that release is published.
+
 ## 1.20.1 updates that cannot proceed say so, and `repair` fixes them — 2026-11-19
 
 Deterministic tests cover a full engine store removing copies kept only for a rollback,

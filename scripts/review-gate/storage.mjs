@@ -1500,7 +1500,7 @@ export async function readPause(paths) {
     return await readJson(paths.paused);
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    throw new Error('The shared review pause record is corrupt. Run npx --no-install rove-sentinel resume to clear it; unattested pushes remain blocked until then.', { cause: error });
+    throw new Error('The shared review pause record is corrupt, so who paused reviews is unknown; unattested pushes remain blocked until it is cleared. Run: npx --no-install rove-sentinel repair', { cause: error });
   }
 }
 

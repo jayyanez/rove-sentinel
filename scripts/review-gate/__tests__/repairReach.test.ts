@@ -11,6 +11,7 @@ import { REPAIR_BOOTSTRAP, REPAIR_BOOTSTRAP_SCRIPT } from '../process.mjs';
 import { atomicWriteJson, ensureState } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { GATE_VERSION } from '../constants.mjs';
+import { compareVersions } from '../updates.mjs';
 
 const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -157,11 +158,15 @@ describe('the bootstrap for an engine before 1.20.1', () => {
   // The published line, through this platform's shell, pointed at a local
   // server and with its npx run replaced by a marker: the verification is what
   // is tested, not the repair it then runs.
+  const release = REPAIR_BOOTSTRAP_SCRIPT.match(/const v='([^']+)'/)?.[1] as string;
+  it('downloads 1.20.2 or later, the first repair that never lifts a pause an earlier engine left with no kind', () => {
+    expect(compareVersions(release, '1.20.2')).toBeGreaterThanOrEqual(0);
+  });
   async function bootstrap(sums: (digest: string) => string, options: string[] = []) {
     const archive = Buffer.from('synthetic release archive');
     const digest = createHash('sha256').update(archive).digest('hex');
     const server = createServer((request, response) => {
-      if (request.url?.endsWith('/rove-sentinel-1.20.1.tgz')) response.end(archive);
+      if (request.url?.endsWith(`/rove-sentinel-${release}.tgz`)) response.end(archive);
       else if (request.url?.endsWith('/SHA256SUMS')) response.end(sums(digest));
       else { response.statusCode = 404; response.end(); }
     });
@@ -189,21 +194,21 @@ describe('the bootstrap for an engine before 1.20.1', () => {
     } finally { server.close(); }
   }
   it('refuses an archive whose SHA-256 does not match, and goes on with one that does', async () => {
-    const bad = await bootstrap(() => `${'0'.repeat(64)}  rove-sentinel-1.20.1.tgz\n`);
+    const bad = await bootstrap(() => `${'0'.repeat(64)}  rove-sentinel-${release}.tgz\n`);
     expect(bad.status).not.toBe(0);
     expect(bad.stderr).toContain('Checksum mismatch');
     expect(bad.stdout).not.toContain('VERIFIED');
     const missing = await bootstrap(() => 'nothing for this archive\n');
     expect(missing.stderr).toContain('Checksum mismatch');
-    const ok = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`);
+    const ok = await bootstrap((digest) => `${digest}  rove-sentinel-${release}.tgz\n`);
     expect(ok.status).toBe(0);
     expect(ok.stdout).toMatch(/VERIFIED .* rove-sentinel repair\s*$/m);
   }, 120_000);
   it('passes repair\'s own options on after --, and refuses any other before downloading', async () => {
-    const passed = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`, ['--stop-orphans', '--json']);
+    const passed = await bootstrap((digest) => `${digest}  rove-sentinel-${release}.tgz\n`, ['--stop-orphans', '--json']);
     expect(passed.status).toBe(0);
     expect(passed.stdout).toMatch(/VERIFIED .* rove-sentinel repair --stop-orphans --json\s*$/m);
-    const refused = await bootstrap((digest) => `${digest}  rove-sentinel-1.20.1.tgz\n`, ['--force']);
+    const refused = await bootstrap((digest) => `${digest}  rove-sentinel-${release}.tgz\n`, ['--force']);
     expect(refused.status).not.toBe(0);
     expect(refused.stderr).toContain('Not a repair option: --force');
     expect(refused.stdout).not.toContain('VERIFIED');

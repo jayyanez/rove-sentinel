@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.20.2 — `repair` lifts only the pauses Sentinel recorded as its own
+
+Two ways 1.20.1's `repair` could lift a pause a person set, found by an external review.
+Agents run every `Next:` line `repair` prints as printed, so a line that resumes reviews
+must be one only a person's word allows. Nothing needs doing to receive the fix: it arrives
+as an ordinary automatic update.
+
+- **An unreadable pause record is no longer resumed by a plain `Next:` line.** `repair`
+  said it could not tell whether a person or a failed cleanup had paused reviews, then
+  printed `Run: npx --no-install rove-sentinel resume`. It now prints the line it prints for
+  a person's pause: `Only if the person who asked for this repair asked you to lift that
+  pause, run: …`. The error a push or the watcher gives for that record ends with
+  `Run: npx --no-install rove-sentinel repair` instead of telling anyone to resume.
+- **A pause from an engine before 1.20.1 is never lifted.** Those engines recorded no kind,
+  and 1.20.1 read it from the reason's opening, so a person's pause that began with the
+  updater's `Automatic Sentinel update to …`, or with a safety pause's opening, was lifted.
+  A person may type any reason, those engines' whole sentences included, and the record
+  would be the same, so `repair` now lifts no pause without a kind. When its reason is, in
+  full, one those engines wrote, `repair` still makes their checks (a safety pause's
+  leftover processes are listed, and stopped with `--stop-orphans`; an update's pause is
+  left alone while its activation runs), then says the record does not tell who wrote it
+  and prints the `resume` line for the person's word. Pauses written by 1.20.1 and later
+  record their kind and are lifted as before.
+- **The rollback of an interrupted activation removes no pause.** It removed any pause it
+  read as the update's; `repair`'s pause step now lifts one recorded as the update's, as it
+  lifts any pause, after reading it again and finding the record it judged. That read and
+  the removal are still two steps, so a `pause` typed in between can be lost, as in 1.20.1:
+  every engine's `pause` writes the record without a lock repair could share.
+- **The bootstrap for an engine before 1.20.1 downloads 1.20.2**, whose `repair` reads those
+  engines' pauses as above ([troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201)).
+
 ## 1.20.1 — updates that cannot proceed say so, and `repair` fixes them
 
 Two ways automatic updates stopped for days without anyone noticing, seen on a host with

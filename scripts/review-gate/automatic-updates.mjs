@@ -9,7 +9,7 @@ import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, processStartedAt, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
 import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
-import { pauseKind, REPAIR_BOOTSTRAP, REPAIR_COMMAND, runProcess } from './process.mjs';
+import { legacyPause, pauseKind, REPAIR_BOOTSTRAP, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { checkForUpdates, compareVersions } from './updates.mjs';
 import { longPauseMessage, notifyUpdate, updateMessage } from './update-notifications.mjs';
 
@@ -50,7 +50,8 @@ export async function activationRuns(marker, { isAlive = processAlive, startedAt
  * checks everything it checked before.
  */
 async function liftsItself(paused, paths, probes) {
-  if (pauseKind(paused) !== 'update') return false;
+  // An earlier engine's activation records no kind; while one runs, its reason is taken for its own.
+  if (pauseKind(paused) !== 'update' && legacyPause(paused) !== 'update') return false;
   return activationRuns(await readJson(updateMarker(paths)).catch(() => null), probes);
 }
 
@@ -212,8 +213,9 @@ export async function fenceJournal(paths, marker) {
  * Rolls back an activation whose process is gone, as its own failure path
  * would have: stops whatever watcher runs, puts back the policy and engine
  * recorded in update-recovery.json, reinstalls with that engine, verifies its
- * watcher, then removes the fence and the update's pause. The release stays
- * downloaded; an `update` retries it. Refuses while the activation still runs.
+ * watcher, then removes the fence; repair's pause step then lifts the update's
+ * pause. The release stays downloaded; an `update` retries it. Refuses while the
+ * activation still runs.
  */
 export async function rollBackInterruptedUpdate(context, {
   stop = stopDaemon, run = runProcess, root = engineRoot(), isAlive = processAlive, startedAt = processStartedAt,
@@ -245,9 +247,8 @@ export async function rollBackInterruptedUpdate(context, {
   }
   await publishEngineState(paths, { ...recovery.previousState, repoRoot: context.repoRoot, phase: 'failed',
     failedVersion: recovery.nextVersion ?? null, lastError: 'An interrupted activation was rolled back by repair.' }, root);
-  const paused = await readJson(paths.paused).catch(() => null);
-  // Only the update's own pause: a person's pause stays whatever its reason says.
-  if (pauseKind(paused) === 'update' && paused) await removeStoredJson(paths.paused);
+  // The pause is repair's pause step to judge: it lifts one recorded as the update's,
+  // only while it is still the record it judged, and never one a person may have set.
   await removeStoredJson(updateMarker(paths));
   return { rolledBack: true, version, nextVersion: recovery.nextVersion ?? null, markerPid: marker.pid };
 }
