@@ -21,8 +21,11 @@ the fix: it arrives as an ordinary automatic update, and the bootstrap line down
   of npm and of the repository's own command, which PowerShell passes through unchanged.
 - **A leftover `--stop-orphans` could not stop keeps the pause.** A leftover without a start
   time is never stopped; once its parent was stopped, the new listing no longer traced it,
-  and the pause was lifted while it ran. It now stays counted while it runs with the start
-  time it was listed with, and a dry run no longer says stopping would resume past it.
+  and the pause was lifted while it ran. It now stays counted, in that repair, while the new
+  listing shows it with the start time it was listed with, even if a signal reached it, and
+  a dry run no longer says stopping would resume past it. A later repair, which no longer
+  sees the parent, cannot trace such a process either, as before this release: a process
+  whose only link to a review was a parent that is gone is not counted.
 - **A repair the bootstrap line runs can activate the update.** The bootstrap runs `repair`
   through `npx --yes --package <archive>`, and npm passes its settings to what it runs. The
   update step ran the repository's own `npx --no-install rove-sentinel update`, which

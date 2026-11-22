@@ -217,6 +217,12 @@ describe('repair', () => {
     expect(live.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked' })]);
     expect(live.steps[0].processes.map((proc: { pid: number }) => proc.pid)).toEqual([302]);
     expect(await readJson(f.paths.paused)).toEqual(traced);
+    // Nor does a signal that reached the child count while the listing still shows it.
+    f.list.processes = [{ pid: 301, ppid: 300, name: 'node.exe', commandLine: 'node mcp-server', startedAt: 500 }, { pid: 302, ppid: 301, name: 'node.exe', commandLine: '', startedAt: 600 }];
+    f.deps.stop = vi.fn(async () => { f.list.processes = f.list.processes.filter((proc) => proc.pid !== 301); return [302, 301]; });
+    const signalled = await repair(f, { stopOrphans: true });
+    expect(signalled.steps[0].processes.map((proc: { pid: number }) => proc.pid)).toEqual([302]);
+    expect(await readJson(f.paths.paused)).toEqual(traced);
   });
   it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);
