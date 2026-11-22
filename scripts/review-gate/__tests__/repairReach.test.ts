@@ -259,8 +259,8 @@ describe('a repair the bootstrap line runs', () => {
 });
 
 describe('a repair that stops before it can report', () => {
-  const launch = (script: string, args: string[], env: NodeJS.ProcessEnv = process.env) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [script, ...args], { windowsHide: true, env });
+  const launch = (script: string, args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], { windowsHide: true, env, cwd });
     let stdout = ''; let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
@@ -284,6 +284,9 @@ describe('a repair that stops before it can report', () => {
     expect(json.code).toBe(1);
     expect(JSON.parse(json.stdout)).toMatchObject({ repository: outside, dryRun: true, ok: false,
       steps: [{ state: 'repair', status: 'blocked', next: `Run in ${outside}: ${REPAIR_BOOTSTRAP} -- --dry-run --json` }] });
+    // A later --no-repo cancels the checkout: the line runs where repair ran (outside any checkout here).
+    const here = await launch(cli, ['repair', '--repo', path.join(outside, 'elsewhere'), '--no-repo', '--json'], environment, outside);
+    expect(JSON.parse(here.stdout).steps[0].next).toBe(`${REPAIR_BOOTSTRAP} -- --json`);
   }, 60_000);
   it('run by the bootstrap line, asks for a report instead of the same line again', async () => {
     const outside = await temp();

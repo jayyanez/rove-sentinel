@@ -104,8 +104,10 @@ export const REPAIR_BOOTSTRAP_VARIABLE = 'ROVE_SENTINEL_REPAIR_BOOTSTRAP';
 /** repair's options as the CLI reads them: the last of `--name` and `--no-name` wins. */
 export function repairOptions(argv = []) {
   const on = (name) => argv.lastIndexOf(`--${name}`) > argv.lastIndexOf(`--no-${name}`);
+  // A later --no-repo cancels it: the CLI then repairs its working directory.
   const at = argv.lastIndexOf('--repo');
-  return { stopOrphans: on('stop-orphans'), dryRun: on('dry-run'), json: on('json'), repo: at >= 0 && argv[at + 1] && !argv[at + 1].startsWith('--') ? argv[at + 1] : null };
+  const repo = at > argv.lastIndexOf('--no-repo') && argv[at + 1] && !argv[at + 1].startsWith('--') ? argv[at + 1] : null;
+  return { stopOrphans: on('stop-orphans'), dryRun: on('dry-run'), json: on('json'), repo };
 }
 
 /**

@@ -61,12 +61,17 @@ const LAST_DATE_MS = 8.64e15;
 export function parseWindowsProcessList(stdout) {
   const processes = [];
   let missing = 0;
+  const utf8 = new TextDecoder('utf-8', { fatal: true });
+  // Not trimmed: an empty command line is the line's trailing space.
   for (const line of String(stdout || '').split(/\r?\n/)) {
-    const [marker, ...fields] = line.trim().split(' ');
+    const [marker, ...fields] = line.split(' ');
     if (marker !== 'P') continue;
-    let unreadable = false;
+    // Each line has five fields; one with fewer or more was cut short or damaged.
+    let unreadable = fields.length !== 5;
     const text = (field = '') => {
-      if (/^[A-Za-z0-9+/]*={0,2}$/.test(field) && field.length % 4 === 0) return Buffer.from(field, 'base64').toString('utf8');
+      if (/^[A-Za-z0-9+/]*={0,2}$/.test(field) && field.length % 4 === 0) {
+        try { return utf8.decode(Buffer.from(field, 'base64')); } catch { /* not UTF-8 */ }
+      }
       unreadable = true;
       return '';
     };
@@ -703,7 +708,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       ({ orphans, unattributed } = await findOrphans(context, { processes: await fresh(), pause: paused, heartbeat }));
     }
     if (orphans.length) {
-      step({ state: 'pause', status: dryRun && stopOrphans && !legacy ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
+      // Stopping them resumes only when no process the listing could not read whole remains.
+      const resumes = !legacy && !(await snapshot()).some((proc) => proc.unreadable);
+      step({ state: 'pause', status: dryRun && stopOrphans && resumes ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
       return;
     }
     if (legacy) {

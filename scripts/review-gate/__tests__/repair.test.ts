@@ -113,19 +113,27 @@ describe('which processes a repair may count as this repository\'s', () => {
     const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
     const run = vi.fn(async () => ({ stdout: [
       `P 0 0 1000 ${b64('System Idle Process')} `,
-      `P 42 7 2000 ${b64('node.exe')} ${b64('node watch \u2192 \u2022 \u2713 \u00d7 "C:\rove-review-context-1"')}`,
+      `P 42 7 2000 ${b64('node.exe')} ${b64('node watch \u2192 \u2022 \u2713 \u00d7 "C:\\Temp\\rove-review-context-1"')}`,
       `P 43 42  ${b64('codex.exe')} not*base64`,
       // A parent PID and a start time beyond what a Date holds, which no listing gives.
       `P 44 4x2 99999999999999999 ${b64('node.exe')} ${b64('node')}`,
+      // Cut short, with no trailing space for an empty command line.
+      'P 45 1',
+      `P 46 1 3000 ${b64('node.exe')}`,
+      // Base64 of bytes that are not UTF-8.
+      `P 47 1 3000 ${b64('node.exe')} ${Buffer.from([0xff, 0xfe, 0x41]).toString('base64')}`,
       'WARNING: anything else PowerShell printed',
       '',
     ].join('\r\n') }));
     expect(await listProcesses({ platform: 'win32', run })).toEqual([
       { pid: 0, ppid: 0, name: 'System Idle Process', commandLine: '', startedAt: 1000 },
-      { pid: 42, ppid: 7, name: 'node.exe', commandLine: 'node watch \u2192 \u2022 \u2713 \u00d7 "C:\rove-review-context-1"', startedAt: 2000 },
+      { pid: 42, ppid: 7, name: 'node.exe', commandLine: 'node watch \u2192 \u2022 \u2713 \u00d7 "C:\\Temp\\rove-review-context-1"', startedAt: 2000 },
       // A start time the system did not give, and a command line that does not decode.
       { pid: 43, ppid: 42, name: 'codex.exe', commandLine: '', startedAt: null, unreadable: true },
       { pid: 44, ppid: null, name: 'node.exe', commandLine: 'node', startedAt: null, unreadable: true },
+      { pid: 45, ppid: 1, name: '', commandLine: '', startedAt: null, unreadable: true },
+      { pid: 46, ppid: 1, name: 'node.exe', commandLine: '', startedAt: 3000, unreadable: true },
+      { pid: 47, ppid: 1, name: 'node.exe', commandLine: '', startedAt: 3000, unreadable: true },
     ]);
     expect(run.mock.calls[0][0]).toBe('powershell.exe');
     // A process line without a PID would hide a process: the listing fails rather than leave it out.
@@ -175,6 +183,12 @@ describe('repair', () => {
       expect(report.steps[0].detail).toContain('PID 77');
       expect(await readJson(f.paths.paused)).toEqual(pause);
     }
+    // Nor does a dry run promise that stopping a known leftover would resume.
+    const traced = { ...pause, pausedAt: new Date(10_000).toISOString(), provider: { pid: 300, command: 'codex' } };
+    await atomicWriteJson(f.paths.paused, traced);
+    f.list.processes = [...f.list.processes, { pid: 301, ppid: 300, name: 'node.exe', commandLine: 'node mcp-server', startedAt: 500 }];
+    const dry = await repair(f, { dryRun: true, stopOrphans: true });
+    expect(dry.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked' })]);
   });
   it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);
