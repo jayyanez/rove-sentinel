@@ -1,5 +1,42 @@
 # Standalone validation record
 
+## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
+
+Deterministic tests cover: the Windows listing read one line a process, a name and command
+line holding `→ • ✓ ×` decoded from base64; a damaged line keeping its process, marked
+unreadable, with an unknown parent PID or start time (one beyond what a Date holds) and an
+empty command line, as is a line without its end marker, one with an empty parent PID, and
+one whose text is not UTF-8, while a leading U+FEFF is kept; other PowerShell output
+ignored, and a listing without its end line, with another count, or with a process line
+without a PID failing; a safety pause kept, in a dry run and a repair, while an unreadable
+process is listed, and a dry run with `--stop-orphans` not promising to resume then, unless
+that process is one it stops, nor past a leftover without a start time, which a repair with
+`--stop-orphans` keeps counting after stopping its parent; the repository's own command run
+without any `npm_` variable of the environment, such as the `npm_config_package` and
+`npm_config_yes` that `npx --package` leaves, and with the rest kept: `--version` on Windows
+and macOS, `update` on Windows (its result mocked); a repair that stops before it can
+report, from the CLI and from the launcher, giving a blocked `repair` step (as text, a
+`blocked: repair:` line; as JSON, the report's first step) whose next command is the
+bootstrap in the checkout `--repo` named (unless a later `--no-repo` cancels it), with the
+options as the CLI reads them (the last of `--stop-orphans` and `--no-stop-orphans` wins),
+and exiting 1; the same repair run by the bootstrap printing no `Next:` line and saying to
+stop and report; the bootstrap downloading 1.20.3 or later. On Windows, a test starts a
+process whose command line holds `→ • ↑ ↓ § ¶ ✓ ✘ ×` and 5,000 more characters and finds it
+whole in the listing. The 9 new or changed tests fail on 1.20.2's sources.
+1,095 tests passed and 5 were skipped (linters not installed there) on Windows 11 on Arm,
+run there because the development host was loaded. The package smoke passed.
+
+Live on a Windows development host: 1.20.2's listing failed there with `Bad control character
+in string literal in JSON`, and the new one listed every process. Inside `npx --yes
+--package <archive>`, the repository's own `npx --no-install rove-sentinel --version` failed
+with `npx canceled due to missing packages and no YES option` in the inherited environment
+and printed the version without its `npm_` variables. The packed 1.20.3 archive, run as the
+bootstrap runs it, gave a dry run of `repair` in a consumer project that listed its
+processes and read the engine the project selects.
+
+Not run live: a repair that activates an update from the bootstrap line (it needs the
+published 1.20.3 release, which the line downloads).
+
 ## 1.20.2 `repair` and the pauses it cannot attribute — 2026-11-22
 
 Deterministic tests cover: an unreadable pause record answered with the conditional `resume`

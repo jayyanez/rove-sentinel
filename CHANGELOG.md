@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.20.3 — `repair` lists every Windows process and updates when the bootstrap runs it
+
+Two ways `repair` failed on a Windows host, both found by running it for real, and a repair
+that stops with an error before it can report now still says what to do next. Nothing needs doing to receive
+the fix: it arrives as an ordinary automatic update, and the bootstrap line downloads it.
+
+- **The process listing no longer fails on one command line.** `repair` listed processes
+  through Windows PowerShell as JSON. Writing to a pipe, Windows PowerShell encodes in the
+  console's code page, where symbols such as `→`, `•`, `↑`, `↓`, `§` and `¶` become control
+  bytes, so one process whose command line held one stopped every repair with `Bad control
+  character in string literal in JSON` before it printed any step. The listing now writes
+  one ASCII line a process, its name and command line as base64 of their UTF-8 bytes, each
+  line with an end marker and the listing with a closing count. A line that cannot be read
+  whole keeps its process with what can be read, marked so that `repair` never resumes a
+  safety pause while one is listed that it does not stop (it says to run it again in a
+  minute); a listing that did not end, or a process line with no readable PID, fails, as
+  it would hide a process. No other
+  PowerShell output Sentinel reads carries text: a start time, exit codes, and the output
+  of npm and of the repository's own command, which PowerShell passes through unchanged.
+- **A leftover `--stop-orphans` could not stop keeps the pause.** A leftover without a start
+  time is never stopped; once its parent was stopped, the new listing no longer traced it,
+  and the pause was lifted while it ran. It now stays counted, in that repair, while the new
+  listing shows it with the start time it was listed with, even if a signal reached it, and
+  a dry run no longer says stopping would resume past it. A later repair, which no longer
+  sees the parent, cannot trace such a process either, as before this release: a process
+  whose only link to a review was a parent that is gone is not counted.
+- **A repair the bootstrap line runs can activate the update.** The bootstrap runs `repair`
+  through `npx --yes --package <archive>`, and npm passes its settings to what it runs. The
+  update step ran the repository's own `npx --no-install rove-sentinel update`, which
+  inherited `npm_config_package` and looked for the downloaded archive: `npx canceled due
+  to missing packages and no YES option`. The repository's own command (`update`, and
+  `--version` to learn the engine it selects) now runs without any `npm_` setting in its
+  environment, and reads npm's configuration from its files, as in a new shell.
+- **A repair that stops before it can report says what to do next.** An error that stops
+  `repair` (or the launcher choosing its engine) ends with a `blocked: repair:` line whose
+  `Next:` line is the bootstrap line, with the options `repair` was given as it reads them
+  and in the checkout `--repo` named, and says to stop and report both outputs if that
+  stops too. The bootstrap marks the repair it runs (`ROVE_SENTINEL_REPAIR_BOOTSTRAP`):
+  when that repair stops, it prints no `Next:` line and says to stop and report.
+- **The bootstrap for an engine before 1.20.1 downloads 1.20.3**
+  ([troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201)). Run it
+  too when `repair` on 1.20.1 or 1.20.2 stops with an error before printing a `Next:` line.
+
 ## 1.20.2 — `repair` lifts only the pauses Sentinel recorded as its own
 
 Two ways 1.20.1's `repair` could lift a pause a person set, found by an external review.

@@ -10,7 +10,7 @@ import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
 import { readInstallation } from './local.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
-import { legacyPause, pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess } from './process.mjs';
+import { legacyPause, pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess, withoutNpmRunEnvironment } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { stableVersion } from './updates.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
@@ -42,20 +42,72 @@ const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').rep
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
 
+// One line a process: the marker `P`, PID, parent PID, start time (empty when
+// unknown), the UTF-8 bytes of its name and of its command line in base64, and
+// the marker `E`; then `END` and the number of process lines. Windows
+// PowerShell writes to a pipe in the console's code page, where a character
+// such as U+2192 becomes a control byte, so every text field leaves it as
+// ASCII, and no command line can change a line's shape.
+const WINDOWS_PROCESS_LIST = "$ErrorActionPreference = 'Stop'; $sentinelUtf8 = [Text.Encoding]::UTF8; $sentinelCount = 0; foreach ($sentinelProcess in @(Get-CimInstance Win32_Process)) { $sentinelCount += 1; $sentinelStarted = if ($sentinelProcess.CreationDate) { ([DateTimeOffset]$sentinelProcess.CreationDate).ToUnixTimeMilliseconds() } else { '' }; 'P {0} {1} {2} {3} {4} E' -f [int]$sentinelProcess.ProcessId, [int]$sentinelProcess.ParentProcessId, $sentinelStarted, [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.Name)), [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.CommandLine)) }; 'END {0}' -f $sentinelCount";
+// The latest time a Date holds.
+const LAST_DATE_MS = 8.64e15;
+
+/**
+ * The processes in the Windows listing's output; lines without its markers
+ * (anything else PowerShell printed) are not processes. A field that does not
+ * decode is left empty or unknown and the process is marked `unreadable`, so
+ * repair never takes it as evidence that something is absent. A listing that
+ * did not end, or whose count or a PID cannot be read, would leave a process
+ * out unseen: it fails.
+ */
+export function parseWindowsProcessList(stdout) {
+  const processes = [];
+  let lines = 0;
+  let end = null;
+  // A leading U+FEFF is a character of the command line, not a byte order mark.
+  const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  // Not trimmed: an empty command line is a field of its own.
+  for (const line of String(stdout || '').split(/\r?\n/)) {
+    const [marker, ...fields] = line.split(' ');
+    if (marker === 'END') { end = /^\d+$/.test(fields[0] ?? '') && fields.length === 1 ? Number(fields[0]) : NaN; continue; }
+    if (marker !== 'P') continue;
+    lines += 1;
+    // Six fields, the last its end marker: a line cut short lacks it.
+    let unreadable = fields.length !== 6 || fields[5] !== 'E';
+    const text = (field = '') => {
+      if (/^[A-Za-z0-9+/]*={0,2}$/.test(field) && field.length % 4 === 0) {
+        try { return utf8.decode(Buffer.from(field, 'base64')); } catch { /* not UTF-8 */ }
+      }
+      unreadable = true;
+      return '';
+    };
+    // Only the start time may be empty: the listing writes every other number.
+    const number = (field = '', { optional = false, limit = Number.MAX_SAFE_INTEGER } = {}) => {
+      if (optional && field === '') return null;
+      const value = /^\d+$/.test(field) ? Number(field) : NaN;
+      if (Number.isSafeInteger(value) && value <= limit) return value;
+      unreadable = true;
+      return null;
+    };
+    const [pid, ppid, startedAt, name, commandLine] = fields;
+    const entry = { pid: number(pid), ppid: number(ppid), name: text(name), commandLine: text(commandLine), startedAt: number(startedAt, { optional: true, limit: LAST_DATE_MS }) };
+    if (entry.pid !== null) processes.push(unreadable ? { ...entry, unreadable: true } : entry);
+  }
+  if (end !== lines || processes.length !== lines) {
+    throw new Error(`The Windows process listing ${end === null ? 'did not end' : `gave ${processes.length} readable PID(s) for ${Number.isNaN(end) ? 'an unreadable count of' : end} process line(s)`}, so it cannot show which processes run.`);
+  }
+  return processes;
+}
+
 /**
  * Every process of this OS user that the system lists: PID, parent PID, name,
  * command line and start time (milliseconds since the epoch, or null).
  */
 export async function listProcesses({ platform = process.platform, run = runProcess } = {}) {
   if (platform === 'win32') {
-    const script = "$ErrorActionPreference = 'Stop'; $list = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; name = [string]$_.Name; commandLine = [string]$_.CommandLine; startedAt = $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { $null }) } }); ConvertTo-Json -InputObject $list -Compress -Depth 2";
-    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-      { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 * 1024 });
-    const parsed = JSON.parse(result.stdout || '[]');
-    return (Array.isArray(parsed) ? parsed : [parsed]).map((entry) => ({
-      pid: entry.pid, ppid: entry.ppid, name: entry.name || '', commandLine: entry.commandLine || '',
-      startedAt: Number.isFinite(entry.startedAt) ? entry.startedAt : null,
-    }));
+    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROCESS_LIST],
+      { timeoutMs: 60_000, maxOutputBytes: 48 * 1024 * 1024 });
+    return parseWindowsProcessList(result.stdout);
   }
   // Times in UTC and in the C time format, so a start time reads the same in any
   // zone, season or language. Characters keep the user's locale: what LC_ALL set
@@ -246,13 +298,16 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     contextFor = createGateContext, root = engineRoot(), platform = process.platform, run = runProcess,
     list = listProcesses, stop = stopProcesses, startWatcherFn = startWatcher, recover = recoverStaleDaemonState,
     rollBack = rollBackInterruptedUpdate, update = automaticUpdate, info = updateInformation,
-    isAlive = isProcessAlive, startedAt = processStartedAt, waitMs = 30_000, now = Date.now,
+    isAlive = isProcessAlive, startedAt = processStartedAt, waitMs = 30_000, now = Date.now, env = process.env,
     reinstall = async (repo) => run(process.execPath, [ownCli, 'install', '--preserve-policy', '--repo', repo],
       { cwd: repo, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024 }),
     // The repository's own command, through its launcher: its selected engine.
     // A local installation records its Node and launcher; a project's is its dependency.
+    // Never with what an npm that started this repair left in the environment:
+    // run through the bootstrap's `npx --package <archive>`, a nested npx would
+    // look for that archive instead of the repository's command.
     sentinel = async (repo, args) => {
-      const options = { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 };
+      const options = { cwd: repo, env: withoutNpmRunEnvironment(env), timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 };
       const installation = await readInstallation(paths).catch(() => null);
       if (installation?.mode === 'local') return run(installation.node, [installation.launcher, ...args, '--repo', repo], options);
       return platform === 'win32'
@@ -658,14 +713,35 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     if (orphans.length && stopOrphans && !dryRun) {
       const stopped = await stop(orphans, { platform, run, list });
       await audit('orphans-stopped', { pause: paused, stopped, processes: orphans });
+      const before = orphans;
       ({ orphans, unattributed } = await findOrphans(context, { processes: await fresh(), pause: paused, heartbeat }));
+      // A leftover still listed with its start time stays one, though stopping its parent cut its
+      // trace, and though a signal reached it: only the new listing says it ended.
+      const listed = new Map((await snapshot()).map((proc) => [proc.pid, proc]));
+      for (const orphan of before) {
+        if (orphans.some((entry) => entry.pid === orphan.pid)) continue;
+        // Only two known start times that differ show the PID is another process's now.
+        const now = listed.get(orphan.pid);
+        if (now && (now.startedAt === null || orphan.rawStartedAt === null || now.startedAt === orphan.rawStartedAt)) orphans.push(orphan);
+      }
     }
     if (orphans.length) {
-      step({ state: 'pause', status: dryRun && stopOrphans && !legacy ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
+      // Stopping them resumes only when no process the listing could not read whole remains.
+      // A leftover without a start time is never stopped, so stopping them would leave it.
+      const stoppable = new Set(orphans.filter((orphan) => orphan.rawStartedAt !== null).map((orphan) => orphan.pid));
+      const resumes = !legacy && stoppable.size === orphans.length
+        && !(await snapshot()).some((proc) => proc.unreadable && !stoppable.has(proc.pid));
+      step({ state: 'pause', status: dryRun && stopOrphans && resumes ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
       return;
     }
     if (legacy) {
       step({ state: 'pause', status: 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process left by this repository's reviews remains (${(await snapshot()).length} processes checked). ${unknownOrigin}`, unattributed, next: RESUME_IF_ASKED });
+      return;
+    }
+    // A process whose line could not be read whole may be one of them: never resume on it.
+    const unreadable = (await snapshot()).filter((proc) => proc.unreadable);
+    if (unreadable.length) {
+      step({ state: 'pause', status: 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process left by this repository's reviews was found, but the system's listing of ${unreadable.length} process(es) could not be read whole (PID ${unreadable.map((proc) => proc.pid).join(', ')}), so one of them may be.`, unattributed, next: `Run again in one minute: ${REPAIR_COMMAND}` });
       return;
     }
     if (dryRun) { step({ state: 'pause', status: 'would-fix', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process of this repository's reviews remains; repair resumes.`, unattributed }); return; }
@@ -747,8 +823,9 @@ export function formatRepair(report) {
     for (const proc of entry.unattributed ?? []) lines.push(`    (not counted: PID ${proc.pid} ${proc.name} ${proc.why})`);
     if (entry.next) lines.push(`    Next: ${entry.next}`);
   }
-  lines.push(report.ok ? 'Result: nothing is blocked now.' : report.steps.some((entry) => entry.status === 'blocked')
-    ? 'Result: blocked; run each Next command above.' : 'Result: not finished; run each Next command above.');
+  lines.push(report.ok ? 'Result: nothing is blocked now.' : !report.steps.some((entry) => entry.next)
+    ? 'Result: blocked; stop and report this output.' : report.steps.some((entry) => entry.status === 'blocked')
+      ? 'Result: blocked; run each Next command above.' : 'Result: not finished; run each Next command above.');
   return lines.join('\n');
 }
 
