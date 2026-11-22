@@ -661,7 +661,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       ({ orphans, unattributed } = await findOrphans(context, { processes: await fresh(), pause: paused, heartbeat }));
     }
     if (orphans.length) {
-      step({ state: 'pause', status: dryRun && stopOrphans ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
+      step({ state: 'pause', status: dryRun && stopOrphans && !legacy ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
       return;
     }
     if (legacy) {

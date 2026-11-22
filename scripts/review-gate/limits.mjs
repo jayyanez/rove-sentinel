@@ -159,7 +159,7 @@ export function sentinelLimits() {
       {
         rule: 'List provider processes by hand before resuming after a safety pause, and start the watcher\'s scheduled task by hand after recover',
         unnecessarySince: '1.20.1',
-        why: 'rove-sentinel repair checks for processes left by this repository\'s reviews and resumes when none remain; recover and resume start the watcher the way install does.',
+        why: 'rove-sentinel repair checks for processes left by this repository\'s reviews and resumes when none remain (a pause from an engine before 1.20.1, which records no kind, only on a person\'s word); recover and resume start the watcher the way install does.',
       },
       {
         rule: 'Delete a download.lock or queue lock left by a process that is gone',

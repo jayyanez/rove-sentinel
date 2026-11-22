@@ -138,6 +138,10 @@ describe('repair', () => {
     const pause = { pausedAt: new Date().toISOString(), reason: 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.' };
     await atomicWriteJson(f.paths.paused, pause);
     expect((await repair(f)).steps[0]).toMatchObject({ state: 'pause', status: 'blocked', next: STOP, processes: [expect.objectContaining({ pid: 4242 })] });
+    // A dry run does not promise to fix what stopping them still leaves paused.
+    const dry = (await repair(f, { dryRun: true, stopOrphans: true })).steps[0];
+    expect(dry).toMatchObject({ state: 'pause', status: 'blocked' });
+    expect(dry.detail).toContain('Once they are stopped, the pause stays');
     f.deps.stop.mockImplementation(async (targets) => { f.list.processes = []; return targets.map((t) => t.pid); });
     const report = await repair(f, { stopOrphans: true });
     expect(f.deps.stop.mock.calls[0][0].map((t) => t.pid)).toEqual([4242]);
