@@ -23,9 +23,11 @@ as an ordinary automatic update.
   left alone while its activation runs), then says the record does not tell who wrote it
   and prints the `resume` line for the person's word. Pauses written by 1.20.1 and later
   record their kind and are lifted as before.
-- **The rollback of an interrupted activation removes no pause.** It removed the update's
-  pause by its path after a read of its own; `repair`'s pause step now lifts it, as it lifts
-  any pause, only while it is still the record that step judged.
+- **The rollback of an interrupted activation removes no pause.** It removed any pause it
+  read as the update's; `repair`'s pause step now lifts one recorded as the update's, as it
+  lifts any pause, after reading it again and finding the record it judged. That read and
+  the removal are still two steps, so a `pause` typed in between can be lost, as in 1.20.1:
+  every engine's `pause` writes the record without a lock repair could share.
 - **The bootstrap for an engine before 1.20.1 downloads 1.20.2**, whose `repair` reads those
   engines' pauses as above ([troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201)).
 
