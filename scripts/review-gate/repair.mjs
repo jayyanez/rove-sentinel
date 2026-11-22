@@ -717,9 +717,10 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     }
     if (orphans.length) {
       // Stopping them resumes only when no process the listing could not read whole remains.
-      // A leftover without a start time is never stopped, so it is no exception.
+      // A leftover without a start time is never stopped, so stopping them would leave it.
       const stoppable = new Set(orphans.filter((orphan) => orphan.rawStartedAt !== null).map((orphan) => orphan.pid));
-      const resumes = !legacy && !(await snapshot()).some((proc) => proc.unreadable && !stoppable.has(proc.pid));
+      const resumes = !legacy && stoppable.size === orphans.length
+        && !(await snapshot()).some((proc) => proc.unreadable && !stoppable.has(proc.pid));
       step({ state: 'pause', status: dryRun && stopOrphans && resumes ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.${legacy ? ` Once they are stopped, the pause stays: ${unknownOrigin}` : ''}`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
       return;
     }

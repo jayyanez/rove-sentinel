@@ -200,9 +200,16 @@ describe('repair', () => {
     // An unreadable process that is itself one of the leftovers to stop holds nothing back.
     f.list.processes = [{ pid: 301, ppid: 300, name: 'node.exe', commandLine: '', startedAt: 500, unreadable: true } as Proc];
     expect((await repair(f, { dryRun: true, stopOrphans: true })).steps).toEqual([expect.objectContaining({ state: 'pause', status: 'would-fix' })]);
-    // Unless it has no start time, without which it is never stopped.
-    f.list.processes = [{ pid: 301, ppid: 300, name: 'node.exe', commandLine: '', startedAt: null, unreadable: true } as Proc];
-    expect((await repair(f, { dryRun: true, stopOrphans: true })).steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked' })]);
+    // A leftover without a start time is never stopped, readable or not, so stopping would not resume.
+    for (const unreadable of [false, true]) {
+      f.list.processes = [
+        { pid: 301, ppid: 300, name: 'node.exe', commandLine: 'node mcp-server', startedAt: 500 },
+        { pid: 302, ppid: 301, name: 'node.exe', commandLine: '', startedAt: null, ...(unreadable ? { unreadable } : {}) } as Proc,
+      ];
+      const held = await repair(f, { dryRun: true, stopOrphans: true });
+      expect(held.steps).toEqual([expect.objectContaining({ state: 'pause', status: 'blocked' })]);
+      expect(held.steps[0].processes.map((proc: { pid: number }) => proc.pid)).toEqual([301, 302]);
+    }
   });
   it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);
