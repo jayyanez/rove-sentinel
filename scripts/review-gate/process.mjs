@@ -113,22 +113,22 @@ const PAUSE_KINDS = ['provider-cleanup', 'update', 'manual'];
 /**
  * Who paused: `provider-cleanup`, `update` and `manual` are recorded from 1.20.1.
  * A pause without a kind was written by an earlier engine or by a person, who
- * may type any reason. It is a safety pause only when its reason is, in full,
- * one those engines wrote, which itself asks for the check repair makes before
- * it resumes. Any other is a person's, the updater's reason included: an earlier
- * engine's update pause and a person's with the same reason are the same record.
+ * may type any reason, those engines' own included: the two leave the same
+ * record, so it may be a person's and is never lifted.
  */
 export function pauseKind(record) {
-  if (PAUSE_KINDS.includes(record?.kind)) return record.kind;
-  return LEGACY_SAFETY_PAUSES.includes(String(record?.reason ?? '')) ? 'provider-cleanup' : 'manual';
+  return PAUSE_KINDS.includes(record?.kind) ? record.kind : 'manual';
 }
 /**
- * A pause with no kind and, in full, the reason an earlier engine's activation
- * wrote: that activation's, or a person's, which nothing tells apart. Never
- * lifted for it; only while an activation runs is it taken for that activation's.
+ * What a pause with no kind would be had an earlier engine written it, when its
+ * reason is, in full, one those engines wrote (`provider-cleanup` or `update`),
+ * else null. It says what to check, never that the pause may be lifted.
  */
-export function legacyUpdatePause(record) {
-  return Boolean(record) && !PAUSE_KINDS.includes(record.kind) && LEGACY_UPDATE_PAUSE.test(String(record.reason ?? ''));
+export function legacyPause(record) {
+  if (!record || PAUSE_KINDS.includes(record.kind)) return null;
+  const reason = String(record.reason ?? '');
+  if (LEGACY_SAFETY_PAUSES.includes(reason)) return 'provider-cleanup';
+  return LEGACY_UPDATE_PAUSE.test(reason) ? 'update' : null;
 }
 export function isSafetyPause(record) {
   return pauseKind(record) === 'provider-cleanup';

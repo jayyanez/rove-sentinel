@@ -11,6 +11,7 @@ import { REPAIR_BOOTSTRAP, REPAIR_BOOTSTRAP_SCRIPT } from '../process.mjs';
 import { atomicWriteJson, ensureState } from '../storage.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { GATE_VERSION } from '../constants.mjs';
+import { compareVersions } from '../updates.mjs';
 
 const dirs: string[] = [];
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -157,7 +158,10 @@ describe('the bootstrap for an engine before 1.20.1', () => {
   // The published line, through this platform's shell, pointed at a local
   // server and with its npx run replaced by a marker: the verification is what
   // is tested, not the repair it then runs.
-  const release = REPAIR_BOOTSTRAP_SCRIPT.match(/const v='([^']+)'/)?.[1];
+  const release = REPAIR_BOOTSTRAP_SCRIPT.match(/const v='([^']+)'/)?.[1] as string;
+  it('downloads 1.20.2 or later, the first repair that never lifts a pause an earlier engine left with no kind', () => {
+    expect(compareVersions(release, '1.20.2')).toBeGreaterThanOrEqual(0);
+  });
   async function bootstrap(sums: (digest: string) => string, options: string[] = []) {
     const archive = Buffer.from('synthetic release archive');
     const digest = createHash('sha256').update(archive).digest('hex');

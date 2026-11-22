@@ -10,7 +10,7 @@ import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
 import { readInstallation } from './local.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
-import { legacyUpdatePause, pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess } from './process.mjs';
+import { legacyPause, pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { stableVersion } from './updates.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
@@ -381,7 +381,7 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       step({ state: 'interrupted-activation', status: journal.error ? 'blocked' : 'would-fix', detail: journal.error
         ? `The activation of ${marker.version} stopped (PID ${marker.pid} is gone), but ${journal.error.message}`
         : journal.journalIsThisUpdate
-          ? `The activation of ${marker.version} stopped (PID ${marker.pid} is gone). Repair restores the engine and policy update-recovery.json records, verifies their watcher, then removes the fence and the update's pause.`
+          ? `The activation of ${marker.version} stopped (PID ${marker.pid} is gone). Repair restores the engine and policy update-recovery.json records, verifies their watcher, then removes the fence; the pause step lifts a pause recorded as the update's.`
           : `The activation of ${marker.version} stopped (PID ${marker.pid} is gone) before it changed anything. Repair removes its fence.`,
       ...(journal.error ? { next: "Run from the repository's trusted checkout: npx --no-install rove-sentinel install" } : {}) });
     } else {
@@ -638,14 +638,18 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       step({ state: 'pause', status: 'fixed', detail: 'Lifted the pause an update left with no activation running.' });
       return;
     }
-    if (kind === 'manual' && legacyUpdatePause(paused)) {
+    // A pause with no kind may be a person's whatever its reason: never lifted. One
+    // with the whole reason an earlier engine wrote still gets that engine's checks.
+    const legacy = legacyPause(paused);
+    const unknownOrigin = `An engine before 1.20.1 writes this reason, and so may a person; the record does not say which. Repair never lifts a pause a person may have set.`;
+    if (legacy === 'update') {
       // While an activation runs, it lifts its own pause.
       const fence = await readJson(updateMarker(paths)).catch(() => null);
       if (fence && await activationRuns(fence, { isAlive, startedAt })) return;
-      step({ state: 'pause', status: 'blocked', detail: `Reviews are paused (${paused.pausedAt}): ${reason}. An activation of an engine before 1.20.1 writes this reason, and so may a person; the record does not say which. Repair never lifts a pause a person may have set.`, next: RESUME_IF_ASKED });
+      step({ state: 'pause', status: 'blocked', detail: `Reviews are paused (${paused.pausedAt}): ${reason}. ${unknownOrigin}`, next: RESUME_IF_ASKED });
       return;
     }
-    if (kind === 'manual') {
+    if (kind === 'manual' && legacy !== 'provider-cleanup') {
       step({ state: 'pause', status: 'blocked', detail: `A person paused reviews (${paused.pausedAt}): ${reason}. Repair never lifts a person's pause.`, next: RESUME_IF_ASKED });
       return;
     }
@@ -658,6 +662,10 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     }
     if (orphans.length) {
       step({ state: 'pause', status: dryRun && stopOrphans ? 'would-fix' : 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. ${orphans.length} process(es) left by this repository's reviews still run, and no running review owns them.`, processes: orphans, unattributed, next: stopOrphans && !dryRun ? `Run again in one minute: ${STOP_ORPHANS}` : STOP_ORPHANS });
+      return;
+    }
+    if (legacy) {
+      step({ state: 'pause', status: 'blocked', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process left by this repository's reviews remains (${(await snapshot()).length} processes checked). ${unknownOrigin}`, unattributed, next: RESUME_IF_ASKED });
       return;
     }
     if (dryRun) { step({ state: 'pause', status: 'would-fix', detail: `Paused (${paused.pausedAt}): ${reasonText(reason)}. No process of this repository's reviews remains; repair resumes.`, unattributed }); return; }

@@ -13,16 +13,19 @@ as an ordinary automatic update.
   a person's pause: `Only if the person who asked for this repair asked you to lift that
   pause, run: …`. The error a push or the watcher gives for that record ends with
   `Run: npx --no-install rove-sentinel repair` instead of telling anyone to resume.
-- **A pause from an engine before 1.20.1 is a person's unless its whole reason says
-  otherwise.** Those engines recorded no kind, and 1.20.1 read the kind from the reason's
-  opening, so a person's pause that began with the updater's `Automatic Sentinel update to `,
-  or with a safety pause's opening, was lifted. Such a pause is now a safety pause only when
-  its reason is, in full, the sentence those engines wrote, which itself asks for the check
-  `repair` makes before it resumes. The updater's reason, even in full, is the same record a
-  person typing it would leave, so `repair` keeps it, says so, and resumes only on the word
-  of the person who asked for the repair; a rollback of an interrupted activation keeps it
-  too. While an activation runs, the pause is still taken for its own. Pauses written by
-  1.20.1 and later record their kind and are unchanged.
+- **A pause from an engine before 1.20.1 is never lifted.** Those engines recorded no kind,
+  and 1.20.1 read it from the reason's opening, so a person's pause that began with the
+  updater's `Automatic Sentinel update to …`, or with a safety pause's opening, was lifted.
+  A person may type any reason, those engines' whole sentences included, and the record
+  would be the same, so `repair` now lifts no pause without a kind. When its reason is, in
+  full, one those engines wrote, `repair` still makes their checks (a safety pause's
+  leftover processes are listed, and stopped with `--stop-orphans`; an update's pause is
+  left alone while its activation runs), then says the record does not tell who wrote it
+  and prints the `resume` line for the person's word. Pauses written by 1.20.1 and later
+  record their kind and are lifted as before.
+- **The rollback of an interrupted activation removes no pause.** It removed the update's
+  pause by its path after a read of its own; `repair`'s pause step now lifts it, as it lifts
+  any pause, only while it is still the record that step judged.
 - **The bootstrap for an engine before 1.20.1 downloads 1.20.2**, whose `repair` reads those
   engines' pauses as above ([troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201)).
 

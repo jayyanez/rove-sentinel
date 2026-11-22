@@ -127,11 +127,24 @@ describe('repair', () => {
     expect(await readJson(f.paths.paused)).toBeNull();
     expect((await events(f.paths)).map((event) => event.action)).toContain('safety-pause-lifted');
   });
-  it('recognises the safety pauses earlier engines wrote', async () => {
+  it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
+    const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);
+    dirs.push(dir);
     const f = await fixture(); await f.healthy();
-    await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), reason: 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.' });
-    expect((await repair(f)).ok).toBe(true);
-    expect(await readJson(f.paths.paused)).toBeNull();
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'owner.json'), JSON.stringify({ pid: 111, repoRoot: f.repoRoot }));
+    f.list.processes = [{ pid: 4242, ppid: 111, name: 'codex.exe', commandLine: `codex exec --cd "${dir}"`, startedAt: 10 }];
+    // With no kind, the record a person typing this sentence would leave too.
+    const pause = { pausedAt: new Date().toISOString(), reason: 'Provider process-tree cleanup could not be verified; inspect remaining provider processes before resuming.' };
+    await atomicWriteJson(f.paths.paused, pause);
+    expect((await repair(f)).steps[0]).toMatchObject({ state: 'pause', status: 'blocked', next: STOP, processes: [expect.objectContaining({ pid: 4242 })] });
+    f.deps.stop.mockImplementation(async (targets) => { f.list.processes = []; return targets.map((t) => t.pid); });
+    const report = await repair(f, { stopOrphans: true });
+    expect(f.deps.stop.mock.calls[0][0].map((t) => t.pid)).toEqual([4242]);
+    expect(report.steps[0]).toMatchObject({ state: 'pause', status: 'blocked', next: RESUME_IF_ASKED });
+    expect(report.steps[0].detail).toContain('No process left by this repository\'s reviews remains');
+    expect(await readJson(f.paths.paused)).toEqual(pause);
+    expect((await repair(f, { dryRun: true })).steps[0]).toMatchObject({ state: 'pause', status: 'blocked', next: RESUME_IF_ASKED });
   });
   it('keeps a safety pause while its processes remain, names them and the command, and stops them only when told to', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairtest${process.pid}`);
@@ -431,7 +444,7 @@ describe('rolling back an interrupted activation', () => {
     expect(await rollBackInterruptedUpdate(f.context, { stop, run: ok, root: f.deps.root, startedAt: async () => null })).toMatchObject({ rolledBack: true, version: '1.20.0' });
     expect(await readJson(f.paths.paused)).toEqual(legacy);
   });
-  it('restores the recorded engine and policy, verifies its watcher, then removes the fence and the update\'s pause', async () => {
+  it('restores the recorded engine and policy, verifies its watcher, then removes the fence; the pause step lifts the update\'s pause', async () => {
     const f = await fixture();
     await atomicWriteJson(updateMarker(f.paths), { version: '1.20.1', pid: DEAD, startedAt: new Date().toISOString() });
     await atomicWriteJson(path.join(f.paths.root, 'update-recovery.json'), { nextVersion: '1.20.1', previousCli: 'old-cli',
@@ -445,6 +458,10 @@ describe('rolling back an interrupted activation', () => {
     expect(stop).toHaveBeenCalledOnce();
     expect(await readJson(f.paths.policy)).toEqual({ restored: true });
     expect(await readJson(updateMarker(f.paths))).toBeNull();
+    // The rollback removes no pause: only repair's pause step does, while it is the record it judged.
+    expect(await readJson(f.paths.paused)).toMatchObject({ kind: 'update' });
+    await f.healthy();
+    expect((await repair(f)).steps[0]).toMatchObject({ state: 'pause', status: 'fixed' });
     expect(await readJson(f.paths.paused)).toBeNull();
   });
 });
