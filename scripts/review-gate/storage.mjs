@@ -202,35 +202,6 @@ export async function removeStoredJson(target, { remove = rm } = {}) {
   await remove(target, { force: true });
 }
 
-/**
- * Removes the record only if it is still `judged`. It first moves whatever
- * record is there aside, in one rename, then compares what it moved: a record a
- * writer put in place after the caller read it is what gets moved, found
- * different and put back (unless a newer one has taken its place since), so it
- * is never removed. Returns whether the judged record was removed.
- */
-export async function removeStoredJsonIf(target, judged, { move = rename } = {}) {
-  const claim = `${target}.${process.pid}.${randomUUID()}.claim`;
-  try { await move(target, claim); } catch (error) { if (['ENOENT', 'EPERM', 'EBUSY', 'EACCES'].includes(error?.code)) return false; throw error; }
-  let moved;
-  try { moved = JSON.parse(await readFile(claim, 'utf8')); } catch { moved = undefined; }
-  if (JSON.stringify(moved) === JSON.stringify(judged)) {
-    await rm(`${target}.previous`, { force: true });
-    await rm(claim, { force: true });
-    return true;
-  }
-  // Not the judged record: back in place at once, without replacing a newer one.
-  try { await link(claim, target); }
-  catch (error) {
-    if (error?.code !== 'EEXIST') {
-      // No hard link here: a rename, unless a newer record is already in place.
-      if (!await stat(target).then(() => true, () => false)) { await move(claim, target); return false; }
-    }
-  }
-  await rm(claim, { force: true });
-  return false;
-}
-
 export function attestationIdentity({
   repository,
   baseSha,

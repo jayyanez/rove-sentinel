@@ -51,7 +51,9 @@ still makes their checks (a safety pause's leftover processes are listed, and
 stopped with `--stop-orphans`; an update's pause is left alone while its
 activation runs) and then stops. Every `Next:` line that runs `resume` says it
 runs only if the person who asked for the repair asked to lift that pause: run
-it only then.
+it only then. Repair reads a pause again just before it removes it and stops if
+it changed; a `pause` written in the instant between that read and the removal
+can still be lost, as in 1.20.1.
 
 | Sentinel says | What `repair` checks | What it does | When it stops, the `Next:` line says |
 | --- | --- | --- | --- |

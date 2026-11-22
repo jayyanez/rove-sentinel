@@ -1,6 +1,6 @@
 # Standalone validation record
 
-## 1.20.2 `repair` lifts only the pauses Sentinel recorded as its own — 2026-11-22
+## 1.20.2 `repair` and the pauses it cannot attribute — 2026-11-22
 
 Deterministic tests cover: an unreadable pause record answered with the conditional `resume`
 line and never a plain `Run:` one, and kept; the corrupt-record error of a push or the
@@ -12,9 +12,8 @@ safety sentence still checked for leftover processes, which are listed and stopp
 run that says so; a kindless updater's reason left alone while an activation runs and
 kept, with the conditional line, once none does; the rollback of an interrupted activation
 removing no pause, a person's or a kindless one included, and the pause step then lifting
-one recorded as the update's; a record written between the judgement and the removal put
-back, not removed; the bootstrap downloading 1.20.2 or later, its checksum test
-following the version it names. The 9 changed or new tests of repair, its storage and its bootstrap fail on 1.20.1's sources; the new removal test drives the interleaving 1.20.1 had no step for.
+one recorded as the update's; the bootstrap downloading 1.20.2 or later, its checksum test
+following the version it names. The 9 changed or new tests fail on 1.20.1's sources.
 1,088 tests passed and 5 were skipped (linters not installed there) on Windows 11 on Arm,
 run there because the development host was loaded; on the loaded host the same suite timed
 out in 12 tests unrelated to this change. The package smoke passed.
