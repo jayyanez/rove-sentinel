@@ -59,7 +59,7 @@ export function parseWindowsProcessList(stdout) {
   return String(stdout || '').split(/\r?\n/).map((line) => line.trim().split(' '))
     .filter(([pid]) => number(pid) !== null)
     .map(([pid, ppid, startedAt, name, commandLine]) => ({
-      pid: number(pid), ppid: number(ppid) ?? 0, name: text(name), commandLine: text(commandLine), startedAt: number(startedAt),
+      pid: number(pid), ppid: number(ppid), name: text(name), commandLine: text(commandLine), startedAt: number(startedAt),
     }));
 }
 
