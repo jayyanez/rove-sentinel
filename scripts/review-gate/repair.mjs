@@ -720,7 +720,9 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
       const listed = new Map((await snapshot()).map((proc) => [proc.pid, proc]));
       for (const orphan of before) {
         if (orphans.some((entry) => entry.pid === orphan.pid)) continue;
-        if (listed.has(orphan.pid) && listed.get(orphan.pid).startedAt === orphan.rawStartedAt) orphans.push(orphan);
+        // Only two known start times that differ show the PID is another process's now.
+        const now = listed.get(orphan.pid);
+        if (now && (now.startedAt === null || orphan.rawStartedAt === null || now.startedAt === orphan.rawStartedAt)) orphans.push(orphan);
       }
     }
     if (orphans.length) {

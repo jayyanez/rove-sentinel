@@ -223,6 +223,14 @@ describe('repair', () => {
     const signalled = await repair(f, { stopOrphans: true });
     expect(signalled.steps[0].processes.map((proc: { pid: number }) => proc.pid)).toEqual([302]);
     expect(await readJson(f.paths.paused)).toEqual(traced);
+    // A start time unknown in either listing does not show the PID changed hands; two known ones that differ do.
+    for (const [before, after, kept] of [[null, 700, true], [600, null, true], [600, 900, false]] as const) {
+      f.list.processes = [{ pid: 301, ppid: 300, name: 'node.exe', commandLine: 'node mcp-server', startedAt: 500 }, { pid: 302, ppid: 301, name: 'node.exe', commandLine: '', startedAt: before }];
+      f.deps.stop = vi.fn(async () => { f.list.processes = [{ pid: 302, ppid: 1, name: 'node.exe', commandLine: '', startedAt: after }]; return [301]; });
+      const report = await repair(f, { stopOrphans: true });
+      expect(report.steps[0].status).toBe(kept ? 'blocked' : 'fixed');
+      if (!kept) await atomicWriteJson(f.paths.paused, traced);
+    }
   });
   it('checks a safety pause an earlier engine wrote for leftover processes, but resumes it only on a person\'s word', async () => {
     const dir = path.join(os.tmpdir(), `rove-review-context-repairlegacy${process.pid}`);
