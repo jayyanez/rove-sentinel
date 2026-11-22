@@ -1,5 +1,30 @@
 # Standalone validation record
 
+## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
+
+Deterministic tests cover: the Windows listing read one line a process, a name and command
+line holding `→ • ✓ ×` decoded from base64, and a damaged line keeping its process with an
+unknown start time and an empty command line, while a line with no PID is left out; the
+repository's own command (`--version` and `update`) run, on Windows and macOS, without any
+`npm_` variable of the environment, such as the `npm_config_package` and `npm_config_yes`
+that `npx --package` leaves, and with the rest kept; a repair that stops before its first
+step, from the CLI and from the launcher, printing a `blocked: repair:` line whose `Next:`
+line is the bootstrap with the options given, as text and as JSON, and exiting 1; the
+bootstrap downloading 1.20.3 or later. On Windows, a test starts a process whose command
+line holds `→ • ↑ ↓ § ¶ ✓ ✘ ×` and 5,000 more characters and finds it whole in the listing.
+The 7 new or changed tests fail on 1.20.2's sources.
+
+Live on a Windows development host: 1.20.2's listing failed there with `Bad control character
+in string literal in JSON`, and the new one listed every process. Inside `npx --yes
+--package <archive>`, the repository's own `npx --no-install rove-sentinel --version` failed
+with `npx canceled due to missing packages and no YES option` in the inherited environment
+and printed the version without its `npm_` variables. The packed 1.20.3 archive, run as the
+bootstrap runs it, gave a dry run of `repair` in a consumer project that listed its
+processes and read the engine the project selects.
+
+Not run live: a repair that activates an update from the bootstrap line (it needs the
+published 1.20.3 release, which the line downloads).
+
 ## 1.20.2 `repair` and the pauses it cannot attribute — 2026-11-22
 
 Deterministic tests cover: an unreadable pause record answered with the conditional `resume`

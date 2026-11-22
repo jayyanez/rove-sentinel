@@ -19,6 +19,7 @@ private remote URLs, and private source excerpts.
 | `A replacement of the review daemon lock never finished` | A starter died while replacing a lock and left `takeover.lock` in the state folder. Run `npx --no-install rove-sentinel repair`: a replacement lasts milliseconds, so it removes a marker over a minute old |
 | `update` fails behind a proxy, or in npm | An engine installs without your npm configuration, from the public registry, so a proxy or private registry in `.npmrc` is not read. The two steps differ. The npm install honours `HTTPS_PROXY`. The update check and the release download use Node's `fetch`, which ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set too, on Node 22.21 or later. Earlier Node 22 releases have no such setting, so those two steps need a direct connection. Set both for the account the watcher runs as |
 | `update` to 1.16.0 fails with `EALLOWSCRIPTS` | The engine that downloads an update is the one running, and engines before 1.16.0 pass your npm configuration to its install. Run that one update with `npm_config_userconfig` pointing at an empty file, and with no `npm_config_allow_scripts` in its environment, which a package manager can set for what it runs. From 1.16.0 on it is not needed |
+| `npx canceled due to missing packages and no YES option` in a repair's update step | A repair the bootstrap line ran, on 1.20.2 or earlier, passed on the bootstrap's npx settings to the repository's own command, which then looked for the downloaded archive. From 1.20.3 the repository's command runs without the settings npm passes to what it runs. Run the bootstrap line of [Repair on an engine before 1.20.1](#repair-on-an-engine-before-1201) again |
 | `… is downloaded … but cannot activate` | Run `npx --no-install rove-sentinel repair` and follow what it prints ([runbook](#runbook-for-agents)) |
 | `Runtime storage is full: every installed version (…) is active or pending …` | Run `npx --no-install rove-sentinel repair` (with automatic updates on): it retries the update, and when the retry finds the store still full it lists the projects and running Sentinel processes that hold every slot ([runbook](#runbook-for-agents)) |
 | `usage limit reached; retry after …` | A provider reported its subscription's usage limit. Under `auto` the review goes on with the other provider and says so (`providerFallback`); under `both`, `claude` or `codex` it fails until the time given. `status` lists the holds under `providerHolds`. After raising the allowance, `gate --force` tries the provider again. See [provider fallback](models.md#provider-failures-usage-limits-and-fallback) |
@@ -41,7 +42,13 @@ what it would do; `--json` gives the same report as data.
 `would-fix` (dry run) or `blocked`, and for anything not fixed a `Next:` line
 with the exact command. Run that command; when it is `repair` again, run it
 again after the time it names. Exit code 0 means every state is fixed or fine;
-1 means a `Next:` line waits. One repair runs at a time per repository. A pause
+1 means a `Next:` line waits. When `repair` stops with an error before it
+checks anything, from 1.20.3 it says so in a `blocked: repair:` line whose
+`Next:` line is the bootstrap line of
+[Repair on an engine before 1.20.1](#repair-on-an-engine-before-1201); an
+earlier engine prints only the error. Either way, run that line in the
+repository, and if it also stops before printing a `Next:` line, stop and
+report both outputs. One repair runs at a time per repository. A pause
 records who set it (from 1.20.1): repair lifts a safety pause or an update's,
 never one a person set with `rove-sentinel pause`, whatever its reason says. A
 pause an engine before 1.20.1 wrote records no kind, and a person may type any
@@ -97,15 +104,18 @@ path in PowerShell, typographic ones (`‘ ’ ‚ ‛`) included, and write eac
 A repository whose active engine predates 1.20.1 (its launcher pinned earlier
 and its update blocked) answers `repair` with `Unknown review-gate command:
 repair`. Then run this line in the repository, in PowerShell, Windows PowerShell
-or a macOS shell alike. It needs only Node, which npx needs anyway: it
-downloads the 1.20.2 release archive and that release's `SHA256SUMS`, stops on
+or a macOS shell alike. Run it too when `repair` stops with an error before
+printing any `Next:` line, as 1.20.1 and 1.20.2 could on Windows (`Bad control
+character in string literal in JSON` when a process's command line held a
+symbol such as `→`). It needs only Node, which npx needs anyway: it
+downloads the 1.20.3 release archive and that release's `SHA256SUMS`, stops on
 a failed download, refuses to go on unless the archive's SHA-256 matches, as
 the updater checks an engine, writes it to a new temporary folder and runs its
-`repair` through npx, which the 1.20.2 launcher runs on the newest engine at
+`repair` through npx, which the 1.20.3 launcher runs on the newest engine at
 hand.
 
 ```sh
-node -e "const v='1.20.2',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\r?\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})"
+node -e "const v='1.20.3',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\r?\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})"
 ```
 
 `repair`'s options go after `--` at the end of the line, as in

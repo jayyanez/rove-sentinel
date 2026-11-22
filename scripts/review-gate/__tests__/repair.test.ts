@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -108,6 +109,36 @@ describe('which processes a repair may count as this repository\'s', () => {
       if (saved === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = saved;
     }
   });
+  it('reads the Windows listing one line a process, and keeps every process a damaged line still names', async () => {
+    const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+    const run = vi.fn(async () => ({ stdout: [
+      `0 0 1000 ${b64('System Idle Process')} `,
+      `42 7 2000 ${b64('node.exe')} ${b64('node watch \u2192 \u2022 \u2713 \u00d7 "C:\\rove-review-context-1"')}`,
+      `43 42  ${b64('codex.exe')} not*base64`,
+      'not a process line',
+      '',
+    ].join('\r\n') }));
+    expect(await listProcesses({ platform: 'win32', run })).toEqual([
+      { pid: 0, ppid: 0, name: 'System Idle Process', commandLine: '', startedAt: 1000 },
+      { pid: 42, ppid: 7, name: 'node.exe', commandLine: 'node watch \u2192 \u2022 \u2713 \u00d7 "C:\\rove-review-context-1"', startedAt: 2000 },
+      // A start time the system did not give, and a command line that does not decode.
+      { pid: 43, ppid: 42, name: 'codex.exe', commandLine: '', startedAt: null },
+    ]);
+    expect(run.mock.calls[0][0]).toBe('powershell.exe');
+  });
+  // Windows PowerShell writes to a pipe in the console's code page, where U+2192
+  // and U+2022 become the control bytes 0x1A and 0x07 that broke the JSON listing.
+  it.runIf(process.platform === 'win32')('lists a Windows process whose command line holds symbols the console code page cannot write', async () => {
+    const marker = 'sentinel-listing-probe \u2192 \u2022 \u2191 \u2193 \u00a7 \u00b6 \u2713 \u2718 \u00d7';
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)', marker, 'x'.repeat(5000)], { stdio: 'ignore', windowsHide: true });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const found = (await listProcesses()).find((proc) => proc.pid === child.pid);
+      expect(found?.commandLine).toContain(marker);
+      expect(found?.commandLine.endsWith('x'.repeat(5000))).toBe(true);
+      expect(found?.startedAt).toEqual(expect.any(Number));
+    } finally { child.kill(); }
+  }, 120_000);
   it('stops only processes whose PID still has the start time it was listed with, children first, and counts only confirmed stops', async () => {
     const run = vi.fn(async (_command, args) => ({ code: args[1] === '4' ? 128 : 0 }));
     const list = vi.fn(async () => [{ pid: 1, startedAt: 10 }, { pid: 2, startedAt: 99_999 }, { pid: 3, startedAt: 30 }, { pid: 4, startedAt: 40 }, { pid: 5, startedAt: null }] as any);

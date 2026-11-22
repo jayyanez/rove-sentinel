@@ -78,6 +78,18 @@ pnpm review:status
 pnpm review:gate -- --base origin/main --head HEAD
 ```
 
+When any Rove Sentinel output reports that Sentinel itself (its watcher, queue,
+lock, engine store or engine) is paused, stopped, locked or blocked, or an
+update that does not activate, run `npx --no-install rove-sentinel repair` in
+that repository and run each `Next:` line it prints exactly as printed. If
+`repair` is an unknown command, or it fails before printing any `Next:` line,
+run the bootstrap line in
+[troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201),
+"Repair on an engine before 1.20.1", in that repository, then each `Next:` line
+it prints; if that fails too, stop and report its output. A review that blocks
+a push on findings is not such a state: fix or disposition the findings. Never
+resume, recover or delete Sentinel state by hand.
+
 Resolve blockers and record permitted advisory dispositions before pushing.
 The hook checks the exact pushed commit; never bypass it or fabricate an
 attestation. Contributors without live access should state that limitation so

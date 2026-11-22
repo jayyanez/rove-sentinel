@@ -10,7 +10,7 @@ import { createGateContext } from './gate.mjs';
 import { recoverStaleDaemonState, startWatcher } from './install.mjs';
 import { readInstallation } from './local.mjs';
 import { processStartedAt, updateMarker } from './maintenance.mjs';
-import { legacyPause, pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess } from './process.mjs';
+import { legacyPause, pauseKind, REPAIR_COMMAND, repairBootstrap, runProcess, withoutNpmRunEnvironment } from './process.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from './constants.mjs';
 import { stableVersion } from './updates.mjs';
 import { reviewPolicySnapshot } from './context.mjs';
@@ -42,20 +42,36 @@ const reasonText = (reason) => String(reason).replace(/\s*Run: [^\n]*$/, '').rep
 // A daemon-lock replacement lasts milliseconds; storage calls a marker this old abandoned.
 const TAKEOVER_ABANDONED_MS = 60_000;
 
+// One line a process: PID, parent PID, start time (empty when unknown), and the
+// UTF-8 bytes of its name and of its command line in base64. Windows
+// PowerShell writes to a pipe in the console's code page, where a character
+// such as U+2192 becomes a control byte, so every text field leaves it as ASCII.
+const WINDOWS_PROCESS_LIST = "$ErrorActionPreference = 'Stop'; $sentinelUtf8 = [Text.Encoding]::UTF8; foreach ($sentinelProcess in @(Get-CimInstance Win32_Process)) { $sentinelStarted = if ($sentinelProcess.CreationDate) { ([DateTimeOffset]$sentinelProcess.CreationDate).ToUnixTimeMilliseconds() } else { '' }; '{0} {1} {2} {3} {4}' -f [int]$sentinelProcess.ProcessId, [int]$sentinelProcess.ParentProcessId, $sentinelStarted, [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.Name)), [Convert]::ToBase64String($sentinelUtf8.GetBytes([string]$sentinelProcess.CommandLine)) }";
+
+/**
+ * The processes in the Windows listing's output. A line that cannot be read
+ * whole keeps what can be read: a field that does not decode is left empty or
+ * unknown, and only a line with no PID is left out.
+ */
+export function parseWindowsProcessList(stdout) {
+  const text = (field = '') => (/^[A-Za-z0-9+/]*={0,2}$/.test(field) ? Buffer.from(field, 'base64').toString('utf8') : '');
+  const number = (field) => (/^\d+$/.test(field ?? '') ? Number(field) : null);
+  return String(stdout || '').split(/\r?\n/).map((line) => line.trim().split(' '))
+    .filter(([pid]) => number(pid) !== null)
+    .map(([pid, ppid, startedAt, name, commandLine]) => ({
+      pid: number(pid), ppid: number(ppid) ?? 0, name: text(name), commandLine: text(commandLine), startedAt: number(startedAt),
+    }));
+}
+
 /**
  * Every process of this OS user that the system lists: PID, parent PID, name,
  * command line and start time (milliseconds since the epoch, or null).
  */
 export async function listProcesses({ platform = process.platform, run = runProcess } = {}) {
   if (platform === 'win32') {
-    const script = "$ErrorActionPreference = 'Stop'; $list = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; name = [string]$_.Name; commandLine = [string]$_.CommandLine; startedAt = $(if ($_.CreationDate) { ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { $null }) } }); ConvertTo-Json -InputObject $list -Compress -Depth 2";
-    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-      { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 * 1024 });
-    const parsed = JSON.parse(result.stdout || '[]');
-    return (Array.isArray(parsed) ? parsed : [parsed]).map((entry) => ({
-      pid: entry.pid, ppid: entry.ppid, name: entry.name || '', commandLine: entry.commandLine || '',
-      startedAt: Number.isFinite(entry.startedAt) ? entry.startedAt : null,
-    }));
+    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROCESS_LIST],
+      { timeoutMs: 60_000, maxOutputBytes: 48 * 1024 * 1024 });
+    return parseWindowsProcessList(result.stdout);
   }
   // Times in UTC and in the C time format, so a start time reads the same in any
   // zone, season or language. Characters keep the user's locale: what LC_ALL set
@@ -246,13 +262,16 @@ export async function repairRepository({ repoRoot = process.cwd(), dryRun = fals
     contextFor = createGateContext, root = engineRoot(), platform = process.platform, run = runProcess,
     list = listProcesses, stop = stopProcesses, startWatcherFn = startWatcher, recover = recoverStaleDaemonState,
     rollBack = rollBackInterruptedUpdate, update = automaticUpdate, info = updateInformation,
-    isAlive = isProcessAlive, startedAt = processStartedAt, waitMs = 30_000, now = Date.now,
+    isAlive = isProcessAlive, startedAt = processStartedAt, waitMs = 30_000, now = Date.now, env = process.env,
     reinstall = async (repo) => run(process.execPath, [ownCli, 'install', '--preserve-policy', '--repo', repo],
       { cwd: repo, timeoutMs: 180_000, maxOutputBytes: 1024 * 1024 }),
     // The repository's own command, through its launcher: its selected engine.
     // A local installation records its Node and launcher; a project's is its dependency.
+    // Never with what an npm that started this repair left in the environment:
+    // run through the bootstrap's `npx --package <archive>`, a nested npx would
+    // look for that archive instead of the repository's command.
     sentinel = async (repo, args) => {
-      const options = { cwd: repo, timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 };
+      const options = { cwd: repo, env: withoutNpmRunEnvironment(env), timeoutMs: 900_000, maxOutputBytes: 1024 * 1024 };
       const installation = await readInstallation(paths).catch(() => null);
       if (installation?.mode === 'local') return run(installation.node, [installation.launcher, ...args, '--repo', repo], options);
       return platform === 'win32'

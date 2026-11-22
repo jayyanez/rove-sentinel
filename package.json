@@ -1,6 +1,6 @@
 {
   "name": "rove-sentinel",
-  "version": "1.20.2",
+  "version": "1.20.3",
   "sentinelEngineProtocol": 1,
   "description": "Commit-bound code review with your authenticated Claude Code and Codex CLIs",
   "type": "module",

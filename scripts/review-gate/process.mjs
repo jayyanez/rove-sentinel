@@ -82,19 +82,35 @@ export function providerCleanupFailureRecord() {
 export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
 // For a repository whose active engine predates 1.20.1, which has no `repair`:
 // one line, the same in PowerShell, Windows PowerShell and a POSIX shell.
-// Node (which npx needs anyway) downloads the 1.20.2 archive and that release's
+// Node (which npx needs anyway) downloads the 1.20.3 archive and that release's
 // SHA256SUMS, refuses the archive unless its SHA-256 matches, as the updater
 // checks an engine, writes it to a new temporary folder and runs its repair
 // through npx (npm's npx-cli.js beside Node on Windows, else the npx on PATH);
-// the 1.20.2 launcher then runs repair on the newest engine at hand (not 1.20.1,
-// which misread the pauses those repositories may hold). It uses
+// the 1.20.3 launcher then runs repair on the newest engine at hand (not 1.20.1,
+// which misread the pauses those repositories may hold, nor 1.20.2, whose
+// process listing and update failed from this line). It uses
 // Node's fetch, as the updater does, with the same proxy support. The script holds no double quote, $, backtick or !, so no shell
 // rewrites it, and it calls no PowerShell module, so a constrained or
 // module-less PowerShell runs it as well.
-export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.2',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
+export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.3',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
 export const REPAIR_BOOTSTRAP = `node -e "${REPAIR_BOOTSTRAP_SCRIPT}"`;
 // repair's options pass after `--`; the script refuses any other.
 export const repairBootstrap = (options = []) => (options.length ? `${REPAIR_BOOTSTRAP} -- ${options.join(' ')}` : REPAIR_BOOTSTRAP);
+const REPAIR_OPTIONS = ['--stop-orphans', '--dry-run', '--json'];
+
+/**
+ * The step a repair that stopped before checking anything reports, so that
+ * whoever runs it always has a next command: the bootstrap, in the repository,
+ * with the options repair was given.
+ */
+export function repairStoppedStep(error, argv = []) {
+  const message = String(error?.message || error || 'unknown error').trim().replace(/[.\s]+$/, '');
+  return {
+    state: 'repair', status: 'blocked',
+    detail: `Repair stopped before it checked anything: ${message}. The Next line, run in the repository, downloads a verified release and runs its repair (docs/troubleshooting.md, "Repair on an engine before 1.20.1"); if it also stops before printing a Next line, stop and report both outputs.`,
+    next: repairBootstrap(REPAIR_OPTIONS.filter((option) => argv.includes(option))),
+  };
+}
 // The two safety pauses a failed provider cleanup writes. Earlier engines wrote
 // the same openings, so repair recognises their pauses too.
 export const SAFETY_PAUSE_REASONS = {
@@ -145,6 +161,18 @@ export function subscriptionEnvironment(source = process.env) {
     delete env.OPENAI_API_KEY;
   }
   return env;
+}
+
+/**
+ * The environment for an npm or npx command Sentinel starts, without what an
+ * npm that started Sentinel left in it: npm passes its whole configuration to
+ * what it runs (`npx --package <archive>` leaves `npm_config_package`, and the
+ * user's `.npmrc` settings, such as `allow-scripts`, as if typed on the command
+ * line), and a nested npx would act on them. The command reads npm's
+ * configuration from its files, as in a new shell.
+ */
+export function withoutNpmRunEnvironment(source = process.env) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => !/^npm_/i.test(key)));
 }
 
 async function waitForPosixTreeExit(child, pid, timeoutMs, killProcess = process.kill) {

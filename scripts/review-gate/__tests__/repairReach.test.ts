@@ -159,8 +159,8 @@ describe('the bootstrap for an engine before 1.20.1', () => {
   // server and with its npx run replaced by a marker: the verification is what
   // is tested, not the repair it then runs.
   const release = REPAIR_BOOTSTRAP_SCRIPT.match(/const v='([^']+)'/)?.[1] as string;
-  it('downloads 1.20.2 or later, the first repair that never lifts a pause an earlier engine left with no kind', () => {
-    expect(compareVersions(release, '1.20.2')).toBeGreaterThanOrEqual(0);
+  it('downloads 1.20.3 or later, the first repair that lists every Windows process and updates from this line', () => {
+    expect(compareVersions(release, '1.20.3')).toBeGreaterThanOrEqual(0);
   });
   async function bootstrap(sums: (digest: string) => string, options: string[] = []) {
     const archive = Buffer.from('synthetic release archive');
@@ -213,4 +213,94 @@ describe('the bootstrap for an engine before 1.20.1', () => {
     expect(refused.stderr).toContain('Not a repair option: --force');
     expect(refused.stdout).not.toContain('VERIFIED');
   }, 120_000);
+});
+
+describe('a repair the bootstrap line runs', () => {
+  // `npx --yes --package <archive>` passes its settings to what it runs; a
+  // nested `npx --no-install rove-sentinel` that inherits them looks for the
+  // archive and stops with "npx canceled due to missing packages".
+  it('runs the repository\'s own command without the settings npm passed to it', async () => {
+    const base = await temp();
+    const paths = await ensureState(path.join(base, 'state'));
+    const repoRoot = path.join(base, 'checkout');
+    await mkdir(path.join(repoRoot, '.git'), { recursive: true });
+    const context = { repoRoot, stateRoot: paths.root, paths };
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: 'Charter', lessons: 'Lessons', config: {} }));
+    await atomicWriteJson(paths.lock, { ownerToken: 'owner-token', pid: process.pid, startedAt: new Date().toISOString() });
+    await atomicWriteJson(paths.heartbeat, { ownerToken: 'owner-token', pid: process.pid, at: new Date().toISOString(), repoRoot,
+      gateVersion: '1.18.0', charterVersion: '1.0.0', policyDigest: 'computed-by-1.18.0', activity: 'idle' });
+    const updating = (args: string[]) => args.includes('update') || args.some((arg) => arg.includes("'update'"));
+    const run = vi.fn(async (_command: string, args: string[]) => ({
+      stdout: updating(args) ? JSON.stringify({ status: 'updated', version: GATE_VERSION }) : '1.18.0\n',
+    }));
+    const env = {
+      PATH: 'C:\\Windows\\System32', SystemRoot: 'C:\\Windows',
+      npm_config_package: 'file:C:/Users/me/AppData/Local/Temp/rove-sentinel-x/rove-sentinel-1.20.3.tgz',
+      npm_config_yes: 'true', npm_config_allow_scripts: 'example-package', npm_config_local_prefix: 'C:\\Users\\me',
+      npm_command: 'exec', npm_lifecycle_event: 'npx', NPM_CONFIG_CALL: 'x',
+    };
+    for (const platform of ['win32', 'darwin']) {
+      run.mockClear();
+      const report = await repairRepository({ repoRoot }, {
+        contextFor: async () => context, root: path.join(base, 'engines'), platform, list: async () => [], waitMs: 0, run, env,
+        startedAt: async () => null, info: async () => ({ automatic: true, phase: 'download-failed', blockedBy: [] }),
+      });
+      // The selected engine came from `--version` (and, on Windows, the update
+      // ran), both through the repository's own command.
+      const own = run.mock.calls.filter(([command, args]) => command === 'npx' || args.some((arg) => String(arg).includes('npx --no-install rove-sentinel')));
+      expect(own.length).toBe(platform === 'win32' ? 2 : 1);
+      for (const [, , options] of own as unknown as [string, string[], { env: Record<string, string> }][]) {
+        expect(Object.keys(options.env).filter((key) => /^npm_/i.test(key))).toEqual([]);
+        expect(options.env.PATH).toBe(env.PATH);
+      }
+      if (platform === 'win32') expect(report.steps).toEqual([expect.objectContaining({ state: 'update', status: 'fixed' })]);
+    }
+  });
+});
+
+describe('a repair that stops before it checks anything', () => {
+  const launch = (script: string, args: string[], env: NodeJS.ProcessEnv = process.env) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], { windowsHide: true, env });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+  it('ends with the bootstrap as its Next line, with the options it was given', async () => {
+    // Not a Git checkout: the repair stops before its first step.
+    const outside = await temp();
+    const cli = path.resolve('scripts/review-gate/cli.mjs');
+    const text = await launch(cli, ['repair', '--repo', outside, '--stop-orphans']);
+    expect(text.code).toBe(1);
+    expect(text.stderr).toContain('Shared review gate:');
+    expect(text.stdout).toContain('blocked: repair: Repair stopped before it checked anything: ');
+    expect(text.stdout).toContain('if it also stops before printing a Next line, stop and report both outputs');
+    expect(text.stdout).toContain(`    Next: ${REPAIR_BOOTSTRAP} -- --stop-orphans\n`);
+    const json = await launch(cli, ['repair', '--repo', outside, '--json']);
+    expect(json.code).toBe(1);
+    expect(JSON.parse(json.stdout)).toMatchObject({ repository: outside, ok: false, steps: [{ state: 'repair', status: 'blocked', next: `${REPAIR_BOOTSTRAP} -- --json` }] });
+  }, 60_000);
+  it('says the same when the launcher cannot choose an engine', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { findRepoRoot, primaryRemote } = await import('../git.mjs');
+    const { normalizeRepositoryIdentity, stateRootFor } = await import('../storage.mjs');
+    const base = await temp();
+    const checkout = path.join(base, 'checkout');
+    await mkdir(checkout);
+    execFileSync('git', ['init', '-q', checkout]);
+    execFileSync('git', ['-C', checkout, 'remote', 'add', 'origin', 'https://github.com/example-owner/example-repo.git']);
+    const home = path.join(base, 'home');
+    const env = { ...process.env, LOCALAPPDATA: home, XDG_STATE_HOME: home, HOME: home, USERPROFILE: home };
+    const root = await findRepoRoot(checkout);
+    const stateRoot = stateRootFor(normalizeRepositoryIdentity((await primaryRemote(root)).url, root), { env, home });
+    // An active engine of which no copy is installed: the launcher cannot choose one.
+    await ensureState(stateRoot);
+    await writeFile(path.join(stateRoot, 'engine.json'), JSON.stringify({ schemaVersion: 1, activeVersion: '99.0.0' }));
+    const result = await launch(path.resolve('scripts/review-gate/launcher.mjs'), ['repair', '--repo', checkout], env);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('Rove Sentinel launcher: No copy of the active engine 99.0.0');
+    expect(result.stdout).toContain('blocked: repair: Repair stopped before it checked anything: No copy of the active engine 99.0.0');
+    expect(result.stdout).toContain(`    Next: ${REPAIR_BOOTSTRAP}\n`);
+  }, 60_000);
 });

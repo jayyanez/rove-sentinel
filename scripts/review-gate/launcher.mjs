@@ -4,6 +4,7 @@ import { GATE_VERSION } from './constants.mjs';
 import { findRepoRoot, primaryRemote } from './git.mjs';
 import { normalizeRepositoryIdentity, statePaths, stateRootFor } from './storage.mjs';
 import { repairEngine, selectedEngine } from './engine-store.mjs';
+import { repairStoppedStep } from './process.mjs';
 
 const bundled = fileURLToPath(new URL('./cli.mjs', import.meta.url));
 let selected = bundled;
@@ -25,5 +26,12 @@ try {
   await import(pathToFileURL(selected).href);
 } catch (error) {
   process.stderr.write(`Rove Sentinel launcher: ${error.message}\n`);
+  // A repair that cannot start still ends with the command to run next.
+  if (process.argv[2] === 'repair') {
+    const step = repairStoppedStep(error, process.argv.slice(3));
+    process.stdout.write(process.argv.includes('--json')
+      ? `${JSON.stringify({ repository: root ?? process.cwd(), dryRun: process.argv.includes('--dry-run'), ok: false, steps: [step] }, null, 2)}\n`
+      : `Rove Sentinel repair for ${root ?? process.cwd()}:\n  ${step.status}: ${step.state}: ${step.detail}\n    Next: ${step.next}\nResult: blocked; run each Next command above.\n`);
+  }
   process.exitCode = 1;
 }

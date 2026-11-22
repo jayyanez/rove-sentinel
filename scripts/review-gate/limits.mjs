@@ -1,7 +1,7 @@
 import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
 import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.20.2), from the
+// What this engine version accepts and where it stops (1.20.3), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -97,7 +97,7 @@ export function sentinelLimits() {
       {
         id: 'repair',
         limit: 'one command',
-        text: 'Every blocked state (a paused or stopped watcher, a stale lock, an interrupted or failed update, a full store) either fixes itself when that is provably safe, or ends its message with: Run: npx --no-install rove-sentinel repair. repair verifies each state, acts when the checks pass, and otherwise prints the processes or records that stopped it and the next command. It lifts only a pause recorded as a failed cleanup\'s or an update\'s, never one a person set or may have set (one typed while repair runs is the exception the 1.20.2 changelog names). It stops review processes only with --stop-orphans, and only those it can trace to this repository\'s reviews (a process naming a review directory without an owner record is listed, never stopped); rolling back an interrupted activation stops and restarts the watcher, as an activation does.',
+        text: 'Every blocked state (a paused or stopped watcher, a stale lock, an interrupted or failed update, a full store) either fixes itself when that is provably safe, or ends its message with: Run: npx --no-install rove-sentinel repair. repair verifies each state, acts when the checks pass, and otherwise prints the processes or records that stopped it and the next command. It lifts only a pause recorded as a failed cleanup\'s or an update\'s, never one a person set or may have set (one typed while repair runs is the exception the 1.20.2 changelog names). It stops review processes only with --stop-orphans, and only those it can trace to this repository\'s reviews (a process naming a review directory without an owner record is listed, never stopped); rolling back an interrupted activation stops and restarts the watcher, as an activation does. A repair that stops with an error before it checks anything still ends with a Next line: the bootstrap line of the troubleshooting guide, which runs the repair of a verified release.',
       },
       {
         id: 'review-accounts',
