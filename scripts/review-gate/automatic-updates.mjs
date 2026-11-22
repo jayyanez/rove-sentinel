@@ -9,7 +9,7 @@ import { gateStatus, stopDaemon } from './install.mjs';
 import { acquireUpdateLease, processStartedAt, updateMarker } from './maintenance.mjs';
 import { engineCli, engineRoot, engineStatePath, ensureEngine, publishEngineState } from './engine-store.mjs';
 import { acquireDispositionLock, atomicWriteJson, daemonOwnerIsHealthy, pauseGate, readJson, removeStoredJson, sleep } from './storage.mjs';
-import { pauseKind, REPAIR_BOOTSTRAP, REPAIR_COMMAND, runProcess } from './process.mjs';
+import { legacyUpdatePause, pauseKind, REPAIR_BOOTSTRAP, REPAIR_COMMAND, runProcess } from './process.mjs';
 import { checkForUpdates, compareVersions } from './updates.mjs';
 import { longPauseMessage, notifyUpdate, updateMessage } from './update-notifications.mjs';
 
@@ -50,7 +50,8 @@ export async function activationRuns(marker, { isAlive = processAlive, startedAt
  * checks everything it checked before.
  */
 async function liftsItself(paused, paths, probes) {
-  if (pauseKind(paused) !== 'update') return false;
+  // An earlier engine's activation records no kind; while one runs, its reason is taken for its own.
+  if (pauseKind(paused) !== 'update' && !legacyUpdatePause(paused)) return false;
   return activationRuns(await readJson(updateMarker(paths)).catch(() => null), probes);
 }
 
@@ -246,7 +247,8 @@ export async function rollBackInterruptedUpdate(context, {
   await publishEngineState(paths, { ...recovery.previousState, repoRoot: context.repoRoot, phase: 'failed',
     failedVersion: recovery.nextVersion ?? null, lastError: 'An interrupted activation was rolled back by repair.' }, root);
   const paused = await readJson(paths.paused).catch(() => null);
-  // Only the update's own pause: a person's pause stays whatever its reason says.
+  // Only a pause recorded as an update's: a person's stays whatever its reason says, and
+  // so does one an earlier engine wrote with no kind, which a person may have written.
   if (pauseKind(paused) === 'update' && paused) await removeStoredJson(paths.paused);
   await removeStoredJson(updateMarker(paths));
   return { rolledBack: true, version, nextVersion: recovery.nextVersion ?? null, markerPid: marker.pid };

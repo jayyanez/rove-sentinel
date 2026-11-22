@@ -18,6 +18,7 @@ async function temp() { const dir = await mkdtemp(path.join(os.tmpdir(), 'sentin
 const DEAD = 2 ** 31 - 2;
 const NEXT = 'Run: npx --no-install rove-sentinel repair';
 const STOP = 'npx --no-install rove-sentinel repair --stop-orphans';
+const RESUME_IF_ASKED = 'Only if the person who asked for this repair asked you to lift that pause, run: npx --no-install rove-sentinel resume';
 
 type Proc = { pid: number; ppid: number; name: string; commandLine: string; startedAt: number | null };
 
@@ -156,13 +157,24 @@ describe('repair', () => {
   it('never lifts a person\'s pause, even one whose reason reads like Sentinel\'s', async () => {
     for (const pause of [{ reason: 'Holding reviews during a release' },
       { reason: safetyPauseReason('ORPHANED_PROCESS_TREE'), kind: 'manual' },
-      { reason: 'Automatic Sentinel update to 9.9.9', kind: 'manual' }]) {
+      { reason: 'Automatic Sentinel update to 9.9.9', kind: 'manual' },
+      // With no kind, as engines before 1.20.1 wrote every pause: Sentinel's openings, then a person's words.
+      { reason: 'Automatic Sentinel update to 1.20.0 broke the hook; hold reviews' },
+      { reason: 'Provider process-tree cleanup could not be verified; hold reviews until the build machine is checked' }]) {
       const f = await fixture(); await f.healthy();
       await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), ...pause });
       const report = await repair(f, { stopOrphans: true });
-      expect(report.steps[0]).toMatchObject({ status: 'blocked', next: expect.stringContaining('rove-sentinel resume') });
+      expect(report.steps[0]).toMatchObject({ status: 'blocked', next: RESUME_IF_ASKED });
       expect(await readJson(f.paths.paused)).not.toBeNull();
     }
+  });
+  it('resumes a pause whose record cannot be read only on the word of the person who asked for the repair', async () => {
+    const f = await fixture(); await f.healthy();
+    await writeFile(f.paths.paused, '{');
+    const report = await repair(f, { stopOrphans: true });
+    expect(report.steps[0]).toMatchObject({ state: 'pause', status: 'blocked', next: RESUME_IF_ASKED });
+    expect(formatRepair(report)).not.toContain('Next: Run: npx --no-install rove-sentinel resume');
+    expect(await readFile(f.paths.paused, 'utf8')).toBe('{');
   });
   it('runs one repair at a time for a repository, and takes over from one whose process is gone or a reused PID', async () => {
     const f = await fixture(); await f.healthy({ activity: 'idle' });
@@ -198,9 +210,23 @@ describe('repair', () => {
   });
   it('lifts the pause an update left with no activation running', async () => {
     const f = await fixture(); await f.healthy();
-    await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), reason: 'Automatic Sentinel update to 1.20.1' });
+    await atomicWriteJson(f.paths.paused, { pausedAt: new Date().toISOString(), reason: 'Automatic Sentinel update to 1.20.1', kind: 'update' });
     expect((await repair(f)).steps[0]).toMatchObject({ state: 'pause', status: 'fixed' });
     expect(await readJson(f.paths.paused)).toBeNull();
+  });
+  it('keeps the updater\'s reason with no kind, which a person may have typed, and lifts it only on that person\'s word', async () => {
+    const f = await fixture(); await f.healthy();
+    const pause = { pausedAt: new Date().toISOString(), reason: 'Automatic Sentinel update to 1.20.1' };
+    await atomicWriteJson(f.paths.paused, pause);
+    // While an earlier engine's activation runs, the pause is that activation's to lift.
+    await atomicWriteJson(updateMarker(f.paths), { version: '1.20.1', pid: process.pid, startedAt: new Date().toISOString() });
+    expect((await repair(f)).steps.filter((entry) => entry.state === 'pause')).toEqual([]);
+    expect(await readJson(f.paths.paused)).toEqual(pause);
+    await rm(updateMarker(f.paths), { force: true });
+    const report = await repair(f, { stopOrphans: true });
+    expect(report.steps[0]).toMatchObject({ state: 'pause', status: 'blocked', next: RESUME_IF_ASKED });
+    expect(report.steps[0].detail).toContain('the record does not say which');
+    expect(await readJson(f.paths.paused)).toEqual(pause);
   });
   it('recovers a watcher whose lock owner is dead or a reused PID, then starts it as install does', async () => {
     for (const lock of [{ pid: DEAD, ownerToken: 'dead-owner', startedAt: new Date().toISOString() },
@@ -398,6 +424,12 @@ describe('rolling back an interrupted activation', () => {
       : args.includes('status') ? JSON.stringify({ watcherRunning: true, heartbeat: { gateVersion: '1.20.0' } }) : '' }));
     expect(await rollBackInterruptedUpdate(f.context, { stop, run: ok, root: f.deps.root, startedAt: async () => null })).toMatchObject({ rolledBack: true, version: '1.20.0' });
     expect(await readJson(f.paths.paused)).toEqual(manual);
+    // An earlier engine's pause records no kind, so a person may have written the updater's reason: it stays too.
+    const legacy = { pausedAt: new Date().toISOString(), reason: 'Automatic Sentinel update to 1.20.1' };
+    await atomicWriteJson(updateMarker(f.paths), fence);
+    await atomicWriteJson(f.paths.paused, legacy);
+    expect(await rollBackInterruptedUpdate(f.context, { stop, run: ok, root: f.deps.root, startedAt: async () => null })).toMatchObject({ rolledBack: true, version: '1.20.0' });
+    expect(await readJson(f.paths.paused)).toEqual(legacy);
   });
   it('restores the recorded engine and policy, verifies its watcher, then removes the fence and the update\'s pause', async () => {
     const f = await fixture();

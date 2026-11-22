@@ -1,7 +1,7 @@
 import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
 import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.20.1), from the
+// What this engine version accepts and where it stops (1.20.2), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the

@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.20.2 — `repair` never resumes a pause a person may have set
+
+Two ways 1.20.1's `repair` could lift a pause a person set, found by an external review.
+Agents run every `Next:` line `repair` prints as printed, so a line that resumes reviews
+must be one only a person's word allows. Nothing needs doing to receive the fix: it arrives
+as an ordinary automatic update.
+
+- **An unreadable pause record is no longer resumed by a plain `Next:` line.** `repair`
+  said it could not tell whether a person or a failed cleanup had paused reviews, then
+  printed `Run: npx --no-install rove-sentinel resume`. It now prints the line it prints for
+  a person's pause: `Only if the person who asked for this repair asked you to lift that
+  pause, run: …`. The error a push or the watcher gives for that record ends with
+  `Run: npx --no-install rove-sentinel repair` instead of telling anyone to resume.
+- **A pause from an engine before 1.20.1 is a person's unless its whole reason says
+  otherwise.** Those engines recorded no kind, and 1.20.1 read the kind from the reason's
+  opening, so a person's pause that began with the updater's `Automatic Sentinel update to `,
+  or with a safety pause's opening, was lifted. Such a pause is now a safety pause only when
+  its reason is, in full, the sentence those engines wrote, which itself asks for the check
+  `repair` makes before it resumes. The updater's reason, even in full, is the same record a
+  person typing it would leave, so `repair` keeps it, says so, and resumes only on the word
+  of the person who asked for the repair; a rollback of an interrupted activation keeps it
+  too. While an activation runs, the pause is still taken for its own. Pauses written by
+  1.20.1 and later record their kind and are unchanged.
+- **The bootstrap for an engine before 1.20.1 downloads 1.20.2**, whose `repair` reads those
+  engines' pauses as above ([troubleshooting](docs/troubleshooting.md#repair-on-an-engine-before-1201)).
+
 ## 1.20.1 — updates that cannot proceed say so, and `repair` fixes them
 
 Two ways automatic updates stopped for days without anyone noticing, seen on a host with

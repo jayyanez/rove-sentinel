@@ -82,15 +82,16 @@ export function providerCleanupFailureRecord() {
 export const REPAIR_COMMAND = 'npx --no-install rove-sentinel repair';
 // For a repository whose active engine predates 1.20.1, which has no `repair`:
 // one line, the same in PowerShell, Windows PowerShell and a POSIX shell.
-// Node (which npx needs anyway) downloads the 1.20.1 archive and that release's
+// Node (which npx needs anyway) downloads the 1.20.2 archive and that release's
 // SHA256SUMS, refuses the archive unless its SHA-256 matches, as the updater
 // checks an engine, writes it to a new temporary folder and runs its repair
 // through npx (npm's npx-cli.js beside Node on Windows, else the npx on PATH);
-// the 1.20.1 launcher then runs repair on the newest engine at hand. It uses
+// the 1.20.2 launcher then runs repair on the newest engine at hand (not 1.20.1,
+// which misread the pauses those repositories may hold). It uses
 // Node's fetch, as the updater does, with the same proxy support. The script holds no double quote, $, backtick or !, so no shell
 // rewrites it, and it calls no PowerShell module, so a constrained or
 // module-less PowerShell runs it as well.
-export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.1',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
+export const REPAIR_BOOTSTRAP_SCRIPT = "const v='1.20.2',u='https://github.com/jayyanez/rove-sentinel/releases/download/v'+v,c=require('crypto'),f=require('fs'),p=require('path'),o=require('os'),x=require('child_process');(async()=>{const k=process.argv.slice(1),z=k.filter((a)=>['--stop-orphans','--dry-run','--json'].includes(a)===false);if(z.length>0)throw new Error('Not a repair option: '+z.join(' ')+' (only --stop-orphans, --dry-run and --json are passed on)');const g=async(n)=>{const r=await fetch(u+'/'+n);if(r.ok===false)throw new Error(n+': HTTP '+r.status);return Buffer.from(await r.arrayBuffer())};const a=await g('rove-sentinel-'+v+'.tgz'),s=(await g('SHA256SUMS')).toString().split(/\\r?\\n/).find((l)=>l.endsWith(' rove-sentinel-'+v+'.tgz')),ok=Boolean(s)&&s.split(/\\s+/)[0].toLowerCase()===c.createHash('sha256').update(a).digest('hex');if(ok===false)throw new Error('Checksum mismatch: the archive was not run');const t=p.join(f.mkdtempSync(p.join(o.tmpdir(),'rove-sentinel-')),'rove-sentinel-'+v+'.tgz');f.writeFileSync(t,a);const w=process.platform==='win32',n=p.join(p.dirname(process.execPath),'node_modules','npm','bin','npx-cli.js'),q=['--yes','--package',t,'--','rove-sentinel','repair'].concat(k),r=w===false?x.spawnSync('npx',q,{stdio:'inherit'}):f.existsSync(n)?x.spawnSync(process.execPath,[n].concat(q),{stdio:'inherit'}):x.spawnSync('npx '+q.map((a)=>JSON.stringify(a)).join(' '),{stdio:'inherit',shell:true});process.exitCode=r.status??1})().catch((e)=>{console.error(e.message);process.exitCode=1})";
 export const REPAIR_BOOTSTRAP = `node -e "${REPAIR_BOOTSTRAP_SCRIPT}"`;
 // repair's options pass after `--`; the script refuses any other.
 export const repairBootstrap = (options = []) => (options.length ? `${REPAIR_BOOTSTRAP} -- ${options.join(' ')}` : REPAIR_BOOTSTRAP);
@@ -103,17 +104,31 @@ export const SAFETY_PAUSE_REASONS = {
 export function safetyPauseReason(code) {
   return `${code === 'ORPHANED_PROCESS_TREE' ? SAFETY_PAUSE_REASONS.orphaned : SAFETY_PAUSE_REASONS.unverified}; provider processes may remain. Run: ${REPAIR_COMMAND}`;
 }
+// The whole reasons of the safety pauses engines before 1.20.1 wrote, with no kind.
+const LEGACY_SAFETY_PAUSES = Object.values(SAFETY_PAUSE_REASONS)
+  .map((opening) => `${opening}; inspect remaining provider processes before resuming.`);
+// The whole reason of the pause an activation of an engine before 1.20.1 wrote.
+const LEGACY_UPDATE_PAUSE = /^Automatic Sentinel update to \d+\.\d+\.\d+$/;
+const PAUSE_KINDS = ['provider-cleanup', 'update', 'manual'];
 /**
  * Who paused: `provider-cleanup`, `update` and `manual` are recorded from 1.20.1.
- * A pause without a kind was written by an earlier engine or a person, and is
- * read by the openings those engines wrote.
+ * A pause without a kind was written by an earlier engine or by a person, who
+ * may type any reason. It is a safety pause only when its reason is, in full,
+ * one those engines wrote, which itself asks for the check repair makes before
+ * it resumes. Any other is a person's, the updater's reason included: an earlier
+ * engine's update pause and a person's with the same reason are the same record.
  */
 export function pauseKind(record) {
-  if (['provider-cleanup', 'update', 'manual'].includes(record?.kind)) return record.kind;
-  const reason = String(record?.reason ?? '');
-  if (Object.values(SAFETY_PAUSE_REASONS).some((opening) => reason.startsWith(opening))) return 'provider-cleanup';
-  if (reason.startsWith('Automatic Sentinel update to ')) return 'update';
-  return 'manual';
+  if (PAUSE_KINDS.includes(record?.kind)) return record.kind;
+  return LEGACY_SAFETY_PAUSES.includes(String(record?.reason ?? '')) ? 'provider-cleanup' : 'manual';
+}
+/**
+ * A pause with no kind and, in full, the reason an earlier engine's activation
+ * wrote: that activation's, or a person's, which nothing tells apart. Never
+ * lifted for it; only while an activation runs is it taken for that activation's.
+ */
+export function legacyUpdatePause(record) {
+  return Boolean(record) && !PAUSE_KINDS.includes(record.kind) && LEGACY_UPDATE_PAUSE.test(String(record.reason ?? ''));
 }
 export function isSafetyPause(record) {
   return pauseKind(record) === 'provider-cleanup';
