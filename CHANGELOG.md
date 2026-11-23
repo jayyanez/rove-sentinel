@@ -50,11 +50,13 @@ policy snapshot digest.
   the GitHub watcher or `gate --intent TEXT`) now enter context as quoted, untrusted
   evidence of stated intent. Lesson selection scores symbol keywords and `Tags:` /
   `Paths:` headers.
-- **Expanded deterministic lint coverage.** Added built-in `oxlint` (JS/TS) and
-  `hadolint` (Dockerfile) lanes, fixed the added-lines blind spot so newly
-  introduced hard syntax/undefined-name errors in Ruff and Oxlint (absent at
-  base) surface on any line of a changed file without blaming pre-existing
-  baseline errors, and added `scope: "changed-files"` for project `lintCommands`.
+- **Expanded deterministic lint coverage.** Added built-in `oxlint` (JS/TS,
+  text-only fixed config) and `hadolint` (Dockerfile) lanes, fixed the
+  added-lines blind spot so newly introduced hard syntax/undefined-name errors
+  in Ruff and environment-independent hard syntax/correctness errors in Oxlint
+  (absent at the mapped base line) surface on any line of a changed file without
+  blaming pre-existing baseline errors, and added `scope: "changed-files"` for
+  project `lintCommands`.
 - **Leaner prompt overhead and cache-warm staggering.** Trimmed default diff context
   from 80 to 40 lines per side (`patchContextLines: 40`), omitted empty placeholder
   `open-bug-briefs.md` and `bug-lessons.md` blocks from inline prompts, and staggered

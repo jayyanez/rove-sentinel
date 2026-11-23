@@ -1652,8 +1652,15 @@ describe('CodeRabbit and PR-watcher self-review regressions (1.21.0)', () => {
     expect(seenArgs[0]).toContain('--config');
     expect(seenArgs[0]).toContain('--disable-nested-config');
     expect(writtenOxlintConfig).toMatchObject({
-      rules: { 'no-const-assign': 'error', 'no-dupe-keys': 'error', 'no-redeclare': 'error', 'no-undef': 'error' },
+      rules: {
+        'no-const-assign': 'error',
+        'no-dupe-args': 'error',
+        'no-dupe-class-members': 'error',
+        'no-dupe-keys': 'error',
+        'no-redeclare': 'error',
+      },
     });
+    expect((writtenOxlintConfig as { rules?: Record<string, string> })?.rules?.['no-undef']).toBeUndefined();
 
     // Hunk-mapped Ruff baseline: deleting an old F821 on base line 2 must NOT hide a new F821 with the same message on head line 4!
     const pyPatch = [

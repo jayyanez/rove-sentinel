@@ -180,11 +180,13 @@ configuration (`.shellcheckrc`, `.github/actionlint.yaml`, ruff's
 run with fixed built-in rules without loading repository configuration files
 (so an untrusted branch's `oxlint.config.ts` can never execute code); projects
 that want their own Oxlint config can add a trusted `lintCommands` entry named
-`oxlint`, which overrides the built-in lane. By default only hits on lines the
-change added are reported; Ruff and Oxlint also report newly introduced hard
-syntax and undefined-name errors (absent at the mapped base line) anywhere in a
-changed file so deleting an import or definition is caught even when the broken
-use sits on an untouched line.
+`oxlint`, which overrides the built-in lane. By default only hits on lines the change added are reported; Ruff also reports
+newly introduced hard syntax and undefined-name errors (absent at the mapped
+base line) anywhere in a changed file, and Oxlint reports newly introduced
+environment-independent hard syntax and correctness errors (`no-const-assign`,
+`no-dupe-args`, `no-dupe-class-members`, `no-dupe-keys`, `no-redeclare`, and
+parse errors) anywhere in a changed file without flagging project/runtime
+globals.
 
 Project commands run your own checker in the review checkout:
 

@@ -37,10 +37,11 @@ and the updated existing test suites cover:
   visible without requiring deferral; `selectReviewLessons` scoring symbol keywords and
   `Tags:` / `Paths:` metadata; quoted, bounded untrusted `prIntent` via `gate --intent` and
   `listReadyPullRequests` (included in `shardAssignmentDigest`); omitting absent placeholder
-  `open-bug-briefs.md` and `bug-lessons.md` from both `Required reads` and inline prompt
-  material; built-in `oxlint` and `hadolint` lanes; Ruff and Oxlint surfacing hard
-  syntax/undefined-name errors on any line of a changed file; `lintCommands[].scope:
-  "changed-files"`; package contract, limits parity, and public-repository hygiene checks.
+  built-in `oxlint` (fixed text-only config) and `hadolint` lanes; Ruff surfacing newly introduced
+  hard syntax/undefined-name errors and Oxlint surfacing environment-independent hard
+  syntax/correctness errors on any line of a changed file (mapped against base);
+  `lintCommands[].scope: "changed-files"`; package contract, limits parity, and public-repository
+  hygiene checks.
 
 All 41 test files (1,140 deterministic tests, 0 failures, 0 skipped, including 40 new tests in
 `reviewIntelligence.test.ts`) and `pnpm verify:package` (`rove-sentinel@1.21.0` isolated

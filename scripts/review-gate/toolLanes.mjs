@@ -325,7 +325,7 @@ function isOxlintHardError(hit) {
   const severity = String(hit?.severity || 'warning').toLowerCase();
   const code = String(hit?.code || '');
   return severity === 'error' && (
-    !code || /no-undef|parse|syntax|redeclare|const-assign|dup-keys|duplicate/i.test(code)
+    !code || /no-undef|parse|syntax|redeclare|const-assign|dup(?:e)?-keys|dupe-args|dupe-class-members|duplicate/i.test(code)
   );
 }
 
@@ -564,13 +564,18 @@ export async function runOxlintLane({
   // `oxlint.config.ts`) and evaluates head and baseline with identical rules.
   const scratch = await mkdtemp(path.join(temporaryRoot, 'rove-review-oxlint-'));
   try {
+    // Enable only environment-independent hard correctness errors so the
+    // built-in text-only lane never false-positives on project/runtime globals
+    // (Node, browser, test runners, TypeScript ambient globals). Projects that
+    // want repo-configured `no-undef` can add a trusted `lintCommands` entry.
     const fixedConfig = path.join(scratch, 'oxlint.json');
     await writeFile(fixedConfig, `${JSON.stringify({
       rules: {
         'no-const-assign': 'error',
+        'no-dupe-args': 'error',
+        'no-dupe-class-members': 'error',
         'no-dupe-keys': 'error',
         'no-redeclare': 'error',
-        'no-undef': 'error',
       },
     }, null, 2)}\n`, 'utf8');
     const fixedFlags = ['--config', fixedConfig, '--disable-nested-config', '--format', 'json'];
