@@ -546,6 +546,11 @@ export async function runDeterministicLanes({ checkout, files, patch, baseSha = 
   // Project commands share one node_modules link, made before they start and
   // removed after the last one ends.
   const commands = Array.isArray(config?.lintCommands) ? config.lintCommands : [];
+  const projectCommandNames = new Set(commands.map((command) => command.name));
+  const builtinEnabled = (lane) => enabled(lane) && !projectCommandNames.has(lane);
+  const skippedBuiltin = (lane) => (projectCommandNames.has(lane)
+    ? Promise.resolve({ lane, status: 'skipped', note: 'overridden by project lintCommands entry', findings: [] })
+    : off(lane));
   const nodeModules = commands.some((command) => command.nodeModules) && repoRoot
     ? await linkNodeModules(checkout, repoRoot).catch((error) => ({ linked: false, note: `node_modules could not be linked: ${error?.message || String(error)}`, release: async () => {} }))
     : null;
@@ -563,8 +568,8 @@ export async function runDeterministicLanes({ checkout, files, patch, baseSha = 
       enabled('actionlint') ? runActionlintLane(toolOptions) : off('actionlint'),
       enabled('gitleaks') ? runGitleaksLane(toolOptions) : off('gitleaks'),
       enabled('ruff') ? runRuffLane(toolOptions) : off('ruff'),
-      enabled('oxlint') ? runOxlintLane(toolOptions) : off('oxlint'),
-      enabled('hadolint') ? runHadolintLane(toolOptions) : off('hadolint'),
+      builtinEnabled('oxlint') ? runOxlintLane(toolOptions) : skippedBuiltin('oxlint'),
+      builtinEnabled('hadolint') ? runHadolintLane(toolOptions) : skippedBuiltin('hadolint'),
       ...commands.map((command) => runProjectCommandLane({ ...toolOptions, command }).then((lane) => (
         command.nodeModules && nodeModules?.note && lane.status !== 'ok' ? { ...lane, note: `${lane.note}; ${nodeModules.note}` } : lane
       ))),

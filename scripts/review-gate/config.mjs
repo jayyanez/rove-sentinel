@@ -128,6 +128,11 @@ function normalizeMaxShards(value) {
 }
 
 const LINT_LANES = ['shellcheck', 'actionlint', 'gitleaks', 'ruff', 'oxlint', 'hadolint'];
+// Built-in names reserved since 1.13.0. Newer built-in lanes (`oxlint`,
+// `hadolint`) remain allowed in `lintCommands` so existing installed policies
+// stay loadable across upgrades (their project command overrides the built-in
+// lane in lint.mjs).
+const RESERVED_LINT_COMMAND_NAMES = ['markdownlint', 'clippy', 'shellcheck', 'actionlint', 'gitleaks', 'ruff'];
 
 /**
  * Path-scoped review instructions: each rule matches files via a regular
@@ -190,7 +195,7 @@ function normalizeLintCommands(input) {
       if (!['name', 'run', 'format', 'files', 'scope', 'timeoutMinutes', 'nodeModules'].includes(key)) throw new Error(`Unknown ${label} setting: ${key}`);
     }
     if (typeof command.name !== 'string' || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(command.name)) throw new Error(`${label}.name must be lower-case letters, digits and dashes.`);
-    if (['markdownlint', 'clippy', ...LINT_LANES].includes(command.name) || names.has(command.name)) throw new Error(`${label}.name ${command.name} is already used.`);
+    if (RESERVED_LINT_COMMAND_NAMES.includes(command.name) || names.has(command.name)) throw new Error(`${label}.name ${command.name} is already used.`);
     names.add(command.name);
     if (!Array.isArray(command.run) || !command.run.length || command.run.length > 64 ||
         command.run.some((arg) => typeof arg !== 'string' || !arg || arg.length > 500)) {

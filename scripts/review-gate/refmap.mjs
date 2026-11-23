@@ -1288,8 +1288,15 @@ export function extractFileReferences(patch, { sources } = {}) {
       newLine += 1;
       newRemaining = Math.max(0, newRemaining - 1);
     }
-    if (!inCodeFile || !isAdded) continue;
+    if (!inCodeFile) continue;
     const rawCode = rawLine.slice(1);
+    // Advance the fallback hunk lexer through context lines too so a block
+    // comment opened in context suppresses commented imports on added lines.
+    if (isContext) {
+      if (!newLexed) codeOnly(rawCode, newSide);
+      continue;
+    }
+    if (!isAdded) continue;
     const lexedLine = newLexed && lineNum > 0 && newLexed[lineNum - 1] !== undefined
       ? newLexed[lineNum - 1]
       : codeOnly(rawCode, newSide);
@@ -1432,21 +1439,7 @@ function matchesSymbolDeclaration(lexedLine, prevLexedLine, symbol, file) {
   return false;
 }
 
-/**
- * Find the declaration of `symbol` in `text` and return a concise snippet
- * (declaration line + up to 15 lines of signature/body, bounded to 1000 chars).
- */
-export function extractDefinitionSnippet(text, symbol, file, { maxLines = 16, maxChars = 1000 } = {}) {
-  const rawLines = String(text || '').split(/\r?\n/);
-  const lexed = lexWholeFile(text, file);
-  let start = -1;
-  for (let i = 0; i < lexed.length; i += 1) {
-    if (matchesSymbolDeclaration(lexed[i], i > 0 ? lexed[i - 1] : '', symbol, file)) {
-      start = i;
-      break;
-    }
-  }
-  if (start < 0) return null;
+function renderDefinitionSnippet(rawLines, lexed, start, { maxLines = 16, maxChars = 1000 } = {}) {
   const snippetLines = [];
   let chars = 0;
   let braceBalance = 0;
@@ -1468,6 +1461,60 @@ export function extractDefinitionSnippet(text, symbol, file, { maxLines = 16, ma
     if (!sawOpenBrace && /;\s*$/.test(lexed[i] || '') && i === start) break;
   }
   return { line: start + 1, snippet: snippetLines.join('\n') };
+}
+
+/**
+ * Lex a loaded source file once and index the first declaration line of every
+ * declared symbol so upstream callee lookups run in O(1) without re-lexing
+ * the file for each candidate binding.
+ */
+function buildFileDeclarationIndex(text, file) {
+  const rawLines = String(text || '').split(/\r?\n/);
+  const lexed = lexWholeFile(text, file);
+  const declIndex = new Map();
+  const returnTyped = RETURN_TYPED_FILE.test(file || '');
+  const splitSignatures = SPLIT_SIGNATURE_FILE.test(file || '');
+  const patterns = [
+    ...PRIMARY_DECLARATION_PATTERNS,
+    ...SECONDARY_DECLARATION_PATTERNS,
+    ...(returnTyped ? RETURN_TYPED_PATTERNS : []),
+  ];
+  const recordDecl = (name, lineIdx) => {
+    if (name && !declIndex.has(name)) declIndex.set(name, lineIdx);
+  };
+  for (let i = 0; i < lexed.length; i += 1) {
+    const line = lexed[i];
+    if (!line || !line.trim()) continue;
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      for (const match of line.matchAll(pattern)) recordDecl(match[1], i);
+    }
+    if (splitSignatures && i > 0 && RETURN_TYPE_LINE.test(lexed[i - 1] || '')) {
+      for (const pattern of SPLIT_SIGNATURE_PATTERNS) {
+        pattern.lastIndex = 0;
+        for (const match of line.matchAll(pattern)) recordDecl(match[1], i);
+      }
+    }
+  }
+  return { rawLines, lexed, declIndex };
+}
+
+/**
+ * Find the declaration of `symbol` in `text` and return a concise snippet
+ * (declaration line + up to 15 lines of signature/body, bounded to 1000 chars).
+ */
+export function extractDefinitionSnippet(text, symbol, file, { maxLines = 16, maxChars = 1000 } = {}) {
+  const rawLines = String(text || '').split(/\r?\n/);
+  const lexed = lexWholeFile(text, file);
+  let start = -1;
+  for (let i = 0; i < lexed.length; i += 1) {
+    if (matchesSymbolDeclaration(lexed[i], i > 0 ? lexed[i - 1] : '', symbol, file)) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  return renderDefinitionSnippet(rawLines, lexed, start, { maxLines, maxChars });
 }
 
 /**
@@ -1515,15 +1562,45 @@ async function resolveUpstreamContext({ checkout, headSha, patch, files, sources
   }
   // Resolve each (changedFile, symbol) pair individually so two files importing
   // same-named symbols from different modules receive their own definitions.
-  const allBindings = new Set(); // `${file}\0${symbol}`
-  for (const [file, names] of calleesByFile.entries()) {
-    for (const name of names) allBindings.add(`${file}\0${name}`);
+  // Prioritize explicit named imports first and bound total scanned bindings;
+  // lex each loaded target file at most once and reuse its declaration index.
+  const orderedBindings = [];
+  const seenBindings = new Set();
+  const maxBindings = LIMITS.refMapMaxCallees * 8;
+  for (const key of namedImportSource.keys()) {
+    if (orderedBindings.length >= maxBindings) break;
+    if (!seenBindings.has(key)) {
+      seenBindings.add(key);
+      orderedBindings.push(key);
+    }
   }
-  for (const key of namedImportSource.keys()) allBindings.add(key);
+  for (const [file, names] of calleesByFile.entries()) {
+    for (const name of names) {
+      if (orderedBindings.length >= maxBindings) break;
+      const key = `${file}\0${name}`;
+      if (!seenBindings.has(key)) {
+        seenBindings.add(key);
+        orderedBindings.push(key);
+      }
+    }
+    if (orderedBindings.length >= maxBindings) break;
+  }
 
-  const resolvedByTargetSymbol = new Map(); // `${target}\0${symbol}` -> { symbol, target, refs: Set<file>, explicit: boolean }
+  const indexedCache = new Map();
+  const indexForTarget = (target) => {
+    if (!indexedCache.has(target)) {
+      const text = loadedFiles.get(target);
+      indexedCache.set(target, typeof text === 'string' ? buildFileDeclarationIndex(text, target) : null);
+    }
+    return indexedCache.get(target);
+  };
+
+  const resolvedByTargetSymbol = new Map(); // `${target}\0${symbol}` -> { symbol, target, lineIndex, refs: Set<file>, explicit: boolean }
   const unresolvedBySymbol = new Map(); // symbol -> Set<file>
-  for (const binding of allBindings) {
+  for (const binding of orderedBindings) {
+    if (resolvedByTargetSymbol.size >= LIMITS.refMapMaxCallees && unresolvedBySymbol.size >= LIMITS.refMapMaxFallbackCalleeGreps) {
+      break;
+    }
     const [file, symbol] = binding.split('\0');
     const direct = namedImportSource.get(binding);
     const candidateFiles = [];
@@ -1532,24 +1609,34 @@ async function resolveUpstreamContext({ checkout, headSha, patch, files, sources
       if (!candidateFiles.includes(target)) candidateFiles.push(target);
     }
     let matchedTarget = null;
+    let matchedLine = -1;
     for (const target of candidateFiles) {
       if (target === file) continue;
-      const text = loadedFiles.get(target);
-      if (!text) continue;
-      if (extractDefinitionSnippet(text, symbol, target)) {
+      const indexed = indexForTarget(target);
+      if (!indexed) continue;
+      const lineIdx = indexed.declIndex.get(symbol);
+      if (lineIdx !== undefined) {
         matchedTarget = target;
+        matchedLine = lineIdx;
         break;
       }
     }
     if (matchedTarget) {
       const key = `${matchedTarget}\0${symbol}`;
       if (!resolvedByTargetSymbol.has(key)) {
-        resolvedByTargetSymbol.set(key, { symbol, target: matchedTarget, refs: new Set(), explicit: Boolean(direct && direct === matchedTarget) });
+        if (resolvedByTargetSymbol.size >= LIMITS.refMapMaxCallees) continue;
+        resolvedByTargetSymbol.set(key, {
+          symbol,
+          target: matchedTarget,
+          lineIndex: matchedLine,
+          refs: new Set(),
+          explicit: Boolean(direct && direct === matchedTarget),
+        });
       }
       const entry = resolvedByTargetSymbol.get(key);
       entry.refs.add(file);
       if (direct && direct === matchedTarget) entry.explicit = true;
-    } else {
+    } else if (unresolvedBySymbol.has(symbol) || unresolvedBySymbol.size < LIMITS.refMapMaxFallbackCalleeGreps) {
       if (!unresolvedBySymbol.has(symbol)) unresolvedBySymbol.set(symbol, new Set());
       unresolvedBySymbol.get(symbol).add(file);
     }
@@ -1563,9 +1650,9 @@ async function resolveUpstreamContext({ checkout, headSha, patch, files, sources
   let usedBytes = 0;
   for (const entry of orderedResolved) {
     if (usedBytes >= LIMITS.refMapMaxCalleeBytes) break;
-    const text = loadedFiles.get(entry.target);
-    const def = text ? extractDefinitionSnippet(text, entry.symbol, entry.target) : null;
-    if (!def) continue;
+    const indexed = indexForTarget(entry.target);
+    if (!indexed) continue;
+    const def = renderDefinitionSnippet(indexed.rawLines, indexed.lexed, entry.lineIndex);
     const size = Buffer.byteLength(def.snippet, 'utf8') + 120;
     if (usedBytes + size > LIMITS.refMapMaxCalleeBytes) continue;
     snippets.push({

@@ -2,7 +2,7 @@
 
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
 
-Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (34 new tests)
+Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (40 new tests)
 and the updated existing test suites cover:
 
 - **Bidirectional and enclosing-aware reference map:** `findEnclosingSymbol` for brace-delimited
@@ -42,7 +42,7 @@ and the updated existing test suites cover:
   syntax/undefined-name errors on any line of a changed file; `lintCommands[].scope:
   "changed-files"`; package contract, limits parity, and public-repository hygiene checks.
 
-All 41 test files (1,134 deterministic tests, 0 failures, 0 skipped, including 34 new tests in
+All 41 test files (1,140 deterministic tests, 0 failures, 0 skipped, including 40 new tests in
 `reviewIntelligence.test.ts`) and `pnpm verify:package` (`rove-sentinel@1.21.0` isolated
 consumer smoke test) passed on Windows.
 
@@ -75,9 +75,16 @@ Live incumbent-engine self-review (`rove-sentinel@1.20.3`, `pnpm review:gate -- 
   caps), Windows `tools` guidance, CLI `--intent` parsing, contract test coverage, and release notes.
 - Round 2 (`a2cbb80`, follow-up round, 4 shards, 1.5 m): `PASS` with 0 P0/P1/P2 blockers,
   0 undisposed advisories, and 0 markdownlint/gitleaks hits. Three follow-up P3 polish items
-  (`cli.mjs` boolean `--flag=value` parsing, `prIntent` assertion in dry-run CLI test, and
-  `scope: "all"` attribution for hits in unchanged files) were also fixed and verified in the
-  final follow-up round.
+  were fixed in `26674f3`, which also passed (`PASS`, 53 s).
+- CodeRabbit + PR-watcher full-review fixes: added fixed static `--config` +
+  `--disable-nested-config` for text-only Oxlint (keeping head and baseline rules identical),
+  preserved backward compatibility for existing `lintCommands` named `oxlint`/`hadolint`, enforced
+  cross-batch relatedness in duplicate consolidation, rejected duplicate/conflicting
+  `prior_blocker_verdicts`, preserved duplicate textual sections per path and fitting coupling
+  clusters across shard boundaries, cached per-file declaration indexes in `refmap.mjs` and
+  advanced fallback lexing through hunk context, added hunk-mapped base line matching plus a
+  shared lane deadline and explicit baseline-coverage notes in `toolLanes.mjs`, and added the
+  grouped integration candidate cap to `limits.mjs`.
 
 ## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
 

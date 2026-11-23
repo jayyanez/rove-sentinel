@@ -40,7 +40,7 @@ export function sentinelLimits() {
       {
         id: 'candidates',
         limit: String(LIMITS.maxCandidates),
-        text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (4 per shard in a round of more than 12 shards, at most ${LIMITS.maxRoundCandidates}) ; ${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis; more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
+        text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (4 per shard in a round of more than 12 shards, at most ${LIMITS.maxRoundCandidates}) ; ${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis, ${LIMITS.integrationMaxCandidates} per grouped integration pass; more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
       },
       {
         id: 'linters',

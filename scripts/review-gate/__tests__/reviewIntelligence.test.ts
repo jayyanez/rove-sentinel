@@ -19,6 +19,8 @@ import {
   shardAssignmentDigest,
 } from '../gate.mjs';
 import { listReadyPullRequests, readPullRequestBody } from '../github.mjs';
+import { formatLimits } from '../limits.mjs';
+import { runDeterministicLanes } from '../lint.mjs';
 import { latchProviderCleanupFailure, resetProviderCleanupLatch } from '../process.mjs';
 import {
   buildCandidateEvidence,
@@ -42,7 +44,7 @@ import {
 import { reviewPlan } from '../risk.mjs';
 import { partitionShards, splitPatchByFile } from '../shards.mjs';
 import { ensureState } from '../storage.mjs';
-import { runHadolintLane, runOxlintLane, runProjectCommandLane, runRuffLane } from '../toolLanes.mjs';
+import { mapHeadLineToBaseLine, runHadolintLane, runOxlintLane, runProjectCommandLane, runRuffLane } from '../toolLanes.mjs';
 import { formatToolsNotice, installTools } from '../tools.mjs';
 
 if (process.platform === 'win32') vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
@@ -1440,5 +1442,266 @@ describe('self-review regressions (1.21.0)', () => {
     });
     expect(allLane.findings[0].scenario).toContain('outside the changed files');
     expect(allLane.note).toContain('outside changed files');
+  });
+});
+
+describe('CodeRabbit and PR-watcher self-review regressions (1.21.0)', () => {
+  it('keeps existing lintCommands named oxlint/hadolint loadable and overrides built-in lanes', async () => {
+    const cfg = normalizeConfig({
+      lintCommands: [
+        { name: 'oxlint', run: ['node', 'custom-oxlint.js'], format: 'unix', scope: 'added-lines' },
+        { name: 'hadolint', run: ['node', 'custom-hadolint.js'], format: 'unix', scope: 'added-lines' },
+      ],
+    });
+    expect(cfg.lintCommands.map((c: { name: string }) => c.name)).toEqual(['oxlint', 'hadolint']);
+    const checkout = await tempDir('sentinel-lint-override-');
+    await writeFile(path.join(checkout, 'a.ts'), 'const x = 1;\n');
+    const result = await runDeterministicLanes({
+      checkout,
+      files: ['a.ts'],
+      patch: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1 @@\n+const x = 1;\n',
+      config: cfg,
+      run: async () => ({ code: 0, stdout: '', stderr: '' }),
+      resolve: async (name: string) => name,
+    });
+    const oxlintLanes = result.lanes.filter((l: { lane: string }) => l.lane === 'oxlint');
+    expect(oxlintLanes.some((l: { status: string; note: string }) => l.status === 'skipped' && l.note.includes('overridden by project lintCommands'))).toBe(true);
+    expect(oxlintLanes.some((l: { status: string }) => l.status === 'ok')).toBe(true);
+  });
+
+  it('re-queues blockers with conflicting or duplicate prior_blocker_verdicts instead of last-wins clearing', () => {
+    const assigned = [
+      { file: 'src/a.ts', line: 10, priority: 'P2', title: 'Blocker A', scenario: 's1' },
+      { file: 'src/b.ts', line: 20, priority: 'P2', title: 'Blocker B', scenario: 's2' },
+    ];
+    const reconciled = reconcilePriorBlockerVerdicts({
+      provider: 'claude',
+      roleIndex: 0,
+      summary: 'Conflicting verdicts',
+      candidates: [],
+      prior_blocker_verdicts: [
+        { file: 'src/a.ts', title: 'Blocker A', status: 'still_present', evidence: 'Still broken on line 10.' },
+        { file: 'src/a.ts', title: 'Blocker A', status: 'fixed', evidence: 'Actually fixed.' },
+      ],
+    }, assigned);
+    expect(reconciled.candidates.map((c: { title: string }) => c.title)).toEqual(['Blocker A', 'Blocker B']);
+    expect(reconciled.candidates[0].evidence).toContain('conflicting/duplicate');
+  });
+
+  it('refuses cross-batch consolidation dismissal naming an unrelated survivor from another file', async () => {
+    const root = await tempDir('sentinel-consol-rel-');
+    const stateRoot = await tempDir('sentinel-consol-rel-state-');
+    git(root, 'init', '-b', 'main');
+    git(root, 'config', 'user.email', 'test@example.com');
+    git(root, 'config', 'user.name', 'Test');
+    git(root, 'remote', 'add', 'origin', 'https://github.com/example/project.git');
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    await writeFile(path.join(root, 'src', 'a.ts'), 'export const a = 1;\n');
+    await writeFile(path.join(root, 'src', 'b.ts'), 'export const b = 1;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'base');
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(path.join(root, 'src', 'a.ts'), 'export const a = 2;\n');
+    await writeFile(path.join(root, 'src', 'b.ts'), 'export const b = 2;\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-m', 'change');
+    const head = git(root, 'rev-parse', 'HEAD');
+
+    const policy = reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n', config: {} });
+    const result = await runGate({
+      repoRoot: root,
+      stateRoot,
+      base,
+      head,
+      author: 'human',
+      risk: 'high',
+      policy,
+      availableProviders: ['claude', 'codex'],
+      dualPass: true,
+      consolidateDuplicates: true,
+      cacheStaggerMs: 0,
+      scout: async () => ({ summary: 'none', hypotheses: [] }),
+      shardReviewer: async ({ provider, roleIndex, secondaryFocus }) => {
+        if (secondaryFocus) await new Promise((resolve) => setTimeout(resolve, 25));
+        return {
+          provider,
+          roleIndex,
+          summary: 'Found two unrelated pairs',
+          candidates: secondaryFocus
+            ? [
+                { id: `${provider}-${roleIndex}-0`, provider, roleIndex, title: 'File A bug copy 2', priority: 'P2', confidence: 90, category: 'bug', file: 'src/a.ts', line: 1, scenario: 's', evidence: 'e', proposed_test: 't' },
+                { id: `${provider}-${roleIndex}-1`, provider, roleIndex, title: 'File B bug copy 2', priority: 'P2', confidence: 90, category: 'bug', file: 'src/b.ts', line: 1, scenario: 's', evidence: 'e', proposed_test: 't' },
+              ]
+            : [
+                { id: `${provider}-${roleIndex}-0`, provider, roleIndex, title: 'File A bug copy 1', priority: 'P2', confidence: 90, category: 'bug', file: 'src/a.ts', line: 1, scenario: 's', evidence: 'e', proposed_test: 't' },
+                { id: `${provider}-${roleIndex}-1`, provider, roleIndex, title: 'File B bug copy 1', priority: 'P2', confidence: 90, category: 'bug', file: 'src/b.ts', line: 1, scenario: 's', evidence: 'e', proposed_test: 't' },
+                ...[2, 3, 4].map((n) => ({
+                  id: `${provider}-${roleIndex}-${n}`, provider, roleIndex, title: `Pad ${n}`, priority: 'P2', confidence: 90, category: 'bug', file: 'src/a.ts', line: n * 30, scenario: 's', evidence: 'e', proposed_test: 't',
+                })),
+              ],
+        };
+      },
+      coordinator: async ({ candidates, batchIndex }) => {
+        if (batchIndex >= 2) {
+          const fileBSurvivor = candidates.find((c) => c.file === 'src/b.ts' && c.title === 'File B bug copy 1')!;
+          return {
+            summary: 'Invalid cross-file duplicate dismissal',
+            findings: candidates.map((c) => (
+              c.file === 'src/a.ts' && c.title === 'File A bug copy 2'
+                ? { candidate_id: c.id, title: c.title, priority: c.priority, file: c.file, line: c.line, disposition: 'dismissed', reason: `Duplicate of ${fileBSurvivor.id}.`, scenario: c.scenario, proposed_test: c.proposed_test }
+                : { candidate_id: c.id, title: c.title, priority: c.priority, file: c.file, line: c.line, disposition: 'verified', reason: 'Keep', scenario: c.scenario, proposed_test: c.proposed_test }
+            )),
+          };
+        }
+        return {
+          summary: 'Verified batch',
+          findings: candidates.map((c) => ({
+            candidate_id: c.id, title: c.title, priority: c.priority, file: c.file, line: c.line,
+            disposition: 'verified', reason: 'Confirmed', scenario: c.scenario, proposed_test: c.proposed_test,
+          })),
+        };
+      },
+      deterministicLanes: async () => ({ lanes: [], findings: [] }),
+    });
+    const verifiedTitles = result.findings.filter((f: { disposition: string }) => f.disposition === 'verified').map((f: { title: string }) => f.title);
+    // File A bug copy 2 was NOT dismissed by citing an unrelated survivor in src/b.ts!
+    expect(verifiedTitles).toContain('File A bug copy 2');
+  });
+
+  it('preserves duplicate textual sections for the same path and keeps fitting coupling clusters together across shard boundaries', () => {
+    const mk = (file: string, lines: number) => [
+      `diff --git a/${file} b/${file}`,
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      `@@ -1,1 +1,${lines + 1} @@`,
+      ' ctx',
+      ...Array.from({ length: lines }, (_, i) => `+line ${i}`),
+    ].join('\n');
+
+    // Two textual sections for the exact same path (e.g. file replaced by symlink): both hunks must survive.
+    const symlinkPatch = [
+      'diff --git a/src/entry.ts b/src/entry.ts',
+      'deleted file mode 100644',
+      '--- a/src/entry.ts',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-export const oldFile = 1;',
+      'diff --git a/src/entry.ts b/src/entry.ts',
+      'new file mode 120000',
+      '--- /dev/null',
+      '+++ b/src/entry.ts',
+      '@@ -0,0 +1 @@',
+      '+../target.ts',
+    ].join('\n');
+    const symlinkShards = partitionShards(symlinkPatch, { targetLines: 500, maxShards: 4 });
+    expect(symlinkShards).toHaveLength(1);
+    expect(symlinkShards[0].patch).toContain('-export const oldFile = 1;');
+    expect(symlinkShards[0].patch).toContain('+../target.ts');
+
+    // Fitting coupling cluster (b + c = 240 lines <= 500) flushes after a (350 lines) instead of splitting.
+    const clusterPatch = [mk('src/a.ts', 350), mk('src/b.ts', 120), mk('src/c.ts', 120)].join('\n');
+    const clusterShards = partitionShards(clusterPatch, {
+      targetLines: 500,
+      maxShards: 8,
+      couplings: [['src/b.ts', 'src/c.ts']],
+    });
+    const shardOf = (file: string) => clusterShards.findIndex((s: { files: string[] }) => s.files.includes(file));
+    expect(shardOf('src/b.ts')).toBe(shardOf('src/c.ts'));
+    expect(shardOf('src/a.ts')).not.toBe(shardOf('src/b.ts'));
+  });
+
+  it('advances fallback hunk lexer through context lines so block comments in context suppress commented imports', () => {
+    const patch = [
+      'diff --git a/src/c.ts b/src/c.ts',
+      '--- a/src/c.ts',
+      '+++ b/src/c.ts',
+      '@@ -1,2 +1,3 @@',
+      ' /* block comment opened in context',
+      '+import { fake } from "./fake";',
+      '  */',
+    ].join('\n');
+    expect(extractFileReferences(patch).localImports.size).toBe(0);
+  });
+
+  it('runs Oxlint with fixed static config + --disable-nested-config, maps Ruff baseline lines by hunk, and reports unverified baselines', async () => {
+    const checkout = await tempDir('sentinel-oxlint-fixedcfg-');
+    await writeFile(path.join(checkout, 'a.ts'), 'const x = missingVar;\n');
+    const seenArgs: string[][] = [];
+    const oxlintLane = await runOxlintLane({
+      checkout,
+      files: ['a.ts'],
+      patch: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-const y = 1;\n+const x = missingVar;\n',
+      run: async (_bin: string, args: string[]) => {
+        seenArgs.push(args);
+        return { code: 0, stdout: '{"diagnostics":[]}', stderr: '' };
+      },
+      resolve: async (n: string) => n,
+    });
+    expect(oxlintLane.status).toBe('ok');
+    expect(seenArgs[0]).toContain('--config');
+    expect(seenArgs[0]).toContain('--disable-nested-config');
+
+    // Hunk-mapped Ruff baseline: deleting an old F821 on base line 2 must NOT hide a new F821 with the same message on head line 4!
+    const pyPatch = [
+      'diff --git a/app.py b/app.py',
+      '--- a/app.py',
+      '+++ b/app.py',
+      '@@ -1,6 +1,4 @@',
+      '-x = 1',
+      '-bad = x_missing',
+      ' def ok():',
+      '     return 1',
+      ' def now_broken():',
+      '     return x_missing',
+    ].join('\n');
+    // Verify pure line mapping: head line 4 maps to base line 6 (shifted by +2 deletions above).
+    expect(mapHeadLineToBaseLine(pyPatch, 'app.py', 4)).toBe(6);
+
+    const pyCheckout = await tempDir('sentinel-ruff-hunkmap-');
+    await writeFile(path.join(pyCheckout, 'app.py'), 'def ok():\n    return 1\ndef now_broken():\n    return x_missing\n');
+    const ruffLane = await runRuffLane({
+      checkout: pyCheckout,
+      files: ['app.py'],
+      patch: pyPatch,
+      baseSha: 'c'.repeat(40),
+      readBaseFile: async () => 'x = 1\nbad = x_missing\ndef ok():\n    return 1\ndef now_broken():\n    return x_missing\n',
+      run: async (_bin: string, args: string[]) => {
+        if (args.includes('--stdin-filename')) {
+          // Base had F821 on line 2 ONLY (deleted in diff), NOT on line 6!
+          return {
+            code: 1,
+            stdout: JSON.stringify([{ code: 'F821', message: 'Undefined name `x_missing`', filename: path.join(pyCheckout, 'app.py'), location: { row: 2, column: 7 } }]),
+            stderr: '',
+          };
+        }
+        return {
+          code: 1,
+          stdout: JSON.stringify([{ code: 'F821', message: 'Undefined name `x_missing`', filename: path.join(pyCheckout, 'app.py'), location: { row: 4, column: 12 } }]),
+          stderr: '',
+        };
+      },
+      resolve: async (n: string) => n,
+    });
+    expect(ruffLane.findings.map((f: { line: number; title: string }) => [f.line, f.title])).toEqual([
+      [4, 'F821: Undefined name `x_missing`'],
+    ]);
+
+    // Unverified baseline (no baseSha / baseline read fails) is surfaced explicitly in the lane note!
+    const unverifiedLane = await runRuffLane({
+      checkout: pyCheckout,
+      files: ['app.py'],
+      patch: pyPatch,
+      run: async () => ({
+        code: 1,
+        stdout: JSON.stringify([{ code: 'F821', message: 'Undefined name `x_missing`', filename: path.join(pyCheckout, 'app.py'), location: { row: 4, column: 12 } }]),
+        stderr: '',
+      }),
+      resolve: async (n: string) => n,
+    });
+    expect(unverifiedLane.findings).toEqual([]);
+    expect(unverifiedLane.note).toContain('baseline could not be verified');
+
+    // `limits` output advertises the grouped integration-pass candidate cap.
+    expect(formatLimits()).toContain('10 per grouped integration pass');
   });
 });

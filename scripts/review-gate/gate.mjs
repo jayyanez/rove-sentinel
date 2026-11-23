@@ -676,19 +676,29 @@ export function groupHypotheses(hypotheses, maxGroups = LIMITS.maxIntegrationRev
 export function reconcilePriorBlockerVerdicts(review, assignedBlockers = []) {
   if (!review || !Array.isArray(review.prior_blocker_verdicts) || !assignedBlockers.length) return review;
   const candidateKeys = new Set((review.candidates || []).map((candidate) => findingKey(candidate)));
-  const verdictByKey = new Map(review.prior_blocker_verdicts.map((verdict) => [findingKey(verdict), verdict]));
+  // Group all verdicts by canonical blocker identity so duplicate or
+  // conflicting verdicts for the same blocker can never clear it via last-wins.
+  const verdictsByKey = new Map();
+  for (const verdict of review.prior_blocker_verdicts) {
+    const key = findingKey(verdict);
+    if (!verdictsByKey.has(key)) verdictsByKey.set(key, []);
+    verdictsByKey.get(key).push(verdict);
+  }
   const extra = [];
   for (const blocker of assignedBlockers) {
     const key = findingKey(blocker);
     if (candidateKeys.has(key)) continue;
-    const verdict = verdictByKey.get(key);
-    const evidence = typeof verdict?.evidence === 'string' ? verdict.evidence.trim() : '';
-    if (verdict?.status === 'fixed' && evidence.length > 0) continue;
-    const reason = !verdict
+    const verdicts = verdictsByKey.get(key) || [];
+    const single = verdicts.length === 1 ? verdicts[0] : null;
+    const evidence = typeof single?.evidence === 'string' ? single.evidence.trim() : '';
+    if (single?.status === 'fixed' && evidence.length > 0) continue;
+    const reason = verdicts.length === 0
       ? 'Follow-up reviewer omitted this assigned prior blocker from prior_blocker_verdicts; mechanically re-queued for adjudication.'
-      : verdict.status === 'fixed'
-        ? 'Follow-up reviewer marked assigned prior blocker "fixed" without concrete evidence; mechanically re-queued for adjudication.'
-        : `Follow-up reviewer marked assigned prior blocker "${verdict.status}": ${evidence || '(no evidence provided)'}`;
+      : verdicts.length > 1
+        ? `Follow-up reviewer returned ${verdicts.length} conflicting/duplicate prior_blocker_verdicts for this blocker (${verdicts.map((v) => v.status).join(', ')}); mechanically re-queued for adjudication.`
+        : single.status === 'fixed'
+          ? 'Follow-up reviewer marked assigned prior blocker "fixed" without concrete evidence; mechanically re-queued for adjudication.'
+          : `Follow-up reviewer marked assigned prior blocker "${single.status}": ${evidence || '(no evidence provided)'}`;
     extra.push({
       id: `${review.provider}-${review.roleIndex}-reverify-${extra.length}`,
       provider: review.provider,
@@ -2511,6 +2521,10 @@ async function runGateWithLease({
                   if (!dupMatch || !survivingVerified.has(dupMatch[1]) || dupMatch[1] === finding.candidate_id) return finding;
                   const survivor = collidingById.get(dupMatch[1]);
                   if (!survivor) return finding;
+                  // The dismissed finding and its named survivor must themselves be
+                  // cross-batch related peers (not two unrelated pairs in `colliding`).
+                  if (batchIndexById.get(finding.candidate_id) === batchIndexById.get(survivor.candidate_id)) return finding;
+                  if (!areCandidatesRelated(finding, survivor, { lineWindow: 5 })) return finding;
                   // Never let a lower-priority survivor drop a higher-priority verified defect.
                   if (priorityRank(finding.priority) < priorityRank(survivor.priority)) return finding;
                   // Never let a differently titled survivor erase a persisting prior blocker's identity.

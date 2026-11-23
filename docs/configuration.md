@@ -174,14 +174,17 @@ The winget equivalent is
 A running watcher finds tools winget or Homebrew just installed without a
 restart.
 
-They read the project's own configuration where the tool supports it
-(`.shellcheckrc`, `.github/actionlint.yaml`, ruff's `pyproject.toml`, oxlint's
-`.oxlintrc.json`, hadolint's `.hadolint.yaml`), except gitleaks, which always
-uses its built-in rules. By default only hits on lines the change added are
-reported; Ruff and Oxlint also report newly introduced hard syntax and
-undefined-name errors (absent at base) anywhere in a changed file so deleting an
-import or definition is caught even when the broken use sits on an untouched
-line.
+They read the project's own configuration where the tool supports text-only
+configuration (`.shellcheckrc`, `.github/actionlint.yaml`, ruff's
+`pyproject.toml`, hadolint's `.hadolint.yaml`). Both `gitleaks` and `oxlint`
+run with fixed built-in rules without loading repository configuration files
+(so an untrusted branch's `oxlint.config.ts` can never execute code); projects
+that want their own Oxlint config can add a trusted `lintCommands` entry named
+`oxlint`, which overrides the built-in lane. By default only hits on lines the
+change added are reported; Ruff and Oxlint also report newly introduced hard
+syntax and undefined-name errors (absent at the mapped base line) anywhere in a
+changed file so deleting an import or definition is caught even when the broken
+use sits on an untouched line.
 
 Project commands run your own checker in the review checkout:
 
