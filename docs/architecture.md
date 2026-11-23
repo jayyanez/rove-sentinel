@@ -144,8 +144,8 @@ counts and fresh contexts while the report records reduced model diversity.
 Installed model/effort settings and bounded escalation are described in [models](models.md).
 
 Deterministic lanes run beside the model review, with no model call, and
-report hits on added lines (plus hard syntax/undefined-name errors anywhere in
-changed files): markdownlint on changed Markdown; shellcheck on shell scripts
+report hits on added lines (plus newly introduced hard syntax/undefined-name
+errors absent at base anywhere in changed files for Ruff and Oxlint): markdownlint on changed Markdown; shellcheck on shell scripts
 (by extension or shebang); actionlint on GitHub workflows; gitleaks on changed
 text files, scanned as a copy with its built-in rules (including their own path
 exclusions, such as lock files and images) and with `gitleaks:allow` comments

@@ -3,10 +3,14 @@
 ## 1.21.0 — Deeper context, cross-file integration review, and faster verification
 
 This release raises defect recall across multi-file changes while tightening token
-usage and latency. All existing configurations keep working unchanged; new policy
-options (`pathRules`, `p3Mode`, `lintLanes.oxlint`, `lintLanes.hadolint`, and
-`lintCommands[].scope: "changed-files"`) are opt-in and leave existing installed
-policy digests untouched when omitted.
+usage and latency. All existing configurations keep working unchanged: opt-in
+policy options (`pathRules`, `p3Mode`, and `lintCommands[].scope: "changed-files"`)
+are omitted from normalized configuration when unset, while the new built-in
+`oxlint` and `hadolint` lanes run automatically on matching files whenever those
+tools are installed (and can be disabled per repository via
+`lintLanes.oxlint: false` or `lintLanes.hadolint: false`). As in every release
+that increments the engine or charter version, upgrading refreshes the installed
+policy snapshot digest.
 
 - **Bidirectional reference map and surgical per-shard context.** `refmap.mjs` now
   extracts enclosing functions/classes for edits inside existing bodies (including
@@ -47,14 +51,16 @@ policy digests untouched when omitted.
   evidence of stated intent. Lesson selection scores symbol keywords and `Tags:` /
   `Paths:` headers.
 - **Expanded deterministic lint coverage.** Added built-in `oxlint` (JS/TS) and
-  `hadolint` (Dockerfile) lanes, fixed the added-lines blind spot so hard
-  syntax/undefined-name errors in Ruff and Oxlint surface on any line of a changed
-  file, and added `scope: "changed-files"` for project `lintCommands`.
+  `hadolint` (Dockerfile) lanes, fixed the added-lines blind spot so newly
+  introduced hard syntax/undefined-name errors in Ruff and Oxlint (absent at
+  base) surface on any line of a changed file without blaming pre-existing
+  baseline errors, and added `scope: "changed-files"` for project `lintCommands`.
 - **Leaner prompt overhead and cache-warm staggering.** Trimmed default diff context
   from 80 to 40 lines per side (`patchContextLines: 40`), omitted empty placeholder
   `open-bug-briefs.md` and `bug-lessons.md` blocks from inline prompts, and staggered
   wave-1 launches per provider by 2.5 seconds (`promptCacheStaggerMs`) on waves of 3+
-  shards to improve shared-prefix prompt cache hit rates.
+  shards when inline context material is enabled (`bundle.inline`) to improve
+  shared-prefix prompt cache hit rates.
 
 ## 1.20.3 — `repair` lists every Windows process and updates when the bootstrap runs it
 

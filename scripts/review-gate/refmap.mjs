@@ -2,6 +2,33 @@ import path from 'node:path';
 
 import { LIMITS } from './constants.mjs';
 import { runGit } from './git.mjs';
+import { unquoteGitPath } from './shards.mjs';
+
+function parseDiffHeaderPath(rawLine) {
+  const rest = rawLine.slice(4).trim();
+  if (rest === '/dev/null') return '/dev/null';
+  const quoted = /^"((?:[^"\\]|\\.)*)"(?:\t.*)?$/.exec(rest);
+  const decoded = quoted ? unquoteGitPath(quoted[1]) : rest.split('\t')[0];
+  return decoded.replace(/^[ab]\//, '');
+}
+
+function parseGrepHit(line) {
+  if (line.startsWith('"')) {
+    const match = /^"((?:[^"\\]|\\.)*)":(\d+):(.*)$/.exec(line);
+    if (match) return { file: unquoteGitPath(match[1]), line: Number(match[2]), text: match[3] };
+  }
+  const first = line.indexOf(':');
+  if (first <= 0) return null;
+  const second = line.indexOf(':', first + 1);
+  if (second <= first) return null;
+  return { file: line.slice(0, first), line: Number(line.slice(first + 1, second)), text: line.slice(second + 1) };
+}
+
+function unquoteGitLine(raw) {
+  const trimmed = String(raw || '').trim();
+  const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(trimmed);
+  return quoted ? unquoteGitPath(quoted[1]) : trimmed;
+}
 
 // Identifiers that declaration regexes can match but that are never worth a
 // repository-wide reference sweep.
@@ -465,21 +492,35 @@ export function findEnclosingSymbol(lexed, lineIndex, file, { maxScan = 300 } = 
   for (let i = lineIndex - 1; i >= stop; i -= 1) {
     const candidate = lexed[i];
     if (!candidate) continue;
-    let openedScope = false;
+    let openerPos = -1;
     for (let pos = candidate.length - 1; pos >= 0; pos -= 1) {
       const ch = candidate[pos];
       if (ch === '}') depth += 1;
       else if (ch === '{') {
         depth -= 1;
         if (depth < 0) {
-          openedScope = true;
+          openerPos = pos;
           depth = 0;
+          break;
         }
       }
     }
-    if (!openedScope) continue;
-    // Check this opener line and up to 2 lines above for multi-line signatures.
-    for (let look = i; look >= Math.max(stop, i - 2); look -= 1) {
+    if (openerPos < 0) continue;
+    // Check the portion of this line leading up to the unmatched `{`: if a
+    // sibling scope already closed earlier on the same line, inspect only what
+    // follows that closing brace and do not look above it.
+    const prefix = candidate.slice(0, openerPos + 1);
+    const prevCloseOnLine = prefix.lastIndexOf('}');
+    const effectiveLine = prevCloseOnLine >= 0 ? prefix.slice(prevCloseOnLine + 1) : prefix;
+    const direct = extractScopeName(effectiveLine, i > 0 && prevCloseOnLine < 0 ? lexed[i - 1] : '');
+    if (direct) return direct;
+    if (prevCloseOnLine >= 0) continue;
+    // Check up to 2 lines above for multi-line signatures, stopping as soon as
+    // a preceding line terminates a statement or closes a completed scope.
+    for (let look = i - 1; look >= Math.max(stop, i - 2); look -= 1) {
+      const lookLine = (lexed[look] || '').trim();
+      if (!lookLine || /[};]\s*$/.test(lookLine)) break;
+      if (/\{[^}]*\}/.test(lookLine) && !/[(,]\s*$/.test(lookLine)) break;
       const name = extractScopeName(lexed[look], look > 0 ? lexed[look - 1] : '');
       if (name) return name;
     }
@@ -607,7 +648,7 @@ export function extractChangedSymbols(patch, { maxSymbols = LIMITS.refMapMaxSymb
       continue;
     }
     if (!inHunk && (rawLine.startsWith('+++ ') || rawLine.startsWith('--- '))) {
-      const target = rawLine.slice(4).replace(/^[ab]\//, '').trim();
+      const target = parseDiffHeaderPath(rawLine);
       if (rawLine.startsWith('--- ')) {
         if (target && target !== '/dev/null') currentFile = target;
         inCodeFile = CODE_FILE.test(target);
@@ -719,11 +760,11 @@ export function codeFileBlobs(patch, { maxBlobs = REF_MAP_MAX_SOURCE_BLOBS } = {
       continue;
     }
     if (pending && rawLine.startsWith('--- ')) {
-      oldTarget = rawLine.slice(4).replace(/^[ab]\//, '').trim();
+      oldTarget = parseDiffHeaderPath(rawLine);
       continue;
     }
     if (pending && rawLine.startsWith('+++ ')) {
-      const target = rawLine.slice(4).replace(/^[ab]\//, '').trim();
+      const target = parseDiffHeaderPath(rawLine);
       const source = pending;
       pending = null;
       // Either side being code counts: a deleted file has only its old blob.
@@ -841,6 +882,18 @@ export async function coChangedSiblings(checkout, headSha, files, {
       return null;
     }
   });
+  // Track every scanned file that appeared in each commit before commit
+  // deduplication so sibling attribution reaches every relevant shard while
+  // each commit still counts once globally.
+  const commitToScannedFiles = new Map();
+  logs.forEach((commits, fileIndex) => {
+    if (!commits) return;
+    const sourceFile = scanned[fileIndex];
+    for (const sha of commits) {
+      if (!commitToScannedFiles.has(sha)) commitToScannedFiles.set(sha, new Set());
+      commitToScannedFiles.get(sha).add(sourceFile);
+    }
+  });
   const assigned = logs.map((commits) => {
     if (commits === null) {
       sweepFailures += 1;
@@ -854,7 +907,7 @@ export async function coChangedSiblings(checkout, headSha, files, {
     if (!commits.length) return '';
     try {
       const showResult = await runGit(checkout, [
-        'show', '--name-only', '--format=%x00', ...commits,
+        'show', '--name-only', '--format=%x00%H', ...commits,
       ], { allowFailure: true, result: true, latchCleanupFailure: false });
       return showResult.code === 0 ? showResult.stdout : null;
     } catch {
@@ -867,14 +920,23 @@ export async function coChangedSiblings(checkout, headSha, files, {
       sweepFailures += 1;
       return;
     }
-    const sourceFile = scanned[fileIndex];
-    for (const co of output.split(/\r?\n|\0/)) {
-      const sibling = co.trim();
-      if (!sibling || changed.has(sibling)) continue;
-      counts.set(sibling, (counts.get(sibling) || 0) + 1);
-      if (sourceFile) {
-        if (!siblingSources.has(sibling)) siblingSources.set(sibling, new Set());
-        siblingSources.get(sibling).add(sourceFile);
+    const fallbackSource = scanned[fileIndex];
+    for (const chunk of output.split('\0')) {
+      const chunkLines = chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (!chunkLines.length) continue;
+      const sha = /^[0-9a-f]{7,40}$/i.test(chunkLines[0]) ? chunkLines[0] : null;
+      const filesInCommit = sha ? chunkLines.slice(1) : chunkLines;
+      const sourcesForCommit = (sha && commitToScannedFiles.get(sha))
+        ? [...commitToScannedFiles.get(sha)]
+        : (fallbackSource ? [fallbackSource] : []);
+      for (const co of filesInCommit) {
+        const sibling = unquoteGitLine(co);
+        if (!sibling || changed.has(sibling)) continue;
+        counts.set(sibling, (counts.get(sibling) || 0) + 1);
+        for (const sourceFile of sourcesForCommit) {
+          if (!siblingSources.has(sibling)) siblingSources.set(sibling, new Set());
+          siblingSources.get(sibling).add(sourceFile);
+        }
       }
     }
   });
@@ -975,16 +1037,143 @@ export async function readChangedSources(checkout, patch, run = runGit, {
 async function sweepSymbol(checkout, headSha, symbol, changed, run) {
   const { lines, failed, reason } = await referencesForSymbol(checkout, headSha, symbol, run);
   if (failed) return { failed, reason };
+  const changedHitFiles = [...new Set(
+    lines
+      .map((line) => parseGrepHit(line)?.file)
+      .filter((file) => file && changed.has(file)),
+  )];
   const crossFile = lines.filter((line) => {
-    const file = line.split(':')[0];
+    const file = parseGrepHit(line)?.file;
     return file && !changed.has(file);
   });
   return {
     failed: false,
     count: lines.length,
     crossFileCount: crossFile.length,
+    changedHitFiles,
     candidates: (crossFile.length ? crossFile : lines).slice(0, LIMITS.refMapMaxRefsPerSymbol),
   };
+}
+
+/**
+ * Strip comments while preserving string literals (and newlines) so relative
+ * import specifiers remain intact while commented-out imports never create
+ * false dependency or coupling edges.
+ */
+function stripCommentsOnly(text, file) {
+  const source = String(text || '');
+  const hashComments = HASH_COMMENT_FILE.test(file || '');
+  const htmlComments = /\.(?:svelte|html|htm|xml|vue)$/i.test(file || '');
+  const singleIsChar = QUOTE_IS_CHAR_LITERAL.test(file || '');
+  const tripleQuotes = TRIPLE_QUOTE_FILE.test(file || '');
+  let out = '';
+  let i = 0;
+  let mode = 'code';
+  let quote = '';
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (mode === 'line-comment') {
+      if (ch === '\n') {
+        mode = 'code';
+        out += '\n';
+      } else {
+        out += ' ';
+      }
+      i += 1;
+      continue;
+    }
+    if (mode === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        mode = 'code';
+        out += '  ';
+        i += 2;
+      } else {
+        out += ch === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (mode === 'html-comment') {
+      if (ch === '-' && next === '-' && source[i + 2] === '>') {
+        mode = 'code';
+        out += '   ';
+        i += 3;
+      } else {
+        out += ch === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      continue;
+    }
+    if (mode === 'triple-string') {
+      if (ch === '\\' && next !== undefined) {
+        out += ch + next;
+        i += 2;
+        continue;
+      }
+      if (source.startsWith(quote, i)) {
+        out += quote;
+        i += 3;
+        mode = 'code';
+        continue;
+      }
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (mode === 'string') {
+      if (ch === '\\' && next !== undefined) {
+        out += ch + next;
+        i += 2;
+        continue;
+      }
+      out += ch;
+      if (ch === quote || (ch === '\n' && quote !== '`')) mode = 'code';
+      i += 1;
+      continue;
+    }
+    if (tripleQuotes && ((ch === '"' && next === '"' && source[i + 2] === '"') || (ch === "'" && next === "'" && source[i + 2] === "'"))) {
+      quote = ch.repeat(3);
+      mode = 'triple-string';
+      out += quote;
+      i += 3;
+      continue;
+    }
+    if (ch === '"' || ch === '`' || (ch === "'" && !singleIsChar)) {
+      quote = ch;
+      mode = 'string';
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      mode = 'line-comment';
+      out += '  ';
+      i += 2;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      mode = 'block-comment';
+      out += '  ';
+      i += 2;
+      continue;
+    }
+    if (hashComments && ch === '#') {
+      mode = 'line-comment';
+      out += ' ';
+      i += 1;
+      continue;
+    }
+    if (htmlComments && ch === '<' && next === '!' && source[i + 2] === '-' && source[i + 3] === '-') {
+      mode = 'html-comment';
+      out += '    ';
+      i += 4;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 /**
@@ -1057,14 +1246,14 @@ export function extractFileReferences(patch, { sources } = {}) {
       continue;
     }
     if (!inHunk && rawLine.startsWith('+++ ')) {
-      const target = rawLine.slice(4).replace(/^[ab]\//, '').trim();
+      const target = parseDiffHeaderPath(rawLine);
       currentFile = target === '/dev/null' ? '' : target;
       inCodeFile = Boolean(currentFile && CODE_FILE.test(currentFile));
       newSide = lexerFor(currentFile);
       const blobText = sources && newBlob && !ZERO_BLOB.test(newBlob) ? sources.get(newBlob) : null;
       newLexed = typeof blobText === 'string' ? lexWholeFile(blobText, currentFile) : null;
       if (inCodeFile && typeof blobText === 'string') {
-        parseImportsFromText(currentFile, blobText);
+        parseImportsFromText(currentFile, stripCommentsOnly(blobText, currentFile));
         // Record locally declared symbols in this file so we don't resolve self-calls upstream.
         const decls = new Set();
         for (const l of newLexed) {
@@ -1101,19 +1290,21 @@ export function extractFileReferences(patch, { sources } = {}) {
     }
     if (!inCodeFile || !isAdded) continue;
     const rawCode = rawLine.slice(1);
-    // Also pick up newly added relative imports when whole-file blobs were unavailable.
-    if (!parsedImportsFor.has(currentFile)) {
-      const m = /\bfrom\s+['"](\.\.?\/[^'"]+)['"]|require\(\s*['"](\.\.?\/[^'"]+)['"]\s*\)/.exec(rawCode);
+    const lexedLine = newLexed && lineNum > 0 && newLexed[lineNum - 1] !== undefined
+      ? newLexed[lineNum - 1]
+      : codeOnly(rawCode, newSide);
+    if (!lexedLine || !lexedLine.trim()) continue;
+    // Also pick up newly added relative imports when whole-file blobs were unavailable,
+    // after lexical comment filtering so commented-out imports never become edges.
+    if (!parsedImportsFor.has(currentFile) && /\b(?:import|from|require)\b/.test(lexedLine)) {
+      const uncommented = stripCommentsOnly(rawCode, currentFile);
+      const m = /\bfrom\s+['"](\.\.?\/[^'"]+)['"]|require\(\s*['"](\.\.?\/[^'"]+)['"]\s*\)/.exec(uncommented);
       if (m) {
         const spec = m[1] || m[2];
         if (!localImports.has(currentFile)) localImports.set(currentFile, []);
         localImports.get(currentFile).push({ specifier: spec, names: [] });
       }
     }
-    const lexedLine = newLexed && lineNum > 0 && newLexed[lineNum - 1] !== undefined
-      ? newLexed[lineNum - 1]
-      : codeOnly(rawCode, newSide);
-    if (!lexedLine || !lexedLine.trim()) continue;
     // Skip import lines themselves when scanning for call expressions.
     if (/^\s*(?:import|from|export\s+\{[^}]*\}\s+from)\b/.test(lexedLine)) continue;
     const decls = localDeclared.get(currentFile);
@@ -1215,20 +1406,42 @@ async function readHeadFiles(checkout, headSha, candidatePaths, run, {
   return contents;
 }
 
+function matchesSymbolDeclaration(lexedLine, prevLexedLine, symbol, file) {
+  if (!lexedLine || !lexedLine.includes(symbol)) return false;
+  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const declRe = new RegExp(
+    `(?:\\b(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function|class|interface|type|const|let|fn|struct|enum|trait|def|fun|record|protocol|module)\\s+${escaped}\\b|\\bfunc\\s+(?:\\([^)]*\\)\\s*)?${escaped}\\b|\\b(?:public|private|protected|internal|static|final|override|abstract|async)\\s+[\\w<>\\[\\],.?\\s]*?\\b${escaped}\\s*[(<]|^\\s*(?:async\\s+)?${escaped}\\s*\\([^)]*\\)\\s*(?::[^{;=]+)?\\{)`,
+  );
+  if (declRe.test(lexedLine)) return true;
+  if (RETURN_TYPED_FILE.test(file || '')) {
+    for (const pattern of RETURN_TYPED_PATTERNS) {
+      pattern.lastIndex = 0;
+      for (const match of lexedLine.matchAll(pattern)) {
+        if (match[1] === symbol) return true;
+      }
+    }
+  }
+  if (SPLIT_SIGNATURE_FILE.test(file || '') && RETURN_TYPE_LINE.test(prevLexedLine || '')) {
+    for (const pattern of SPLIT_SIGNATURE_PATTERNS) {
+      pattern.lastIndex = 0;
+      for (const match of lexedLine.matchAll(pattern)) {
+        if (match[1] === symbol) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Find the declaration of `symbol` in `text` and return a concise snippet
  * (declaration line + up to 15 lines of signature/body, bounded to 1000 chars).
  */
 export function extractDefinitionSnippet(text, symbol, file, { maxLines = 16, maxChars = 1000 } = {}) {
-  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const declRe = new RegExp(
-    `(?:\\b(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function|class|interface|type|const|let|fn|struct|enum|trait|func|def|fun|record|protocol|module)\\s+${escaped}\\b|\\b(?:public|private|protected|internal|static|final|override|abstract|async)\\s+[\\w<>\\[\\],.?\\s]*?\\b${escaped}\\s*[(<]|^\\s*(?:async\\s+)?${escaped}\\s*\\([^)]*\\)\\s*(?::[^{;=]+)?\\{)`,
-  );
   const rawLines = String(text || '').split(/\r?\n/);
   const lexed = lexWholeFile(text, file);
   let start = -1;
   for (let i = 0; i < lexed.length; i += 1) {
-    if (declRe.test(lexed[i])) {
+    if (matchesSymbolDeclaration(lexed[i], i > 0 ? lexed[i - 1] : '', symbol, file)) {
       start = i;
       break;
     }
@@ -1300,78 +1513,92 @@ async function resolveUpstreamContext({ checkout, headSha, patch, files, sources
     }
     if (targets.length) importedFilesByChanged.set(file, targets);
   }
-  // Collect unique callee/type symbols to resolve, prioritizing explicitly imported ones.
-  const calleeRefs = new Map(); // symbol -> Set<changedFile>
-  const explicitTarget = new Map(); // symbol -> targetFile
+  // Resolve each (changedFile, symbol) pair individually so two files importing
+  // same-named symbols from different modules receive their own definitions.
+  const allBindings = new Set(); // `${file}\0${symbol}`
   for (const [file, names] of calleesByFile.entries()) {
-    for (const name of names) {
-      if (!calleeRefs.has(name)) calleeRefs.set(name, new Set());
-      calleeRefs.get(name).add(file);
-      const direct = namedImportSource.get(`${file}\0${name}`);
-      if (direct && !explicitTarget.has(name)) explicitTarget.set(name, direct);
-    }
+    for (const name of names) allBindings.add(`${file}\0${name}`);
   }
-  // Also include explicitly imported names from local files even if invoked via alias/property.
-  for (const [key, target] of namedImportSource.entries()) {
-    const [file, name] = key.split('\0');
-    if (!calleeRefs.has(name)) calleeRefs.set(name, new Set());
-    calleeRefs.get(name).add(file);
-    if (!explicitTarget.has(name)) explicitTarget.set(name, target);
-  }
-  const orderedCallees = [...calleeRefs.keys()]
-    .sort((a, b) => Number(explicitTarget.has(b)) - Number(explicitTarget.has(a)))
-    .slice(0, LIMITS.refMapMaxCallees);
+  for (const key of namedImportSource.keys()) allBindings.add(key);
 
-  const snippets = [];
-  const unresolved = [];
-  let usedBytes = 0;
-  for (const symbol of orderedCallees) {
-    if (usedBytes >= LIMITS.refMapMaxCalleeBytes) break;
-    const refs = [...calleeRefs.get(symbol)];
+  const resolvedByTargetSymbol = new Map(); // `${target}\0${symbol}` -> { symbol, target, refs: Set<file>, explicit: boolean }
+  const unresolvedBySymbol = new Map(); // symbol -> Set<file>
+  for (const binding of allBindings) {
+    const [file, symbol] = binding.split('\0');
+    const direct = namedImportSource.get(binding);
     const candidateFiles = [];
-    if (explicitTarget.has(symbol)) candidateFiles.push(explicitTarget.get(symbol));
-    for (const refFile of refs) {
-      for (const target of importedFilesByChanged.get(refFile) || []) {
-        if (!candidateFiles.includes(target)) candidateFiles.push(target);
-      }
+    if (direct) candidateFiles.push(direct);
+    for (const target of importedFilesByChanged.get(file) || []) {
+      if (!candidateFiles.includes(target)) candidateFiles.push(target);
     }
-    let found = null;
+    let matchedTarget = null;
     for (const target of candidateFiles) {
-      if (refs.includes(target)) continue;
+      if (target === file) continue;
       const text = loadedFiles.get(target);
       if (!text) continue;
-      const def = extractDefinitionSnippet(text, symbol, target);
-      if (def) {
-        found = { symbol, definedIn: target, line: def.line, referencedBy: refs, snippet: def.snippet };
+      if (extractDefinitionSnippet(text, symbol, target)) {
+        matchedTarget = target;
         break;
       }
     }
-    if (found) {
-      const size = Buffer.byteLength(found.snippet, 'utf8') + 120;
-      if (usedBytes + size <= LIMITS.refMapMaxCalleeBytes) {
-        snippets.push(found);
-        usedBytes += size;
+    if (matchedTarget) {
+      const key = `${matchedTarget}\0${symbol}`;
+      if (!resolvedByTargetSymbol.has(key)) {
+        resolvedByTargetSymbol.set(key, { symbol, target: matchedTarget, refs: new Set(), explicit: Boolean(direct && direct === matchedTarget) });
       }
-    } else if (unresolved.length < LIMITS.refMapMaxFallbackCalleeGreps) {
-      unresolved.push({ symbol, refs });
+      const entry = resolvedByTargetSymbol.get(key);
+      entry.refs.add(file);
+      if (direct && direct === matchedTarget) entry.explicit = true;
+    } else {
+      if (!unresolvedBySymbol.has(symbol)) unresolvedBySymbol.set(symbol, new Set());
+      unresolvedBySymbol.get(symbol).add(file);
     }
   }
+
+  const orderedResolved = [...resolvedByTargetSymbol.values()]
+    .sort((a, b) => Number(b.explicit) - Number(a.explicit))
+    .slice(0, LIMITS.refMapMaxCallees);
+
+  const snippets = [];
+  let usedBytes = 0;
+  for (const entry of orderedResolved) {
+    if (usedBytes >= LIMITS.refMapMaxCalleeBytes) break;
+    const text = loadedFiles.get(entry.target);
+    const def = text ? extractDefinitionSnippet(text, entry.symbol, entry.target) : null;
+    if (!def) continue;
+    const size = Buffer.byteLength(def.snippet, 'utf8') + 120;
+    if (usedBytes + size > LIMITS.refMapMaxCalleeBytes) continue;
+    snippets.push({
+      symbol: entry.symbol,
+      definedIn: entry.target,
+      line: def.line,
+      referencedBy: [...entry.refs],
+      snippet: def.snippet,
+    });
+    usedBytes += size;
+  }
+
+  const unresolved = [...unresolvedBySymbol.entries()]
+    .map(([symbol, refs]) => ({ symbol, refs: [...refs] }))
+    .slice(0, Math.min(LIMITS.refMapMaxFallbackCalleeGreps, Math.max(0, LIMITS.refMapMaxCallees - snippets.length)));
+
   // Fallback: for non-JS languages or non-relative imports, locate declaration via bounded git grep.
   if (unresolved.length && usedBytes < LIMITS.refMapMaxCalleeBytes) {
     const declGreps = await mapBounded(unresolved, async ({ symbol, refs }) => {
       const { lines, failed } = await referencesForSymbol(checkout, headSha, symbol, run);
       if (failed || !lines.length || lines.length > LIMITS.refMapMaxHitsPerSymbol) return null;
       const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const declRe = new RegExp(`\\b(?:function|class|interface|type|fn|struct|enum|trait|func|def|fun|record|protocol|module|export\\s+(?:const|let))\\s+${escaped}\\b`);
-      const hit = lines.find((line) => {
-        const idx = line.indexOf(':');
-        if (idx <= 0) return false;
-        const file = line.slice(0, idx);
-        return CODE_FILE.test(file) && !refs.includes(file) && declRe.test(line);
+      const splitCandidateRe = new RegExp(`^(?:[A-Za-z_]\\w*::)*~?${escaped}\\s*\\(`);
+      const hit = lines.find((rawLine) => {
+        const parsed = parseGrepHit(rawLine);
+        if (!parsed || !CODE_FILE.test(parsed.file) || refs.includes(parsed.file)) return false;
+        const lexedCode = codeOnly(parsed.text, lexerFor(parsed.file));
+        if (matchesSymbolDeclaration(lexedCode, '', symbol, parsed.file)) return true;
+        return SPLIT_SIGNATURE_FILE.test(parsed.file) && splitCandidateRe.test(lexedCode);
       });
       if (!hit) return null;
-      const file = hit.split(':')[0];
-      return { symbol, file, refs };
+      const parsed = parseGrepHit(hit);
+      return parsed ? { symbol, file: parsed.file, refs } : null;
     });
     const toFetch = declGreps.filter(Boolean);
     if (toFetch.length) {
@@ -1445,7 +1672,7 @@ export async function buildReferenceMapData({ checkout, headSha, patch, files, r
       unswept.push(symbol);
       continue;
     }
-    const { failed, reason, count, crossFileCount, candidates } = sweeps[symbolIndex];
+    const { failed, reason, count, crossFileCount, changedHitFiles = [], candidates } = sweeps[symbolIndex];
     if (failed) {
       failedSweeps.push({ symbol, reason });
       continue;
@@ -1466,7 +1693,10 @@ export async function buildReferenceMapData({ checkout, headSha, patch, files, r
     const budget = Math.max(0, LIMITS.refMapMaxReferenceLines - usedReferenceLines);
     const listed = candidates.slice(0, Math.min(budget, LIMITS.refMapMaxRefsPerSymbol));
     usedReferenceLines += listed.length;
-    const hitFiles = [...new Set(listed.map((line) => line.split(':')[0]).filter(Boolean))];
+    const hitFiles = [...new Set([
+      ...listed.map((line) => parseGrepHit(line)?.file).filter(Boolean),
+      ...changedHitFiles,
+    ])];
     symbolSections.push({
       symbol,
       files: ownedFiles,
@@ -1646,7 +1876,13 @@ export function buildPrStructuralDigest({
 } = {}) {
   const byFile = new Map(patchSections.map((section) => [section.file, section]));
   const lines = ['# PR structural digest (deterministic; untrusted repository evidence)', '', '## Changed files & touched symbols'];
-  let used = Buffer.byteLength(lines.join('\n'), 'utf8');
+  // Track exact UTF-8 bytes including the final trailing newline so the digest
+  // never exceeds `maxBytes` (otherwise inline delivery drops the whole block).
+  let used = Buffer.byteLength(`${lines.join('\n')}\n`, 'utf8');
+  if (used > maxBytes) return '';
+  const omitReserve = Buffer.byteLength(`- …and ${files.length} more changed file(s); see changed-files.md\n`, 'utf8');
+  const sectionReserve = maxBytes > 2500 ? 1500 : Math.floor(maxBytes / 3);
+  const fileBudget = Math.max(used, maxBytes - sectionReserve - omitReserve);
   let omittedFiles = 0;
   for (const file of files) {
     const section = byFile.get(file);
@@ -1654,41 +1890,60 @@ export function buildPrStructuralDigest({
     const meta = section ? `${section.kind}, ${section.changedLines} changed lines` : 'metadata/excluded';
     const symText = symbols.length ? ` — symbols: ${symbols.join(', ')}` : '';
     const row = `- ${file} (${meta})${symText}`;
-    const bytes = Buffer.byteLength(row, 'utf8') + 1;
-    if (used + bytes > maxBytes - 1500) {
+    const bytes = Buffer.byteLength(`${row}\n`, 'utf8');
+    if (used + bytes > fileBudget) {
       omittedFiles += 1;
       continue;
     }
     lines.push(row);
     used += bytes;
   }
-  if (omittedFiles > 0) lines.push(`- …and ${omittedFiles} more changed file(s); see changed-files.md`);
-  if (refMapData?.couplings?.length) {
-    lines.push('', '## Cross-file couplings within this diff');
-    for (const [a, b] of refMapData.couplings.slice(0, 30)) {
-      const row = `- ${a} <-> ${b}`;
-      if (used + Buffer.byteLength(row, 'utf8') + 1 > maxBytes - 600) break;
-      lines.push(row);
-      used += Buffer.byteLength(row, 'utf8') + 1;
+  if (omittedFiles > 0) {
+    const omitRow = `- …and ${omittedFiles} more changed file(s); see changed-files.md`;
+    const bytes = Buffer.byteLength(`${omitRow}\n`, 'utf8');
+    if (used + bytes <= maxBytes) {
+      lines.push(omitRow);
+      used += bytes;
     }
+  }
+  const appendSection = (heading, rows, reserveAfter = 0) => {
+    if (!rows.length) return;
+    const cap = Math.max(used, maxBytes - reserveAfter);
+    const headingBytes = Buffer.byteLength(`\n${heading}\n`, 'utf8');
+    let added = false;
+    for (const row of rows) {
+      const rowBytes = Buffer.byteLength(`${row}\n`, 'utf8');
+      const needed = (added ? 0 : headingBytes) + rowBytes;
+      if (used + needed > cap) break;
+      if (!added) {
+        lines.push('', heading);
+        used += headingBytes;
+        added = true;
+      }
+      lines.push(row);
+      used += rowBytes;
+    }
+  };
+  if (refMapData?.couplings?.length) {
+    appendSection(
+      '## Cross-file couplings within this diff',
+      refMapData.couplings.slice(0, 30).map(([a, b]) => `- ${a} <-> ${b}`),
+      maxBytes > 2000 ? 600 : 0,
+    );
   }
   if (refMapData?.siblings?.length) {
-    lines.push('', '## Untouched co-change siblings');
-    for (const { sibling, count } of refMapData.siblings.slice(0, 12)) {
-      const row = `- ${sibling} (co-changed ${count}×)`;
-      if (used + Buffer.byteLength(row, 'utf8') + 1 > maxBytes - 200) break;
-      lines.push(row);
-      used += Buffer.byteLength(row, 'utf8') + 1;
-    }
+    appendSection(
+      '## Untouched co-change siblings',
+      refMapData.siblings.slice(0, 12).map(({ sibling, count }) => `- ${sibling} (co-changed ${count}×)`),
+      maxBytes > 1200 ? 200 : 0,
+    );
   }
   if (metadataOnlyFiles.length) {
-    lines.push('', `## Metadata-only / binary / rename-only files (${metadataOnlyFiles.length})`);
-    for (const entry of metadataOnlyFiles.slice(0, 12)) {
-      const row = `- ${entry.file} (${entry.reason}${entry.renamedFrom ? ` from ${entry.renamedFrom}` : ''})`;
-      if (used + Buffer.byteLength(row, 'utf8') + 1 > maxBytes) break;
-      lines.push(row);
-      used += Buffer.byteLength(row, 'utf8') + 1;
-    }
+    appendSection(
+      `## Metadata-only / binary / rename-only files (${metadataOnlyFiles.length})`,
+      metadataOnlyFiles.slice(0, 12).map((entry) => `- ${entry.file} (${entry.reason}${entry.renamedFrom ? ` from ${entry.renamedFrom}` : ''})`),
+      0,
+    );
   }
   return `${lines.join('\n')}\n`;
 }

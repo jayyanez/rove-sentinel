@@ -682,10 +682,13 @@ export function reconcilePriorBlockerVerdicts(review, assignedBlockers = []) {
     const key = findingKey(blocker);
     if (candidateKeys.has(key)) continue;
     const verdict = verdictByKey.get(key);
-    if (verdict?.status === 'fixed') continue;
-    const reason = verdict
-      ? `Follow-up reviewer marked assigned prior blocker "${verdict.status}": ${verdict.evidence}`
-      : 'Follow-up reviewer omitted this assigned prior blocker from prior_blocker_verdicts; mechanically re-queued for adjudication.';
+    const evidence = typeof verdict?.evidence === 'string' ? verdict.evidence.trim() : '';
+    if (verdict?.status === 'fixed' && evidence.length > 0) continue;
+    const reason = !verdict
+      ? 'Follow-up reviewer omitted this assigned prior blocker from prior_blocker_verdicts; mechanically re-queued for adjudication.'
+      : verdict.status === 'fixed'
+        ? 'Follow-up reviewer marked assigned prior blocker "fixed" without concrete evidence; mechanically re-queued for adjudication.'
+        : `Follow-up reviewer marked assigned prior blocker "${verdict.status}": ${evidence || '(no evidence provided)'}`;
     extra.push({
       id: `${review.provider}-${review.roleIndex}-reverify-${extra.length}`,
       provider: review.provider,
@@ -1788,6 +1791,7 @@ async function runGateWithLease({
       repoRoot: context.repoRoot,
       files,
       patch,
+      baseSha,
       stateRoot: context.stateRoot,
     })).then(
       (value) => ({ status: 'fulfilled', value }),
@@ -1935,7 +1939,14 @@ async function runGateWithLease({
         firstLaunchByProvider.add(provider);
         return;
       }
-      await new Promise((resolve) => setTimeout(resolve, cacheStaggerMs));
+      const deadline = Date.now() + cacheStaggerMs;
+      while (Date.now() < deadline) {
+        if (newProcessLaunchesBlocked() || providerCleanupFailureLatched() || usageLimitHits.length) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
+      }
+      if (newProcessLaunchesBlocked() || providerCleanupFailureLatched()) {
+        throw new Error(launchFenceReason('Reviewer'));
+      }
     };
     // A model-written path is matched to the exact changed-file path when the
     // checkout's directory listings identify it (see canonicalChangedPath),
@@ -2084,15 +2095,15 @@ async function runGateWithLease({
     // spot lets a bug through on small or critical code changes.
     let secondaryShardProviders = [];
     let secondaryShardPromise = Promise.resolve([]);
-    const distinctProviders = [...new Set(plan.reviewers)];
-    if (dualPass && round === 'full' && distinctProviders.length > 1 && shards.length > 0 && !providerFallback) {
+    const dualPassProviders = author === 'grok' ? [...new Set(plan.reviewers)] : [...new Set(selectedProviders)];
+    if (dualPass && round === 'full' && dualPassProviders.length > 1 && shards.length > 0 && !providerFallback) {
       const targetShards = risk.level === 'low' && shards.length === 1
         ? [shards[0]]
         : risk.level === 'high' && shards.length <= 4
           ? [shards.filter((s) => s.kind === 'code').sort((a, b) => b.changedLines - a.changedLines)[0]].filter(Boolean)
           : [];
       if (targetShards.length) {
-        secondaryShardProviders = targetShards.map((shard) => distinctProviders.find((p) => p !== shardProviders[shard.index]) || distinctProviders[0]);
+        secondaryShardProviders = targetShards.map((shard) => dualPassProviders.find((p) => p !== shardProviders[shard.index]) || dualPassProviders[0]);
         const secondaryTasks = targetShards.map((shard, idx) => () => secondaryShardReviewer({
           provider: secondaryShardProviders[idx],
           roleIndex: shards.length + 100 + idx,
@@ -2228,10 +2239,27 @@ async function runGateWithLease({
       const lensBlockers = priorBlockingList.slice(0, lensCap);
       carriedForward.push(...priorBlockingList.slice(lensCap));
       settledLens = await clock.time('lens', () => settleReviewersWithRetry(
-        plan.reviewers.map((provider, roleIndex) => () =>
-          reviewer({
+        plan.reviewers.map((provider, roleIndex) => async () => {
+          const result = await reviewer({
             provider, roleIndex, checkout: worktree.checkout, bundle, round, priorBlocking: lensBlockers, priorBlockingPath,
-          })),
+          });
+          if (round === 'follow-up' && lensBlockers.length) {
+            if (Array.isArray(result?.prior_blocker_verdicts)) {
+              await canonicalize([
+                ...(result.candidates || []).map((candidate) => candidate.file),
+                ...result.prior_blocker_verdicts.map((verdict) => verdict.file),
+              ]);
+              const canonicalized = {
+                ...result,
+                candidates: (result.candidates || []).map((candidate) => ({ ...candidate, file: canonicalFile(candidate.file) })),
+                prior_blocker_verdicts: result.prior_blocker_verdicts.map((verdict) => ({ ...verdict, file: canonicalFile(verdict.file) })),
+              };
+              return reconcilePriorBlockerVerdicts(canonicalized, lensBlockers);
+            }
+            return reconcilePriorBlockerVerdicts(result, lensBlockers);
+          }
+          return result;
+        }),
         { pool, onSettled: streamOther },
       ));
       reviewerErrors.push(...describeReviewerFailures(settledLens, plan.reviewers));
@@ -2460,7 +2488,11 @@ async function runGateWithLease({
               })
             ))));
             if (consolidation.status === 'fulfilled') {
+              const PRIORITY_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
+              const priorityRank = (priority) => (Object.hasOwn(PRIORITY_RANK, priority) ? PRIORITY_RANK[priority] : 3);
+              const priorKeys = new Set(priorBlockingList.map((item) => findingKey(item)));
               const verdicts = new Map((consolidation.value?.findings || []).map((f) => [f.candidate_id, f]));
+              const collidingById = new Map(colliding.map((f) => [f.candidate_id, f]));
               const survivingVerified = new Set(
                 colliding
                   .filter((f) => verdicts.get(f.candidate_id)?.disposition !== 'dismissed')
@@ -2473,6 +2505,12 @@ async function runGateWithLease({
                   if (!verdict || verdict.disposition !== 'dismissed') return finding;
                   const dupMatch = /^Duplicate of ([A-Za-z0-9._-]+)\b/i.exec(String(verdict.reason || '').trim());
                   if (!dupMatch || !survivingVerified.has(dupMatch[1]) || dupMatch[1] === finding.candidate_id) return finding;
+                  const survivor = collidingById.get(dupMatch[1]);
+                  if (!survivor) return finding;
+                  // Never let a lower-priority survivor drop a higher-priority verified defect.
+                  if (priorityRank(finding.priority) < priorityRank(survivor.priority)) return finding;
+                  // Never let a differently titled survivor erase a persisting prior blocker's identity.
+                  if (priorKeys.has(findingKey(finding)) && findingKey(survivor) !== findingKey(finding)) return finding;
                   return { ...finding, disposition: 'dismissed', reason: verdict.reason };
                 }),
               };

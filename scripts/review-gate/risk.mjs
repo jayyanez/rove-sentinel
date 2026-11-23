@@ -169,7 +169,7 @@ export function reviewPlan(risk, author, options = {}) {
     if (risk === 'medium') return decoratePlan({ reviewers: ['claude', 'codex'], coordinator: 'codex' }, risk, options);
     return decoratePlan({ reviewers: ['claude', 'codex', 'claude'], coordinator: 'codex' }, risk, options);
   }
-  if (risk === 'low') return decoratePlan({ reviewers: [crossModel, authorModel], coordinator: crossModel }, risk, options);
+  if (risk === 'low') return decoratePlan({ reviewers: [crossModel], coordinator: crossModel }, risk, options);
   if (risk === 'medium') {
     return decoratePlan({ reviewers: [crossModel, authorModel], coordinator: crossModel }, risk, options);
   }

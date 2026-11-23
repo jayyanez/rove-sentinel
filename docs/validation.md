@@ -2,7 +2,7 @@
 
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
 
-Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (24 new tests)
+Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (34 new tests)
 and the updated existing test suites cover:
 
 - **Bidirectional and enclosing-aware reference map:** `findEnclosingSymbol` for brace-delimited
@@ -42,7 +42,7 @@ and the updated existing test suites cover:
   syntax/undefined-name errors on any line of a changed file; `lintCommands[].scope:
   "changed-files"`; package contract, limits parity, and public-repository hygiene checks.
 
-All 41 test files (1,124 deterministic tests, 0 failures, 0 skipped, including 24 new tests in
+All 41 test files (1,134 deterministic tests, 0 failures, 0 skipped, including 34 new tests in
 `reviewIntelligence.test.ts`) and `pnpm verify:package` (`rove-sentinel@1.21.0` isolated
 consumer smoke test) passed on Windows.
 
@@ -61,8 +61,19 @@ messages and `prIntent`):
   (`prior_blocker_verdicts`) cleanly, closed the 2 fixed blockers, and kept the unfixed blocker
   enforced as `[persisting]`.
 
-Not yet run live: `pnpm review:gate -- --base origin/main --head HEAD` over this repository's own
-branch commit before push/PR.
+Live incumbent-engine self-review (`rove-sentinel@1.20.3`, `pnpm review:gate -- --base origin/main
+--head HEAD`, Claude + Codex):
+
+- Round 1 (`44e8bbb`, full high-risk round): identified and fixed P2/P3 defects across pre-push
+  validation of `p3Mode: "informational"`, low-risk agent shard routing, cross-batch consolidation
+  priority and persisting-blocker preservation, cache-stagger cleanup-fence enforcement, zero-shard
+  lens follow-up blocker verdicts and non-empty verdict evidence, exact placeholder detection in
+  `context.mjs`, lazy per-PR body fetching in `github.mjs`, Ruff `invalid-syntax` and baseline-diffed
+  off-hunk hard-error filtering plus Windows path casing and untouched-line attribution in
+  `toolLanes.mjs`, reference-map edge cases (same-named imports, unchanged callers, sibling scopes,
+  commented imports, Go/C declarations, Git-quoted paths, shared co-change commits, and digest byte
+  caps), Windows `tools` guidance, CLI `--intent` parsing, contract test coverage, and release notes.
+  Follow-up round pending on the fix commit.
 
 ## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
 

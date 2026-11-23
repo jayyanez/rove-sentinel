@@ -45,7 +45,7 @@ export function sentinelLimits() {
       {
         id: 'linters',
         limit: 'installed tools',
-        text: 'shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
+        text: 'shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint run when installed on the host (rove-sentinel tools lists them, installs managed packages after asking — all six via Homebrew on macOS, or shellcheck/actionlint/gitleaks/ruff via winget on Windows — and prints manual install links for tools without a managed package such as oxlint and hadolint on Windows); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
       },
       {
         id: 'clippy',

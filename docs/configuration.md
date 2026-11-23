@@ -154,17 +154,18 @@ checkers can run as `lintCommands`.
 
 ## Linter lanes
 
-Sentinel runs shellcheck, actionlint, gitleaks and ruff on the changed files
-whenever they are installed on the host. The first `gate` you run on a
-machine that lacks some of them says which (not under `--json`; the hook and the
-watcher do not),
-and `doctor` and `tools` always do. Sentinel
-installs them when you ask (winget on Windows, Homebrew on macOS; elsewhere it
-links each tool's instructions):
+Sentinel runs shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint on the
+changed files whenever they are installed on the host. The first `gate` you run
+on a machine that lacks some of them says which (not under `--json`; the hook
+and the watcher do not), and `doctor` and `tools` always do. Sentinel installs
+managed packages when you ask (winget on Windows for shellcheck, actionlint,
+gitleaks and ruff; Homebrew on macOS for all six) and links manual install
+instructions for any tool without a managed package (including oxlint and
+hadolint on Windows, and every tool on Linux):
 
 ```powershell
 npx --no-install rove-sentinel tools            # what is missing and how to get it
-npx --no-install rove-sentinel tools --install  # asks, then installs
+npx --no-install rove-sentinel tools --install  # asks, then installs managed packages
 npx --no-install rove-sentinel tools --install --yes  # for an agent or a script
 ```
 
@@ -174,9 +175,13 @@ A running watcher finds tools winget or Homebrew just installed without a
 restart.
 
 They read the project's own configuration where the tool supports it
-(`.shellcheckrc`, `.github/actionlint.yaml`, ruff's `pyproject.toml`), except
-gitleaks, which always uses its built-in rules. Only hits on lines the change
-added are reported.
+(`.shellcheckrc`, `.github/actionlint.yaml`, ruff's `pyproject.toml`, oxlint's
+`.oxlintrc.json`, hadolint's `.hadolint.yaml`), except gitleaks, which always
+uses its built-in rules. By default only hits on lines the change added are
+reported; Ruff and Oxlint also report newly introduced hard syntax and
+undefined-name errors (absent at base) anywhere in a changed file so deleting an
+import or definition is caught even when the broken use sits on an untouched
+line.
 
 Project commands run your own checker in the review checkout:
 

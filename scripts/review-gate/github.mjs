@@ -144,7 +144,7 @@ export async function listReadyPullRequests(
     '--limit',
     String(limit),
     '--json',
-    'number,headRefOid,baseRefOid,isDraft,url,headRefName,baseRefName,author,isCrossRepository,title,body',
+    'number,headRefOid,baseRefOid,isDraft,url,headRefName,baseRefName,author,isCrossRepository,title',
   ];
   const result = await run(repoRoot, args);
   const open = JSON.parse(result.stdout);
@@ -156,6 +156,19 @@ export async function listReadyPullRequests(
   }
   const allowed = new Set((trustedAuthors.length ? trustedAuthors : [repoSlug.split('/')[0]]).map((name) => name.toLowerCase()));
   return open.filter((pr) => !pr.isDraft && pr.isCrossRepository === false && allowed.has(String(pr.author?.login || '').toLowerCase()));
+}
+
+export async function readPullRequestBody(repoRoot, repoSlug, prNumber, { run = runGh } = {}) {
+  try {
+    const result = await run(repoRoot, [
+      'pr', 'view', String(prNumber), '--repo', repoSlug, '--json', 'body',
+    ]);
+    const parsed = JSON.parse(result.stdout);
+    return typeof parsed?.body === 'string' ? parsed.body : '';
+  } catch (error) {
+    if (processTreeCleanupFailureCode(error)) throw error;
+    return '';
+  }
 }
 
 export async function currentGitHubLogin(repoRoot) {
@@ -314,6 +327,7 @@ export async function syncPullRequests({
   runGate,
   progress = () => {},
   listPullRequests = listReadyPullRequests,
+  readBody = listPullRequests === listReadyPullRequests ? readPullRequestBody : null,
   publish = publishGateComment,
   applyDeferrals = applyRecordedDeferrals,
   ensureCommit = ensureCommitAvailable,
@@ -403,7 +417,10 @@ export async function syncPullRequests({
           attempted = true;
           if (stateError) throw stateError;
           progress(`PR #${pr.number} head ${pr.headRefOid.slice(0, 12)} has no reusable outcome; reviewing it now.`);
-          const prIntent = [pr.title, pr.body].filter((part) => typeof part === 'string' && part.trim()).join('\n\n');
+          const prBody = typeof pr.body === 'string'
+            ? pr.body
+            : (readBody ? await readBody(context.repoRoot, repoSlug, pr.number) : '');
+          const prIntent = [pr.title, prBody].filter((part) => typeof part === 'string' && part.trim()).join('\n\n');
           result = await runGate({
             repoRoot: context.repoRoot,
             stateRoot: context.stateRoot,

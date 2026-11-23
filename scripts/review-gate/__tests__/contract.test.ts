@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
-import { coordinatorPrompt, hypothesisPrompt, reviewerPrompt, scoutPrompt, shardPrompt } from '../providers.mjs';
+import { coordinatorPrompt, hypothesisPrompt, integrationPrompt, reviewerPrompt, scoutPrompt, shardPrompt } from '../providers.mjs';
 
 describe('standalone package contract', () => {
   it('ships a matching executable, package, and neutral charter', async () => {
@@ -51,6 +51,9 @@ describe('standalone package contract', () => {
       hypothesisPrompt({ provider: 'claude', contextPath: 'ctx.md', hypothesis: {
         title: 't', file: 'f', line: 1, lens: 'l', claim: 'c', why: 'w',
       } }),
+      integrationPrompt({ provider: 'claude', contextPath: 'ctx.md', hypotheses: [{
+        title: 't', file: 'f', line: 1, lens: 'l', claim: 'c', why: 'w',
+      }] }),
       coordinatorPrompt({ provider: 'codex', contextPath: 'ctx.md', candidatesPath: 'c.json' }),
     ];
     for (const prompt of generated) {

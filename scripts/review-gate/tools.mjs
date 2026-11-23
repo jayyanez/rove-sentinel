@@ -32,12 +32,14 @@ export async function missingTools({ config = {}, env = process.env, resolve = r
 
 /** How to install `tools` here: the commands Sentinel can run, or instructions. */
 export function installPlan(tools, platform = process.platform) {
-  if (!tools.length) return { manager: null, commands: [], instructions: [] };
+  if (!tools.length) return { manager: null, managed: [], manual: [], commands: [], instructions: [], note: null };
   if (platform === 'win32') {
     const managed = tools.filter((tool) => TOOL_PACKAGES[tool]?.winget);
     const manual = tools.filter((tool) => !TOOL_PACKAGES[tool]?.winget);
     return {
       manager: managed.length ? 'winget' : null,
+      managed,
+      manual,
       commands: managed.map((tool) => ({
         tool,
         program: 'winget',
@@ -47,6 +49,7 @@ export function installPlan(tools, platform = process.platform) {
         ...(managed.length ? [`winget install ${managed.map((tool) => TOOL_PACKAGES[tool].winget).join(' ')}`] : []),
         ...manual.map((tool) => `${tool}: ${TOOL_PACKAGES[tool].url}`),
       ],
+      note: managed.length ? null : 'no winget package is available for the missing tool(s); install them by hand',
     };
   }
   if (platform === 'darwin') {
@@ -54,17 +57,23 @@ export function installPlan(tools, platform = process.platform) {
     const manual = tools.filter((tool) => !TOOL_PACKAGES[tool]?.brew);
     return {
       manager: managed.length ? 'brew' : null,
+      managed,
+      manual,
       commands: managed.length ? [{ tool: managed.join(', '), program: 'brew', args: ['install', ...managed.map((tool) => TOOL_PACKAGES[tool].brew)] }] : [],
       instructions: [
         ...(managed.length ? [`brew install ${managed.map((tool) => TOOL_PACKAGES[tool].brew).join(' ')}`] : []),
         ...manual.map((tool) => `${tool}: ${TOOL_PACKAGES[tool].url}`),
       ],
+      note: managed.length ? null : 'no Homebrew formula is available for the missing tool(s); install them by hand',
     };
   }
   return {
     manager: null,
+    managed: [],
+    manual: [...tools],
     commands: [],
     instructions: tools.map((tool) => `${tool}: ${TOOL_PACKAGES[tool].url}`),
+    note: 'no supported package manager on this platform; install them by hand',
   };
 }
 
@@ -72,11 +81,14 @@ export function installPlan(tools, platform = process.platform) {
 export function formatToolsNotice(missing, platform = process.platform) {
   if (!missing.length) return null;
   const plan = installPlan(missing, platform);
+  const actionLine = plan.manager && plan.manual.length
+    ? `Install ${plan.managed.join(', ')} with Sentinel (asks before installing): npx --no-install rove-sentinel tools --install (install ${plan.manual.join(', ')} manually):`
+    : plan.manager
+      ? `Install ${missing.length === 1 ? 'it' : 'them'} with Sentinel (asks before installing): npx --no-install rove-sentinel tools --install`
+      : `Install ${missing.length === 1 ? 'it' : 'them'} from:`;
   return [
     `Rove Sentinel: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not installed on this machine, so ${missing.length === 1 ? 'its linter lane is' : 'their linter lanes are'} skipped in reviews.`,
-    plan.manager
-      ? `Install ${missing.length === 1 ? 'it' : 'them'} with Sentinel (asks before installing): npx --no-install rove-sentinel tools --install`
-      : 'Install them from:',
+    actionLine,
     ...plan.instructions.map((line) => `  ${line}`),
   ].join('\n');
 }
@@ -111,7 +123,7 @@ export async function installTools({ config = {}, env = process.env, run = runPr
   const missing = await missingTools({ config, env, resolve });
   const plan = installPlan(missing, platform);
   if (!missing.length) return { installed: [], failed: [], missing: [], note: 'every linter tool is already installed' };
-  if (!plan.manager) return { installed: [], failed: [], missing, note: 'no supported package manager on this platform; install them by hand', instructions: plan.instructions };
+  if (!plan.manager) return { installed: [], failed: [], missing, note: plan.note || 'no supported package manager on this platform; install them by hand', instructions: plan.instructions };
   const manager = await resolve(plan.manager, { env });
   if (!manager) return { installed: [], failed: [], missing, note: `${plan.manager} is not available on this machine`, instructions: plan.instructions };
   const failed = [];
@@ -125,10 +137,12 @@ export async function installTools({ config = {}, env = process.env, run = runPr
     }
   }
   const still = await missingTools({ config, env, resolve });
+  const remainingInstructions = still.length ? installPlan(still, platform).instructions : [];
   return {
     installed: missing.filter((tool) => !still.includes(tool)),
     failed,
     missing: still,
+    ...(remainingInstructions.length ? { instructions: remainingInstructions } : {}),
     note: still.length ? `still missing: ${still.join(', ')}` : 'every linter tool is installed',
   };
 }

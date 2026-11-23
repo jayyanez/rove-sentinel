@@ -48,18 +48,28 @@ function parseArgs(args) {
   const options = {};
   const positional = [];
   const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log', 'accounts', 'config', 'intent']);
+  const freeformValueFlags = new Set(['intent', 'reason', 'native-evidence', 'heading']);
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (!value.startsWith('--')) {
       positional.push(value);
       continue;
     }
-    const key = value.slice(2);
+    const eq = value.indexOf('=');
+    const key = eq === -1 ? value.slice(2) : value.slice(2, eq);
     if (valueFlags.has(key)) {
-      const next = args[index + 1];
-      if (!next || next.startsWith('--')) throw new Error(`--${key} requires a value.`);
-      options[key] = next;
-      index += 1;
+      if (eq !== -1) {
+        const inlineValue = value.slice(eq + 1);
+        if (!inlineValue) throw new Error(`--${key} requires a value.`);
+        options[key] = inlineValue;
+      } else {
+        const next = args[index + 1];
+        if (!next || (!freeformValueFlags.has(key) && next.startsWith('--'))) {
+          throw new Error(`--${key} requires a value.`);
+        }
+        options[key] = next;
+        index += 1;
+      }
     } else if (key.startsWith('no-')) {
       options[key.slice(3)] = false;
     } else {
@@ -184,14 +194,14 @@ async function main() {
     }
     const plan = installPlan(missing);
     if (!plan.manager) {
-      outcome(formatToolsNotice(missing), { installed: [], failed: [], missing, note: 'no supported package manager on this platform; install them by hand', instructions: plan.instructions });
+      outcome(formatToolsNotice(missing), { installed: [], failed: [], missing, note: plan.note || 'no supported package manager on this platform; install them by hand', instructions: plan.instructions });
       process.exitCode = 1;
       return;
     }
     if (!options.yes) {
-      const consent = isatty(0) ? await ask(`Install ${missing.join(', ')} with ${plan.manager}? [y/N] `) : '';
+      const consent = isatty(0) ? await ask(`Install ${plan.managed.join(', ')} with ${plan.manager}? [y/N] `) : '';
       if (!/^y(?:es)?$/i.test(consent.trim())) {
-        const note = isatty(0) ? 'Nothing was installed.' : `Nothing was installed: rerun with --yes to install ${missing.join(', ')} with ${plan.manager}.`;
+        const note = isatty(0) ? 'Nothing was installed.' : `Nothing was installed: rerun with --yes to install ${plan.managed.join(', ')} with ${plan.manager}.`;
         outcome(note, { installed: [], failed: [], missing, note: isatty(0) ? 'declined' : 'consent required: rerun with --yes' });
         process.exitCode = 1;
         return;

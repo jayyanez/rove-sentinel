@@ -201,10 +201,14 @@ function assertString(value, label) {
 
 export function normalizeReviewerResult(value, provider, roleIndex, {
   maxCandidates = LIMITS.maxReviewerCandidates,
+  requireVerdicts = false,
 } = {}) {
   assertPlainObject(value, `${provider} reviewer output`);
   if (!Array.isArray(value.candidates)) {
     throw new Error(`${provider} reviewer candidates must be an array.`);
+  }
+  if (requireVerdicts && !Array.isArray(value.prior_blocker_verdicts)) {
+    throw new Error(`${provider} follow-up reviewer output must include prior_blocker_verdicts.`);
   }
   if (value.candidates.length > maxCandidates) {
     throw new Error(`${provider} reviewer returned ${value.candidates.length} candidates; the fail-closed limit is ${maxCandidates}.`);
@@ -553,7 +557,8 @@ head blocked on the findings listed in ${priorBlockingPath || 'prior-blocking.md
 (${priorBlocking.length} in total), each with the line it was reported at (a repair may
 have moved it) and what fails. Read each one's code at head (its file around
 that location, by line range when the file is large) and verify whether
-the branch still has it: ${PRIOR_BLOCKER_RULE}`
+the branch still has it: ${PRIOR_BLOCKER_RULE}
+Also return one entry in prior_blocker_verdicts (status: "fixed", "still_present", or "unverified", with concrete evidence) for EVERY assigned prior blocker (${priorBlocking.length} total).`
     : '';
   return `${inline ? inlinePreamble(inline) : ''}You are an independent ${provider} reviewer in Rove Sentinel.
 ${contextInstruction(contextPath, inline, { also: 'read the exact patch it references' })}
@@ -843,7 +848,7 @@ any additional surrounding code, callers, or callees needed to independently ver
 Mark each candidate verified, dismissed, or needs_native_evidence:
 - **verified**: the diff introduces, exposes, triggers, or amplifies a concrete actionable defect; give the reproducible scenario.
 - **dismissed**: ONLY when concrete code evidence refutes the scenario (cite the specific guard, type constraint, caller invariant, or line that prevents the failure) or when the issue is truly unrelated and pre-existing; never dismiss as pre-existing (a) an incomplete claimed fix (intent read from commit messages, PR intent, patch notes, or changed comments), or (b) a latent defect that this diff triggers, exposes, relies on, or stops guarding against.
-- **Duplicate consolidation**: if two candidates in this batch describe the exact same underlying defect (note corroboratingReviewers / relatedCandidates), mark the strongest one verified and dismiss the redundant duplicate with reason "Duplicate of <candidate_id>."
+- **Duplicate consolidation**: if two candidates in this batch describe the exact same underlying defect (note corroboratingReviewers / relatedCandidates), keep the highest-priority one (and any persisting prior blocker verbatim) verified and dismiss only lower-or-equal-priority redundant duplicates with reason "Duplicate of <candidate_id>."
 - **needs_native_evidence**: only when code inspection cannot settle a native-only claim.
 Return exactly one finding for every candidate_id, preserving that id; never omit, merge, or invent candidates. Do not modify files or use the network.
 Independently recalibrate every priority from the verified impact; do not copy a candidate's label by default.
@@ -1081,13 +1086,18 @@ export async function runReviewer({
     provider, roleIndex, lensIndex, contextPath: bundle.contextPath, round, priorBlocking, priorBlockingPath, inline: bundle.inline ?? null,
   });
   const timeoutMs = LIMITS.reviewerTimeoutMs;
-  const bounds = { maxCandidates: Math.min(LIMITS.maxCandidates, LIMITS.maxReviewerCandidates + priorBlocking.length) };
+  const assignedBlockers = round === 'follow-up' ? priorBlocking : [];
+  const bounds = {
+    maxCandidates: Math.min(LIMITS.maxCandidates, LIMITS.maxReviewerCandidates + priorBlocking.length),
+    requireVerdicts: assignedBlockers.length > 0,
+  };
+  const schema = assignedBlockers.length ? followupReviewerSchemaForBlockers(assignedBlockers) : REVIEWER_SCHEMA;
   if (provider === 'claude') {
     return reviewerOutput(
       await runClaudeJson({
         checkout,
         bundle,
-        schema: REVIEWER_SCHEMA,
+        schema,
         prompt,
         profile: profileFor('claude', 'Reviewer', bundle.modelConfig),
         timeoutMs,
@@ -1100,11 +1110,16 @@ export async function runReviewer({
   }
   if (provider === 'codex') {
     const outputPath = path.join(bundle.directory, `codex-review-lens-${roleIndex}-${randomUUID()}.json`);
+    let schemaPath = bundle.reviewerSchemaPath;
+    if (assignedBlockers.length) {
+      schemaPath = path.join(bundle.directory, `lens-followup-${roleIndex}-${randomUUID()}.schema.json`);
+      await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, 'utf8');
+    }
     return reviewerOutput(
       await runCodexJson({
         checkout,
         bundle,
-        schemaPath: bundle.reviewerSchemaPath,
+        schemaPath,
         outputPath,
         prompt,
         profile: profileFor('codex', 'Reviewer', bundle.modelConfig),
@@ -1160,11 +1175,14 @@ export async function runShardReviewer({
     prDigest,
     secondaryFocus,
   });
-  const bounds = { maxCandidates: shardCandidateBound(shard, priorBlocking) };
   const timeoutMs = shardTimeoutMs(shard.patch);
   const assignedBlockers = round === 'follow-up'
     ? [...shardReverifyBlockers(shard, priorBlocking), ...(Array.isArray(shard.unassignedBlockers) ? shard.unassignedBlockers : [])]
     : [];
+  const bounds = {
+    maxCandidates: shardCandidateBound(shard, priorBlocking),
+    requireVerdicts: assignedBlockers.length > 0,
+  };
   const schema = assignedBlockers.length ? followupReviewerSchemaForBlockers(assignedBlockers) : REVIEWER_SCHEMA;
   if (provider === 'claude') {
     return reviewerOutput(

@@ -491,9 +491,16 @@ export async function createContextBundle({
   const charterParts = splitTextParts(charter);
   const lessonsParts = splitTextParts(selectReviewLessons(lessons, files, { keywords: lessonKeywords }));
   const lessonsText = lessonsParts.join('');
-  const hasRealLessons = Boolean(lessonsText) && !lessonsText.includes('No project lessons configured.');
-  const openBriefsText = openBriefs || '# Open bug briefs\n\n(not generated for this review)\n';
-  const hasRealOpenBriefs = Boolean(openBriefs) && !openBriefs.includes('absent from this checkout') && !openBriefs.includes('(not generated for this review)');
+  // Match only the exact built-in placeholder documents (trimmed), never
+  // arbitrary substrings inside real lessons or bug briefs.
+  const hasRealLessons = Boolean(lessons.trim()) && lessons.trim() !== 'No project lessons configured.';
+  const openBriefsNotGenerated = '# Open bug briefs\n\n(not generated for this review)\n';
+  const openBriefsAbsent = '# Open bug briefs\n\n(docs/bugs/open is absent from this checkout.)\n';
+  const openBriefsText = openBriefs || openBriefsNotGenerated;
+  const trimmedOpenBriefs = String(openBriefs || '').trim();
+  const hasRealOpenBriefs = Boolean(trimmedOpenBriefs)
+    && trimmedOpenBriefs !== openBriefsAbsent.trim()
+    && trimmedOpenBriefs !== openBriefsNotGenerated.trim();
   const openBriefsParts = splitTextParts(openBriefsText);
   const charterPaths = partPaths(directory, 'shared-review-charter.md', charterParts.length);
   const lessonsPaths = partPaths(directory, 'bug-lessons.md', lessonsParts.length);

@@ -364,7 +364,7 @@ export function followupReviewerSchemaForBlockers(priorBlockers) {
             file: { type: 'string' },
             title: { type: 'string' },
             status: { type: 'string', enum: ['fixed', 'still_present', 'unverified'] },
-            evidence: { type: 'string' },
+            evidence: { type: 'string', minLength: 1 },
           },
           required: ['file', 'title', 'status', 'evidence'],
         },

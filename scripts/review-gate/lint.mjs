@@ -539,8 +539,8 @@ export function laneFailure(settled) {
  * can reject except a process-tree cleanup failure, which must reach the
  * gate's fence.
  */
-export async function runDeterministicLanes({ checkout, files, patch, stateRoot, run, env, config, repoRoot = null, resolve }) {
-  const toolOptions = { checkout, files, patch, ...(run ? { run } : {}), ...(env ? { env } : {}), ...(resolve ? { resolve } : {}) };
+export async function runDeterministicLanes({ checkout, files, patch, baseSha = null, stateRoot, run, env, config, repoRoot = null, resolve }) {
+  const toolOptions = { checkout, files, patch, ...(baseSha ? { baseSha } : {}), ...(run ? { run } : {}), ...(env ? { env } : {}), ...(resolve ? { resolve } : {}) };
   const enabled = (lane) => config?.lintLanes?.[lane] !== false;
   const off = (lane) => Promise.resolve({ lane, status: 'skipped', note: 'turned off in installed policy', findings: [] });
   // Project commands share one node_modules link, made before they start and

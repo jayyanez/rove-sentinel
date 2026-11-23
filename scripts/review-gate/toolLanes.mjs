@@ -5,8 +5,9 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 
 import { LIMITS } from './constants.mjs';
+import { showFileAtCommit } from './git.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
-import { addedLinesByFile } from './shards.mjs';
+import { addedLinesByFile, renameMapFor } from './shards.mjs';
 
 // The operating system's own resolution: it also expands a Windows 8.3 name.
 const realpathNative = promisify(realpathCallback.native);
@@ -127,8 +128,21 @@ async function checkoutRelativizer(checkout) {
   };
 }
 
+/** Map checkout-relative paths back to canonical repository casing (Windows). */
+function canonicalPathLookup(files, added, { caseInsensitive = process.platform === 'win32' } = {}) {
+  const key = (value) => (caseInsensitive ? value.toLowerCase() : value);
+  const byKey = new Map();
+  for (const file of (files || []).map(normalize)) {
+    if (file && !byKey.has(key(file))) byKey.set(key(file), file);
+  }
+  for (const file of added ? added.keys() : []) {
+    if (file && !byKey.has(key(file))) byKey.set(key(file), file);
+  }
+  return (file) => (file ? byKey.get(key(file)) ?? file : null);
+}
+
 /** Shape a linter hit as a deterministic finding (see lint.mjs). */
-export function toolFinding({ source, rule, title, file, line, detail, priority }) {
+export function toolFinding({ source, rule, title, file, line, detail, priority, onAddedLine = true }) {
   return {
     candidate_id: `${source}-0`,
     title: `${rule}: ${title}`,
@@ -137,7 +151,9 @@ export function toolFinding({ source, rule, title, file, line, detail, priority 
     line: Number.isInteger(line) && line >= 1 ? line : null,
     disposition: 'verified',
     reason: detail || title,
-    scenario: `Reported by ${source} on a line this diff added.`,
+    scenario: onAddedLine
+      ? `Reported by ${source} on a line this diff added.`
+      : `Reported by ${source} on an untouched line of a changed file.`,
     proposed_test: `Run ${source} on the file; the hit disappears once fixed.`,
     source,
     adjudicatedDisposition: 'deterministic',
@@ -202,14 +218,18 @@ async function runTool(lane, command, args, { cwd, run, timeoutMs, env, input, e
   }
 }
 
-function finish(lane, findings, { total, files, omitted = 0, maxFindings = LIMITS.maxDeterministicFindings }) {
+function finish(lane, findings, { total, files, omitted = 0, onAddedLineCount = findings.length, maxFindings = LIMITS.maxDeterministicFindings }) {
   // Blocking hits come first, so a bound never hides one behind advisories.
   const ordered = [...findings.filter((finding) => finding.priority !== 'P3'), ...findings.filter((finding) => finding.priority === 'P3')];
   const kept = ordered.slice(0, maxFindings);
+  const offHunkCount = Math.max(0, findings.length - onAddedLineCount);
+  const scopeNote = offHunkCount > 0
+    ? `${onAddedLineCount} on added lines, ${offHunkCount} on untouched lines of changed files`
+    : `${findings.length} on added lines`;
   return {
     lane,
     status: 'ok',
-    note: `${total} hit(s) in ${files} file(s); ${findings.length} on added lines${findings.length > kept.length ? ` (bounded to ${kept.length})` : ''}${omitted ? `; ${omitted} changed file(s) NOT analyzed (past the lane's bounds)` : ''}`,
+    note: `${total} hit(s) in ${files} file(s); ${scopeNote}${findings.length > kept.length ? ` (bounded to ${kept.length})` : ''}${omitted ? `; ${omitted} changed file(s) NOT analyzed (past the lane's bounds)` : ''}`,
     findings: kept,
   };
 }
@@ -285,7 +305,79 @@ export async function runActionlintLane({ checkout, files, patch, run = runProce
   return finish(lane, findings, { total: parsed.length, files: targets.length, omitted });
 }
 
-export async function runRuffLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
+function basePathLookup(patch) {
+  const renamed = renameMapFor(patch);
+  const reverse = new Map();
+  for (const [oldPath, newPath] of renamed.entries()) reverse.set(newPath, oldPath);
+  return (file) => reverse.get(file) ?? file;
+}
+
+function isRuffHardError(hit) {
+  const code = String(hit?.code || '');
+  return !code || code === 'invalid-syntax' || /^(?:E9|F63|F7|F82)/.test(code);
+}
+
+function isOxlintHardError(hit) {
+  const severity = String(hit?.severity || 'warning').toLowerCase();
+  const code = String(hit?.code || '');
+  return severity === 'error' && (
+    !code || /no-undef|parse|syntax|redeclare|const-assign|dup-keys|duplicate/i.test(code)
+  );
+}
+
+/**
+ * Filter off-hunk hard diagnostics against the file's content at `baseSha` so
+ * deletion-introduced errors on untouched lines are caught while pre-existing
+ * baseline errors are never blamed on unrelated edits. Fail-safe: when no
+ * baseline can be read or analyzed, off-hunk diagnostics are suppressed.
+ */
+async function filterNewlyIntroducedOffHunk({
+  offHunk,
+  checkout,
+  baseSha,
+  patch,
+  readBaseFile,
+  analyzeBaseFile,
+}) {
+  if (!offHunk.length || (!baseSha && !readBaseFile)) return [];
+  const basePathOf = basePathLookup(patch);
+  const byFile = new Map();
+  for (const item of offHunk) {
+    if (!byFile.has(item.file)) byFile.set(item.file, []);
+    byFile.get(item.file).push(item);
+  }
+  const kept = [];
+  for (const [file, items] of byFile.entries()) {
+    let baseText = null;
+    try {
+      baseText = readBaseFile
+        ? await readBaseFile(file, baseSha)
+        : await showFileAtCommit(checkout, baseSha, basePathOf(file));
+    } catch (error) {
+      if (processTreeCleanupFailureCode(error)) throw error;
+      baseText = null;
+    }
+    if (typeof baseText !== 'string') continue;
+    const baseKeys = await analyzeBaseFile(file, baseText);
+    if (!baseKeys) continue;
+    const counts = new Map();
+    for (const key of baseKeys) counts.set(key, (counts.get(key) || 0) + 1);
+    for (const item of items) {
+      const remaining = counts.get(item.dedupKey) || 0;
+      if (remaining > 0) {
+        counts.set(item.dedupKey, remaining - 1);
+        continue;
+      }
+      kept.push(item.finding);
+    }
+  }
+  return kept;
+}
+
+export async function runRuffLane({
+  checkout, files, patch, baseSha = null, run = runProcess, env = process.env,
+  timeoutMs = LIMITS.toolLaneTimeoutMs, resolve, readBaseFile = null, caseInsensitive = process.platform === 'win32',
+}) {
   const lane = 'ruff';
   const { files: targets, omitted } = await analyzable(checkout, (files || []).map(normalize).filter((file) => PYTHON_FILE.test(file)));
   if (!targets.length) return { lane, status: 'skipped', note: 'no Python file changed', findings: [] };
@@ -296,33 +388,67 @@ export async function runRuffLane({ checkout, files, patch, run = runProcess, en
   const parsed = parseJson(result.stdout);
   if (!Array.isArray(parsed)) return { lane, status: 'error', note: 'ruff output could not be read', findings: [] };
   const added = addedLinesByFile(patch);
+  const canonical = canonicalPathLookup(targets, added, { caseInsensitive });
   const changedTargets = new Set(targets);
   const relative = await checkoutRelativizer(checkout);
-  const findings = [];
+  const onAddedFindings = [];
+  const offHunkHard = [];
   for (const hit of parsed) {
-    const file = await relative(hit.filename);
+    const file = canonical(await relative(hit.filename));
     const line = hit.location?.row;
     if (!file) continue;
-    // Syntax errors, undefined names and misplaced statements are hard defects:
-    // report them on ANY line of a changed file so deleting a definition or
-    // import is caught even when the broken use sits on an untouched line.
-    const blocking = !hit.code || /^(?:E9|F63|F7|F82)/.test(hit.code);
+    const blocking = isRuffHardError(hit);
     const onAddedLine = Boolean(added.get(file)?.has(line));
     if (!onAddedLine && !(blocking && changedTargets.has(file))) continue;
-    findings.push(toolFinding({
+    const rule = hit.code || 'syntax-error';
+    const finding = toolFinding({
       source: lane,
-      rule: hit.code || 'syntax-error',
+      rule,
       title: hit.message,
       file,
       line,
       detail: `${hit.message}${hit.url ? ` (${hit.url})` : ''}`,
       priority: blocking ? 'P2' : 'P3',
-    }));
+      onAddedLine,
+    });
+    if (onAddedLine) onAddedFindings.push(finding);
+    else offHunkHard.push({ file, dedupKey: `${rule}\0${hit.message}`, finding });
   }
-  return finish(lane, findings, { total: parsed.length, files: targets.length, omitted });
+  const newOffHunk = await filterNewlyIntroducedOffHunk({
+    offHunk: offHunkHard,
+    checkout,
+    baseSha,
+    patch,
+    readBaseFile,
+    analyzeBaseFile: async (file, baseText) => {
+      const { result: baseRes, lane: baseFailed } = await runTool(
+        lane,
+        'ruff',
+        ['check', '--output-format', 'json', '--no-cache', '--quiet', '--force-exclude', '--stdin-filename', file, '-'],
+        { cwd: checkout, run, timeoutMs, env, input: baseText, resolve },
+      );
+      if (baseFailed || exitedBadly(lane, 'ruff', baseRes, [0, 1])) return null;
+      const baseParsed = parseJson(baseRes.stdout);
+      if (!Array.isArray(baseParsed)) return null;
+      return baseParsed
+        .filter((hit) => isRuffHardError(hit))
+        .map((hit) => `${hit.code || 'syntax-error'}\0${hit.message}`);
+    },
+  });
+  const findings = [...onAddedFindings, ...newOffHunk];
+  return finish(lane, findings, {
+    total: parsed.length,
+    files: targets.length,
+    omitted,
+    onAddedLineCount: onAddedFindings.length,
+  });
 }
 
-export async function runOxlintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
+export async function runOxlintLane({
+  checkout, files, patch, baseSha = null, run = runProcess, env = process.env,
+  timeoutMs = LIMITS.toolLaneTimeoutMs, temporaryRoot = os.tmpdir(), resolve, readBaseFile = null,
+  caseInsensitive = process.platform === 'win32',
+}) {
   const lane = 'oxlint';
   const { files: targets, omitted } = await analyzable(checkout, (files || []).map(normalize).filter((file) => JS_TS_FILE.test(file)));
   if (!targets.length) return { lane, status: 'skipped', note: 'no JS/TS file changed', findings: [] };
@@ -334,34 +460,77 @@ export async function runOxlintLane({ checkout, files, patch, run = runProcess, 
   const diagnostics = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.diagnostics) ? parsed.diagnostics : null;
   if (!diagnostics) return { lane, status: 'error', note: 'oxlint output could not be read', findings: [] };
   const added = addedLinesByFile(patch);
+  const canonical = canonicalPathLookup(targets, added, { caseInsensitive });
   const changedTargets = new Set(targets);
   const relative = await checkoutRelativizer(checkout);
-  const findings = [];
+  const onAddedFindings = [];
+  const offHunkHard = [];
   for (const hit of diagnostics) {
     const rawFile = hit.filename || hit.file || '';
-    const file = rawFile ? await relative(path.isAbsolute(rawFile) ? rawFile : path.join(checkout, rawFile)) : null;
+    const file = canonical(rawFile ? await relative(path.isAbsolute(rawFile) ? rawFile : path.join(checkout, rawFile)) : null);
     if (!file) continue;
     const span = Array.isArray(hit.labels) && hit.labels[0]?.span ? hit.labels[0].span : null;
     const line = Number.isInteger(span?.line) ? span.line : (Number.isInteger(hit.line) ? hit.line : null);
     const severity = String(hit.severity || 'warning').toLowerCase();
     const code = String(hit.code || 'oxlint');
-    const isHardError = severity === 'error' && (
-      /no-undef|parse|syntax|redeclare|const-assign|dup-keys|duplicate/i.test(code) ||
-      !hit.code
-    );
+    const isHardError = isOxlintHardError(hit);
     const onAddedLine = line !== null && Boolean(added.get(file)?.has(line));
     if (!onAddedLine && !(isHardError && changedTargets.has(file))) continue;
-    findings.push(toolFinding({
+    const title = String(hit.message || 'oxlint diagnostic');
+    const finding = toolFinding({
       source: lane,
       rule: code,
-      title: String(hit.message || 'oxlint diagnostic'),
+      title,
       file,
       line,
       detail: [hit.message, hit.help].filter(Boolean).join(' — '),
       priority: severity === 'error' ? 'P2' : 'P3',
-    }));
+      onAddedLine,
+    });
+    if (onAddedLine) onAddedFindings.push(finding);
+    else offHunkHard.push({ file, dedupKey: `${code}\0${title}`, finding });
   }
-  return finish(lane, findings, { total: diagnostics.length, files: targets.length, omitted });
+  const newOffHunk = await filterNewlyIntroducedOffHunk({
+    offHunk: offHunkHard,
+    checkout,
+    baseSha,
+    patch,
+    readBaseFile,
+    analyzeBaseFile: async (file, baseText) => {
+      const scratch = await mkdtemp(path.join(temporaryRoot, 'rove-review-oxlint-base-'));
+      try {
+        const target = path.join(scratch, file);
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, baseText, 'utf8');
+        const { result: baseRes, lane: baseFailed } = await runTool(
+          lane,
+          'oxlint',
+          ['--format', 'json', '--', target],
+          { cwd: checkout, run, timeoutMs, env, resolve },
+        );
+        if (baseFailed || exitedBadly(lane, 'oxlint', baseRes, [0, 1])) return null;
+        const baseParsed = parseJson(baseRes.stdout);
+        const baseDiagnostics = Array.isArray(baseParsed)
+          ? baseParsed
+          : Array.isArray(baseParsed?.diagnostics)
+            ? baseParsed.diagnostics
+            : null;
+        if (!baseDiagnostics) return null;
+        return baseDiagnostics
+          .filter((hit) => isOxlintHardError(hit))
+          .map((hit) => `${String(hit.code || 'oxlint')}\0${String(hit.message || 'oxlint diagnostic')}`);
+      } finally {
+        await rm(scratch, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  });
+  const findings = [...onAddedFindings, ...newOffHunk];
+  return finish(lane, findings, {
+    total: diagnostics.length,
+    files: targets.length,
+    omitted,
+    onAddedLineCount: onAddedFindings.length,
+  });
 }
 
 export async function runHadolintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
@@ -517,7 +686,7 @@ export function parseCommandOutput(text, format) {
  * `{files}` as an argument becomes the changed files the command's `files`
  * pattern selects; `node` is this Node.js.
  */
-export async function runProjectCommandLane({ checkout, files, patch, command, run = runProcess, env = process.env, resolve }) {
+export async function runProjectCommandLane({ checkout, files, patch, command, run = runProcess, env = process.env, resolve, caseInsensitive = process.platform === 'win32' }) {
   const lane = command.name;
   const pattern = command.files ? new RegExp(command.files) : null;
   const selected = (files || []).map(normalize).filter((file) => !pattern || pattern.test(file));
@@ -542,15 +711,20 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
     return { ...bad, note: `${bad.note} (no located diagnostic)` };
   }
   const added = addedLinesByFile(patch);
-  const changedSet = new Set((files || []).map(normalize));
+  const normalizedFiles = (files || []).map(normalize);
+  const canonical = canonicalPathLookup(normalizedFiles, added, { caseInsensitive });
+  const changedSet = new Set(normalizedFiles);
   const scope = command.scope ?? 'added-lines';
   const relative = await checkoutRelativizer(checkout);
   const findings = [];
+  let onAddedLineCount = 0;
   for (const hit of hits) {
-    const file = await relative(path.isAbsolute(hit.file) ? hit.file : path.join(checkout, hit.file));
+    const file = canonical(await relative(path.isAbsolute(hit.file) ? hit.file : path.join(checkout, hit.file)));
     if (!file) continue;
-    if (scope === 'added-lines' && !added.get(file)?.has(hit.line)) continue;
+    const onAddedLine = Boolean(added.get(file)?.has(hit.line));
+    if (scope === 'added-lines' && !onAddedLine) continue;
     if (scope === 'changed-files' && !changedSet.has(file)) continue;
+    if (onAddedLine) onAddedLineCount += 1;
     findings.push(toolFinding({
       source: lane,
       rule: hit.rule || lane,
@@ -559,9 +733,15 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
       line: hit.line,
       detail: hit.message,
       priority: hit.severity === 'error' ? 'P2' : 'P3',
+      onAddedLine,
     }));
   }
-  return finish(lane, findings, { total: hits.length, files: usesFiles ? targets.length : selected.length, omitted: usesFiles ? leftOut : 0 });
+  return finish(lane, findings, {
+    total: hits.length,
+    files: usesFiles ? targets.length : selected.length,
+    omitted: usesFiles ? leftOut : 0,
+    onAddedLineCount,
+  });
 }
 
 /**
