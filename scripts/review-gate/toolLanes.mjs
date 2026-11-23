@@ -565,7 +565,14 @@ export async function runOxlintLane({
   const scratch = await mkdtemp(path.join(temporaryRoot, 'rove-review-oxlint-'));
   try {
     const fixedConfig = path.join(scratch, 'oxlint.json');
-    await writeFile(fixedConfig, '{}\n', 'utf8');
+    await writeFile(fixedConfig, `${JSON.stringify({
+      rules: {
+        'no-const-assign': 'error',
+        'no-dupe-keys': 'error',
+        'no-redeclare': 'error',
+        'no-undef': 'error',
+      },
+    }, null, 2)}\n`, 'utf8');
     const fixedFlags = ['--config', fixedConfig, '--disable-nested-config', '--format', 'json'];
     const { result, lane: failed } = await runTool(lane, 'oxlint', [...fixedFlags, '--', ...targets], {
       cwd: checkout, run, timeoutMs: Math.max(1, deadline - Date.now()), env, resolve,
@@ -927,8 +934,10 @@ export async function detectLintTools({ config = {}, run = runProcess, env = pro
     oxlint: ['--version'],
     hadolint: ['--version'],
   };
+  const overridden = new Set((Array.isArray(config?.lintCommands) ? config.lintCommands : []).map((command) => command.name));
   const entries = await Promise.all(BUILTIN_TOOL_LANES.map(async (tool) => {
     if (config?.lintLanes?.[tool] === false) return [tool, 'turned off in installed policy'];
+    if (overridden.has(tool)) return [tool, 'overridden by project lintCommands entry'];
     const executable = await resolve(tool, { env });
     if (!executable) return [tool, 'not installed; its lane is skipped'];
     try {

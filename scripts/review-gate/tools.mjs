@@ -22,9 +22,10 @@ export const TOOL_PACKAGES = Object.freeze({
 
 /** The enabled built-in tools this machine does not have. */
 export async function missingTools({ config = {}, env = process.env, resolve = resolveExecutable } = {}) {
+  const overridden = new Set((Array.isArray(config?.lintCommands) ? config.lintCommands : []).map((command) => command.name));
   const missing = [];
   for (const tool of BUILTIN_TOOL_LANES) {
-    if (config?.lintLanes?.[tool] === false) continue;
+    if (config?.lintLanes?.[tool] === false || overridden.has(tool)) continue;
     if (!(await resolve(tool, { env }))) missing.push(tool);
   }
   return missing;

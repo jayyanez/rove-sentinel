@@ -44,8 +44,8 @@ import {
 import { reviewPlan } from '../risk.mjs';
 import { partitionShards, splitPatchByFile } from '../shards.mjs';
 import { ensureState } from '../storage.mjs';
-import { mapHeadLineToBaseLine, runHadolintLane, runOxlintLane, runProjectCommandLane, runRuffLane } from '../toolLanes.mjs';
-import { formatToolsNotice, installTools } from '../tools.mjs';
+import { detectLintTools, mapHeadLineToBaseLine, runHadolintLane, runOxlintLane, runProjectCommandLane, runRuffLane } from '../toolLanes.mjs';
+import { formatToolsNotice, installTools, missingTools } from '../tools.mjs';
 
 if (process.platform === 'win32') vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
@@ -1467,6 +1467,12 @@ describe('CodeRabbit and PR-watcher self-review regressions (1.21.0)', () => {
     const oxlintLanes = result.lanes.filter((l: { lane: string }) => l.lane === 'oxlint');
     expect(oxlintLanes.some((l: { status: string; note: string }) => l.status === 'skipped' && l.note.includes('overridden by project lintCommands'))).toBe(true);
     expect(oxlintLanes.some((l: { status: string }) => l.status === 'ok')).toBe(true);
+    // missingTools and detectLintTools also honor the lintCommands override.
+    expect(await missingTools({ config: cfg, resolve: async () => null })).not.toContain('oxlint');
+    expect(await missingTools({ config: cfg, resolve: async () => null })).not.toContain('hadolint');
+    const detected = await detectLintTools({ config: cfg, resolve: async () => null });
+    expect(detected.oxlint).toContain('overridden by project lintCommands');
+    expect(detected.hadolint).toContain('overridden by project lintCommands');
   });
 
   it('re-queues blockers with conflicting or duplicate prior_blocker_verdicts instead of last-wins clearing', () => {
@@ -1627,12 +1633,17 @@ describe('CodeRabbit and PR-watcher self-review regressions (1.21.0)', () => {
     const checkout = await tempDir('sentinel-oxlint-fixedcfg-');
     await writeFile(path.join(checkout, 'a.ts'), 'const x = missingVar;\n');
     const seenArgs: string[][] = [];
+    let writtenOxlintConfig: Record<string, unknown> | null = null;
     const oxlintLane = await runOxlintLane({
       checkout,
       files: ['a.ts'],
       patch: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-const y = 1;\n+const x = missingVar;\n',
       run: async (_bin: string, args: string[]) => {
         seenArgs.push(args);
+        const cfgIdx = args.indexOf('--config');
+        if (cfgIdx >= 0 && args[cfgIdx + 1]) {
+          writtenOxlintConfig = JSON.parse(await readFile(args[cfgIdx + 1], 'utf8'));
+        }
         return { code: 0, stdout: '{"diagnostics":[]}', stderr: '' };
       },
       resolve: async (n: string) => n,
@@ -1640,6 +1651,9 @@ describe('CodeRabbit and PR-watcher self-review regressions (1.21.0)', () => {
     expect(oxlintLane.status).toBe('ok');
     expect(seenArgs[0]).toContain('--config');
     expect(seenArgs[0]).toContain('--disable-nested-config');
+    expect(writtenOxlintConfig).toMatchObject({
+      rules: { 'no-const-assign': 'error', 'no-dupe-keys': 'error', 'no-redeclare': 'error', 'no-undef': 'error' },
+    });
 
     // Hunk-mapped Ruff baseline: deleting an old F821 on base line 2 must NOT hide a new F821 with the same message on head line 4!
     const pyPatch = [
