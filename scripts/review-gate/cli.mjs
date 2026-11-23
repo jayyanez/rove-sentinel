@@ -47,7 +47,7 @@ import { runPrePush } from './prepush.mjs';
 function parseArgs(args) {
   const options = {};
   const positional = [];
-  const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log', 'accounts', 'config']);
+  const valueFlags = new Set(['base', 'head', 'branch', 'author', 'risk', 'native-evidence', 'repo', 'reason', 'state-root', 'ref-type', 'finding', 'report', 'pr', 'heading', 'log', 'accounts', 'config', 'intent']);
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (!value.startsWith('--')) {
@@ -308,6 +308,7 @@ async function main() {
       author: options.author,
       risk: options.risk,
       nativeEvidence: options['native-evidence'],
+      prIntent: options.intent,
       stateRoot: options['state-root'],
       force: options.force,
       dryRun: options['dry-run'],

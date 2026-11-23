@@ -620,10 +620,11 @@ describe('review material in the prompt (1.13.0)', () => {
     const prompt = prompts[0];
     const nonce = /===== SENTINEL ([0-9a-f-]{36}) BEGIN review-context\.md =====/.exec(prompt)?.[1];
     expect(nonce).toBeTruthy();
-    for (const name of ['review-context.md', 'shared-review-charter.md', 'bug-lessons.md', 'open-bug-briefs.md', 'shard-1.diff']) {
+    for (const name of ['review-context.md', 'shared-review-charter.md', 'bug-lessons.md', 'shard-1.diff']) {
       expect(prompt).toContain(`===== SENTINEL ${nonce} BEGIN ${name} =====`);
       expect(prompt).toContain(`===== SENTINEL ${nonce} END ${name} =====`);
     }
+    expect(prompt).not.toContain(`===== SENTINEL ${nonce} BEGIN open-bug-briefs.md =====`);
     // Every byte of the shard is in the prompt, after the instructions.
     const patch = await readPatch(repository.root, repository.base, repository.head);
     const [shard] = partitionShards(patch, { maxShards: LIMITS.shardMaxCountHigh });

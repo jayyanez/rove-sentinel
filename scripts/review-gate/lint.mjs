@@ -10,6 +10,8 @@ import {
   linkNodeModules,
   runActionlintLane,
   runGitleaksLane,
+  runHadolintLane,
+  runOxlintLane,
   runProjectCommandLane,
   runRuffLane,
   runShellcheckLane,
@@ -561,6 +563,8 @@ export async function runDeterministicLanes({ checkout, files, patch, stateRoot,
       enabled('actionlint') ? runActionlintLane(toolOptions) : off('actionlint'),
       enabled('gitleaks') ? runGitleaksLane(toolOptions) : off('gitleaks'),
       enabled('ruff') ? runRuffLane(toolOptions) : off('ruff'),
+      enabled('oxlint') ? runOxlintLane(toolOptions) : off('oxlint'),
+      enabled('hadolint') ? runHadolintLane(toolOptions) : off('hadolint'),
       ...commands.map((command) => runProjectCommandLane({ ...toolOptions, command }).then((lane) => (
         command.nodeModules && nodeModules?.note && lane.status !== 'ok' ? { ...lane, note: `${lane.note}; ${nodeModules.note}` } : lane
       ))),

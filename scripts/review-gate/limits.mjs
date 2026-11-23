@@ -1,7 +1,7 @@
 import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
 import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.20.3), from the
+// What this engine version accepts and where it stops (1.21.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -45,7 +45,7 @@ export function sentinelLimits() {
       {
         id: 'linters',
         limit: 'installed tools',
-        text: 'shellcheck, actionlint, gitleaks and ruff run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
+        text: 'shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
       },
       {
         id: 'clippy',

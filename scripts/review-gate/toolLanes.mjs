@@ -32,13 +32,15 @@ const SHELL_EXTENSION = /\.(?:sh|bash)$/i;
 const SHELL_SHEBANG = /^#!\s*(?:\/usr\/bin\/env\s+)?(?:\S*\/)?(?:sh|bash|dash|ksh)\b/;
 const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/i;
 const PYTHON_FILE = /\.pyi?$/i;
+const JS_TS_FILE = /\.(?:[cm]?[jt]sx?)$/i;
+const DOCKERFILE = /(?:^|\/)(?:Dockerfile(?:\.[^/]+)?|[^/]+\.dockerfile)$/i;
 const TEST_PATH = /(?:^|\/)(?:tests?|__tests__|fixtures?|testdata|spec)(?:\/|$)|\.(?:test|spec)\.[^.]+$|(?:^|\/)test_[^/]+\.py$|_test\.(?:go|py)$/i;
 const MAX_LANE_FILES = 200;
 const MAX_SCAN_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_LANE_OUTPUT_BYTES = 8 * 1024 * 1024;
 
-export const BUILTIN_TOOL_LANES = Object.freeze(['shellcheck', 'actionlint', 'gitleaks', 'ruff']);
+export const BUILTIN_TOOL_LANES = Object.freeze(['shellcheck', 'actionlint', 'gitleaks', 'ruff', 'oxlint', 'hadolint']);
 
 function normalize(file) {
   return String(file || '').replace(/\\/g, '/');
@@ -294,15 +296,19 @@ export async function runRuffLane({ checkout, files, patch, run = runProcess, en
   const parsed = parseJson(result.stdout);
   if (!Array.isArray(parsed)) return { lane, status: 'error', note: 'ruff output could not be read', findings: [] };
   const added = addedLinesByFile(patch);
+  const changedTargets = new Set(targets);
   const relative = await checkoutRelativizer(checkout);
   const findings = [];
   for (const hit of parsed) {
     const file = await relative(hit.filename);
     const line = hit.location?.row;
-    if (!file || !added.get(file)?.has(line)) continue;
-    // Syntax errors, undefined names and misplaced statements are defects;
-    // the rest is style.
+    if (!file) continue;
+    // Syntax errors, undefined names and misplaced statements are hard defects:
+    // report them on ANY line of a changed file so deleting a definition or
+    // import is caught even when the broken use sits on an untouched line.
     const blocking = !hit.code || /^(?:E9|F63|F7|F82)/.test(hit.code);
+    const onAddedLine = Boolean(added.get(file)?.has(line));
+    if (!onAddedLine && !(blocking && changedTargets.has(file))) continue;
     findings.push(toolFinding({
       source: lane,
       rule: hit.code || 'syntax-error',
@@ -311,6 +317,78 @@ export async function runRuffLane({ checkout, files, patch, run = runProcess, en
       line,
       detail: `${hit.message}${hit.url ? ` (${hit.url})` : ''}`,
       priority: blocking ? 'P2' : 'P3',
+    }));
+  }
+  return finish(lane, findings, { total: parsed.length, files: targets.length, omitted });
+}
+
+export async function runOxlintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
+  const lane = 'oxlint';
+  const { files: targets, omitted } = await analyzable(checkout, (files || []).map(normalize).filter((file) => JS_TS_FILE.test(file)));
+  if (!targets.length) return { lane, status: 'skipped', note: 'no JS/TS file changed', findings: [] };
+  const { result, lane: failed } = await runTool(lane, 'oxlint', ['--format', 'json', '--', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
+  if (failed) return failed;
+  const bad = exitedBadly(lane, 'oxlint', result, [0, 1]);
+  if (bad) return bad;
+  const parsed = parseJson(result.stdout);
+  const diagnostics = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.diagnostics) ? parsed.diagnostics : null;
+  if (!diagnostics) return { lane, status: 'error', note: 'oxlint output could not be read', findings: [] };
+  const added = addedLinesByFile(patch);
+  const changedTargets = new Set(targets);
+  const relative = await checkoutRelativizer(checkout);
+  const findings = [];
+  for (const hit of diagnostics) {
+    const rawFile = hit.filename || hit.file || '';
+    const file = rawFile ? await relative(path.isAbsolute(rawFile) ? rawFile : path.join(checkout, rawFile)) : null;
+    if (!file) continue;
+    const span = Array.isArray(hit.labels) && hit.labels[0]?.span ? hit.labels[0].span : null;
+    const line = Number.isInteger(span?.line) ? span.line : (Number.isInteger(hit.line) ? hit.line : null);
+    const severity = String(hit.severity || 'warning').toLowerCase();
+    const code = String(hit.code || 'oxlint');
+    const isHardError = severity === 'error' && (
+      /no-undef|parse|syntax|redeclare|const-assign|dup-keys|duplicate/i.test(code) ||
+      !hit.code
+    );
+    const onAddedLine = line !== null && Boolean(added.get(file)?.has(line));
+    if (!onAddedLine && !(isHardError && changedTargets.has(file))) continue;
+    findings.push(toolFinding({
+      source: lane,
+      rule: code,
+      title: String(hit.message || 'oxlint diagnostic'),
+      file,
+      line,
+      detail: [hit.message, hit.help].filter(Boolean).join(' — '),
+      priority: severity === 'error' ? 'P2' : 'P3',
+    }));
+  }
+  return finish(lane, findings, { total: diagnostics.length, files: targets.length, omitted });
+}
+
+export async function runHadolintLane({ checkout, files, patch, run = runProcess, env = process.env, timeoutMs = LIMITS.toolLaneTimeoutMs, resolve }) {
+  const lane = 'hadolint';
+  const { files: targets, omitted } = await analyzable(checkout, (files || []).map(normalize).filter((file) => DOCKERFILE.test(file)));
+  if (!targets.length) return { lane, status: 'skipped', note: 'no Dockerfile changed', findings: [] };
+  const { result, lane: failed } = await runTool(lane, 'hadolint', ['--format', 'json', '--no-fail', '--', ...targets], { cwd: checkout, run, timeoutMs, env, resolve });
+  if (failed) return failed;
+  const bad = exitedBadly(lane, 'hadolint', result, [0, 1]);
+  if (bad) return bad;
+  const parsed = parseJson(result.stdout);
+  if (!Array.isArray(parsed)) return { lane, status: 'error', note: 'hadolint output could not be read', findings: [] };
+  const added = addedLinesByFile(patch);
+  const findings = [];
+  for (const hit of parsed) {
+    const level = String(hit.level || '').toLowerCase();
+    if (level !== 'error' && level !== 'warning') continue;
+    const file = normalize(hit.file);
+    if (!added.get(file)?.has(hit.line)) continue;
+    findings.push(toolFinding({
+      source: lane,
+      rule: String(hit.code || 'hadolint'),
+      title: String(hit.message || 'Dockerfile issue'),
+      file,
+      line: hit.line,
+      detail: String(hit.message || 'Dockerfile issue'),
+      priority: level === 'error' ? 'P2' : 'P3',
     }));
   }
   return finish(lane, findings, { total: parsed.length, files: targets.length, omitted });
@@ -464,12 +542,15 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
     return { ...bad, note: `${bad.note} (no located diagnostic)` };
   }
   const added = addedLinesByFile(patch);
+  const changedSet = new Set((files || []).map(normalize));
+  const scope = command.scope ?? 'added-lines';
   const relative = await checkoutRelativizer(checkout);
   const findings = [];
   for (const hit of hits) {
     const file = await relative(path.isAbsolute(hit.file) ? hit.file : path.join(checkout, hit.file));
     if (!file) continue;
-    if ((command.scope ?? 'added-lines') === 'added-lines' && !added.get(file)?.has(hit.line)) continue;
+    if (scope === 'added-lines' && !added.get(file)?.has(hit.line)) continue;
+    if (scope === 'changed-files' && !changedSet.has(file)) continue;
     findings.push(toolFinding({
       source: lane,
       rule: hit.rule || lane,
@@ -523,7 +604,14 @@ export async function linkNodeModules(checkout, repoRoot) {
  * it off. A missing tool is not an error: its lane reports a note.
  */
 export async function detectLintTools({ config = {}, run = runProcess, env = process.env, resolve = resolveExecutable } = {}) {
-  const versionArgs = { shellcheck: ['--version'], actionlint: ['-version'], gitleaks: ['version'], ruff: ['--version'] };
+  const versionArgs = {
+    shellcheck: ['--version'],
+    actionlint: ['-version'],
+    gitleaks: ['version'],
+    ruff: ['--version'],
+    oxlint: ['--version'],
+    hadolint: ['--version'],
+  };
   const entries = await Promise.all(BUILTIN_TOOL_LANES.map(async (tool) => {
     if (config?.lintLanes?.[tool] === false) return [tool, 'turned off in installed policy'];
     const executable = await resolve(tool, { env });

@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.20.3
+**Engine version:** 1.21.0
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,17 +28,17 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.20.3
+## Limits of 1.21.0
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
-| Change under review | Git's diff with 80 context lines a side: 8 MiB | The round fails closed on every push, because the diff is measured against the base: split the change into separately reviewed branches, or land part of it first |
+| Change under review | Git's diff with 40 context lines a side: 8 MiB | The round fails closed on every push, because the diff is measured against the base: split the change into separately reviewed branches, or land part of it first |
 | A changed file's size, a line's length | None | Shards are written in parts of 24 KB, longer lines cut across parts; a shard of up to 128 KB is in the prompt |
 | Context and required reads in the prompt | 96 KB together | They are read from files in parts instead |
-| Shards per round | 8 high risk up to about 830 KB of patch (4 medium up to 416 KB, 2 low up to 208 KB); then one more per 104 KB, up to `maxShards` (16 by default, 8 to 128) | Past the cap shards grow and the report says they were reviewed more thinly. A shard holds whole files, so one very large file's changes stay in one shard. 8 reviewers run at a time: 16 shards add a second wave, a few minutes |
-| Candidates per round | 50 after merging duplicates (4 per shard past 12 shards, at most 200; 8 per shard, 4 per hypothesis) | The round fails closed |
-| Confidence floor | 50 | Not adjudicated; the report keeps up to 40 |
-| Linters | shellcheck, actionlint, gitleaks, ruff when installed; project `lintCommands` from installed policy | A missing tool is a note in the report, not a pass |
+| Shards per round | 8 high risk up to about 830 KB of patch (4 medium up to 416 KB, 2 low up to 208 KB); then one more per 104 KB, up to `maxShards` (16 by default, 8 to 128) | Past the cap shards grow and the report says they were reviewed more thinly. Coupled changed files stay together where shard budgets allow, and a shard holds whole files, so one very large file's changes stay in one shard. 8 reviewers run at a time: 16 shards add a second wave, a few minutes |
+| Candidates per round | 50 after merging duplicates (4 per shard past 12 shards, at most 200; 8 per shard, 4 per hypothesis, 10 per grouped integration pass) | The round fails closed |
+| Confidence floor | 40 | Not adjudicated; the report keeps up to 40 |
+| Linters | shellcheck, actionlint, gitleaks, ruff, oxlint, hadolint when installed; project `lintCommands` from installed policy | A missing tool is a note in the report, not a pass |
 | Clippy, when a project turns it on | 8 crates of a change, under one 8-minute bound | The lane's note names the crates left out; a timeout is a note, not a pass |
 | Documentation skip | Only `.md`, `.markdown`, `.rst`, `.adoc` outside the review policy | Everything else, `.txt` and `.mdx` included, is reviewed |
 | One push | 16 refs to check, 1 still needing review; the hook waits 120 minutes, and longer while the watcher reviews that very request (at most 12 hours) | The push is refused |
@@ -74,18 +74,18 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 ## Limits that remain
 
-These are real in 1.20.3; work within them rather than around them.
+These are real in 1.21.0; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:
 
   ```powershell
-  git diff --unified=80 --output=review.patch "$(git merge-base origin/main HEAD)...HEAD"
+  git diff --unified=40 --output=review.patch "$(git merge-base origin/main HEAD)...HEAD"
   (Get-Item review.patch).Length
   ```
 
   In Git Bash:
-  `git diff --unified=80 "$(git merge-base origin/main HEAD)...HEAD" | wc -c`.
+  `git diff --unified=40 "$(git merge-base origin/main HEAD)...HEAD" | wc -c`.
 - AI review can miss defects and report false ones; a PASS is not a
   guarantee. Reference discovery is a line lexer, not a parser.
 - A logoff, a crash or a kill within one boot leaves a lock that

@@ -12,7 +12,7 @@
 | Branch convention | `origin/main` by default; explicit base supported for direct review |
 | Inputs | Committed diffs; no review of uncommitted editor buffers |
 | Languages | Text review is language-flexible; no guarantee of equal language quality |
-| Deterministic tools | Markdownlint; shellcheck, actionlint, gitleaks and ruff when installed on the host; project commands (`lintCommands`) and Clippy for the crates of changed Rust files when installed policy enables them |
+| Deterministic tools | Markdownlint; shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint when installed on the host; project commands (`lintCommands`) and Clippy for the crates of changed Rust files when installed policy enables them |
 | Visual evidence | Optional validation of committed evidence in a configurable layout; no screenshot generation |
 | External contributors | No automatic fork PR review; same-repository author allowlist |
 | Release discovery | Cached public GitHub lookup in update-check, status and doctor; opt-out supported |

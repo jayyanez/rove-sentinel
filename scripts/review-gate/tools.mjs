@@ -16,6 +16,8 @@ export const TOOL_PACKAGES = Object.freeze({
   actionlint: { winget: 'rhysd.actionlint', brew: 'actionlint', url: 'https://github.com/rhysd/actionlint/blob/main/docs/install.md' },
   gitleaks: { winget: 'Gitleaks.Gitleaks', brew: 'gitleaks', url: 'https://github.com/gitleaks/gitleaks#installing' },
   ruff: { winget: 'astral-sh.ruff', brew: 'ruff', url: 'https://docs.astral.sh/ruff/installation/' },
+  oxlint: { winget: null, brew: 'oxlint', url: 'https://oxc.rs/docs/guide/usage/linter/installation.html' },
+  hadolint: { winget: null, brew: 'hadolint', url: 'https://github.com/hadolint/hadolint#install' },
 });
 
 /** The enabled built-in tools this machine does not have. */
@@ -32,21 +34,31 @@ export async function missingTools({ config = {}, env = process.env, resolve = r
 export function installPlan(tools, platform = process.platform) {
   if (!tools.length) return { manager: null, commands: [], instructions: [] };
   if (platform === 'win32') {
+    const managed = tools.filter((tool) => TOOL_PACKAGES[tool]?.winget);
+    const manual = tools.filter((tool) => !TOOL_PACKAGES[tool]?.winget);
     return {
-      manager: 'winget',
-      commands: tools.map((tool) => ({
+      manager: managed.length ? 'winget' : null,
+      commands: managed.map((tool) => ({
         tool,
         program: 'winget',
         args: ['install', '--id', TOOL_PACKAGES[tool].winget, '--exact', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity'],
       })),
-      instructions: [`winget install ${tools.map((tool) => TOOL_PACKAGES[tool].winget).join(' ')}`],
+      instructions: [
+        ...(managed.length ? [`winget install ${managed.map((tool) => TOOL_PACKAGES[tool].winget).join(' ')}`] : []),
+        ...manual.map((tool) => `${tool}: ${TOOL_PACKAGES[tool].url}`),
+      ],
     };
   }
   if (platform === 'darwin') {
+    const managed = tools.filter((tool) => TOOL_PACKAGES[tool]?.brew);
+    const manual = tools.filter((tool) => !TOOL_PACKAGES[tool]?.brew);
     return {
-      manager: 'brew',
-      commands: [{ tool: tools.join(', '), program: 'brew', args: ['install', ...tools.map((tool) => TOOL_PACKAGES[tool].brew)] }],
-      instructions: [`brew install ${tools.map((tool) => TOOL_PACKAGES[tool].brew).join(' ')}`],
+      manager: managed.length ? 'brew' : null,
+      commands: managed.length ? [{ tool: managed.join(', '), program: 'brew', args: ['install', ...managed.map((tool) => TOOL_PACKAGES[tool].brew)] }] : [],
+      instructions: [
+        ...(managed.length ? [`brew install ${managed.map((tool) => TOOL_PACKAGES[tool].brew).join(' ')}`] : []),
+        ...manual.map((tool) => `${tool}: ${TOOL_PACKAGES[tool].url}`),
+      ],
     };
   }
   return {

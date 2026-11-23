@@ -273,6 +273,8 @@ describe('doctor reports the linter tools (1.13.0)', () => {
       actionlint: 'actionlint 1.2.3',
       gitleaks: 'not installed; its lane is skipped',
       ruff: 'turned off in installed policy',
+      oxlint: 'oxlint 1.2.3',
+      hadolint: 'hadolint 1.2.3',
       projectCommands: ['tsc'],
     });
   });

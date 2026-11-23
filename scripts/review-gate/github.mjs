@@ -144,7 +144,7 @@ export async function listReadyPullRequests(
     '--limit',
     String(limit),
     '--json',
-    'number,headRefOid,baseRefOid,isDraft,url,headRefName,baseRefName,author,isCrossRepository',
+    'number,headRefOid,baseRefOid,isDraft,url,headRefName,baseRefName,author,isCrossRepository,title,body',
   ];
   const result = await run(repoRoot, args);
   const open = JSON.parse(result.stdout);
@@ -403,6 +403,7 @@ export async function syncPullRequests({
           attempted = true;
           if (stateError) throw stateError;
           progress(`PR #${pr.number} head ${pr.headRefOid.slice(0, 12)} has no reusable outcome; reviewing it now.`);
+          const prIntent = [pr.title, pr.body].filter((part) => typeof part === 'string' && part.trim()).join('\n\n');
           result = await runGate({
             repoRoot: context.repoRoot,
             stateRoot: context.stateRoot,
@@ -410,6 +411,7 @@ export async function syncPullRequests({
             head: pr.headRefOid,
             branch: pr.headRefName,
             author: inferAuthor(pr.headRefName),
+            ...(prIntent ? { prIntent } : {}),
             progress,
           });
         }

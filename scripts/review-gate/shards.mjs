@@ -468,14 +468,13 @@ function directoryCloseness(a, b) {
 }
 
 /**
- * Order sections so each test follows the code file it tests (1.13.0). Kind
- * order alone put a module and its test in different shards, so no reviewer
- * saw both the changed branch and the test that should exercise it. A test
- * is attached to the changed non-test, non-doc file of the same stem whose
- * directory shares the longest prefix with its own (ties in path order); a
- * test without one keeps its kind's place. Deterministic for a given patch.
+ * Order sections so each test follows the code file it tests (1.13.0), and
+ * when cross-file `couplings` (local imports or shared changed symbols between
+ * changed files) are provided, keep coupled non-test files adjacent in
+ * deterministic components so producers and consumers changed together land in
+ * the same shard whenever size bounds allow. Deterministic for a given patch.
  */
-export function orderSectionFamilies(sections) {
+export function orderSectionFamilies(sections, { couplings = [] } = {}) {
   const sorted = [...sections].sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || byPath(a.file, b.file));
   const owners = sorted.filter((section) => section.kind !== 'tests' && section.kind !== 'docs');
   const attached = new Map();
@@ -494,11 +493,56 @@ export function orderSectionFamilies(sections) {
     attached.get(best.owner).push(section);
   }
   const placed = new Set([...attached.values()].flat());
+  // Build undirected adjacency among unattached non-test/non-doc sections of
+  // the same kind (or code+config) from explicit couplings.
+  const byFile = new Map(sorted.filter((section) => !placed.has(section)).map((section) => [section.file, section]));
+  const neighbors = new Map();
+  for (const pair of Array.isArray(couplings) ? couplings : []) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const [a, b] = pair;
+    if (!a || !b || a === b) continue;
+    const secA = byFile.get(a);
+    const secB = byFile.get(b);
+    if (!secA || !secB) continue;
+    if (secA.kind === 'docs' || secB.kind === 'docs' || secA.kind === 'tests' || secB.kind === 'tests') continue;
+    if (!neighbors.has(a)) neighbors.set(a, new Set());
+    if (!neighbors.has(b)) neighbors.set(b, new Set());
+    neighbors.get(a).add(b);
+    neighbors.get(b).add(a);
+  }
+  const visited = new Set();
   const ordered = [];
+  const emitSection = (section, clusterId) => {
+    ordered.push({ section, family: null, cluster: clusterId });
+    for (const test of attached.get(section) || []) ordered.push({ section: test, family: section.file, cluster: clusterId });
+  };
+  let nextCluster = 1;
   for (const section of sorted) {
-    if (placed.has(section)) continue;
-    ordered.push({ section, family: null });
-    for (const test of attached.get(section) || []) ordered.push({ section: test, family: section.file });
+    if (placed.has(section) || visited.has(section.file)) continue;
+    if (!neighbors.has(section.file)) {
+      visited.add(section.file);
+      emitSection(section, null);
+      continue;
+    }
+    // BFS in deterministic path order for this connected component.
+    const component = [];
+    const queue = [section.file];
+    visited.add(section.file);
+    while (queue.length) {
+      const current = queue.shift();
+      component.push(byFile.get(current));
+      const next = [...(neighbors.get(current) || [])].sort(byPath);
+      for (const peer of next) {
+        if (!visited.has(peer)) {
+          visited.add(peer);
+          queue.push(peer);
+        }
+      }
+    }
+    component.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || byPath(a.file, b.file));
+    const clusterId = nextCluster;
+    nextCluster += 1;
+    for (const member of component) emitSection(member, clusterId);
   }
   return ordered;
 }
@@ -534,6 +578,7 @@ export function partitionShards(patch, {
   maxShards = LIMITS.shardMaxCountHigh,
   excludedFiles = [],
   scriptPaths = [],
+  couplings = [],
 } = {}) {
   const excluded = new Set(excludedFiles.map((file) => String(file).replace(/\\/g, '/')));
   // A section without a textual hunk has nothing a reviewer can read: it is
@@ -541,11 +586,13 @@ export function partitionShards(patch, {
   // shards with files whose owner would have to report its review incomplete.
   // Kind order, then code-unit path order (never the host locale's
   // collation: identical patch bytes must always produce identical shards),
-  // with each test placed right after the code file it tests (1.13.0).
+  // with coupled files grouped and each test placed right after the code file
+  // it tests.
   const families = orderSectionFamilies(splitPatchByFile(patch, { scriptPaths })
-    .filter((section) => !excluded.has(section.file) && !section.metadataReason));
+    .filter((section) => !excluded.has(section.file) && !section.metadataReason), { couplings });
   const sections = families.map(({ section }) => section);
   const familyOf = new Map(families.map(({ section, family }) => [section, family]));
+  const clusterOf = new Map(families.map(({ section, cluster }) => [section, cluster]));
   if (!sections.length) return [];
   const total = sections.reduce((sum, section) => sum + section.changedLines, 0);
   // Raise the target when the diff cannot fit into maxShards shards at the
@@ -565,9 +612,11 @@ export function partitionShards(patch, {
         current.changedLines + section.changedLines > lineTarget ||
         current.bytes + bytes > byteTarget
       );
-      // A test stays with the code file it tests when the bounds allow.
+      // A test stays with the code file it tests when the bounds allow, and
+      // coupled files stay together across kind boundaries (e.g. code+config).
       const withFamily = familyOf.get(section) && current?.files.some((file) => file.file === familyOf.get(section));
-      const kindChanges = current && !withFamily && current.kind !== section.kind && current.changedLines >= lineTarget / 2;
+      const sameCluster = clusterOf.get(section) !== null && current?.files.some((file) => clusterOf.get(file) === clusterOf.get(section));
+      const kindChanges = current && !withFamily && !sameCluster && current.kind !== section.kind && current.changedLines >= lineTarget / 2;
       if (!current || wouldOverflow || kindChanges) {
         if (current) result.push(current);
         current = { files: [], changedLines: 0, bytes: 0, kind: section.kind };

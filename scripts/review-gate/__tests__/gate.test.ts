@@ -1784,7 +1784,7 @@ describe('adjudication while reviewers run (1.13.0)', () => {
   it('merges duplicates like cleanCandidates, but never replaces a candidate already sent', async () => {
     const { batches, dispatch } = recorder();
     const stream = createAdjudicationStream({ dispatch, batchSize: 2 });
-    await stream.add({ candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 40 })] });
+    await stream.add({ candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 35 })] });
     // c2 is under the floor; c1 waits for a full batch.
     expect(batches).toEqual([]);
     await stream.add({ candidates: [candidate('d1', { title: 'defect  C1', confidence: 90 })] });
@@ -1799,7 +1799,7 @@ describe('adjudication while reviewers run (1.13.0)', () => {
     // The same answer cleanCandidates gives for the reviews in that order,
     // except that the sent c3 is not replaced by the later e3.
     const all = [
-      { candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 40 })] },
+      { candidates: [candidate('c1', { confidence: 60 }), candidate('c2', { confidence: 35 })] },
       { candidates: [candidate('d1', { title: 'defect  C1', confidence: 90 })] },
       { candidates: [candidate('c3')] },
     ];

@@ -22,7 +22,7 @@ function relativeFile(value, label) {
 /** Only installation reads repository configuration; reviews use its frozen snapshot. */
 export function normalizeConfig(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Sentinel configuration must be an object.');
-  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'guiEvidenceLayout', 'clippy', 'clippyCrates', 'highRiskPaths', 'scriptPaths', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards'];
+  const allowed = ['schemaVersion', 'charter', 'lessons', 'guiEvidence', 'guiEvidenceLayout', 'clippy', 'clippyCrates', 'highRiskPaths', 'scriptPaths', 'trustedAuthors', 'providers', 'models', 'lintLanes', 'lintCommands', 'maxShards', 'pathRules', 'p3Mode'];
   for (const key of Object.keys(input)) {
     if (!allowed.includes(key)) throw new Error(`Unknown Sentinel configuration key: ${key}`);
   }
@@ -34,6 +34,9 @@ export function normalizeConfig(input = {}) {
   const trustedAuthors = input.trustedAuthors ?? [];
   if (input.providers !== undefined && !['auto', 'both', 'claude', 'codex'].includes(input.providers)) {
     throw new Error('providers must be auto, both, claude, or codex.');
+  }
+  if (input.p3Mode !== undefined && !['require-disposition', 'informational'].includes(input.p3Mode)) {
+    throw new Error('p3Mode must be require-disposition or informational.');
   }
   if (!Array.isArray(trustedAuthors) || trustedAuthors.length > 100 ||
       trustedAuthors.some((name) => typeof name !== 'string' || !/^[a-zA-Z0-9-]+(?:\[bot\])?$/.test(name))) {
@@ -57,6 +60,8 @@ export function normalizeConfig(input = {}) {
     ...(input.lintLanes !== undefined ? { lintLanes: normalizeLintLanes(input.lintLanes) } : {}),
     ...(input.maxShards !== undefined ? { maxShards: normalizeMaxShards(input.maxShards) } : {}),
     ...(input.lintCommands !== undefined ? { lintCommands: normalizeLintCommands(input.lintCommands) } : {}),
+    ...(input.pathRules !== undefined ? { pathRules: normalizePathRules(input.pathRules) } : {}),
+    ...(input.p3Mode !== undefined ? { p3Mode: input.p3Mode } : {}),
   };
 }
 
@@ -122,9 +127,45 @@ function normalizeMaxShards(value) {
   return value;
 }
 
-const LINT_LANES = ['shellcheck', 'actionlint', 'gitleaks', 'ruff'];
+const LINT_LANES = ['shellcheck', 'actionlint', 'gitleaks', 'ruff', 'oxlint', 'hadolint'];
 
-/** Built-in linter lanes a project turns off (1.13.0); every lane is on by default. */
+/**
+ * Path-scoped review instructions: each rule matches files via a regular
+ * expression and is injected only into shards containing matching files.
+ */
+function normalizePathRules(input) {
+  if (!Array.isArray(input) || !input.length || input.length > 32) {
+    throw new Error('pathRules must be a list of 1 to 32 rules.');
+  }
+  return input.map((rule, index) => {
+    const label = `pathRules[${index}]`;
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error(`${label} must be an object.`);
+    for (const key of Object.keys(rule)) {
+      if (!['match', 'instructions'].includes(key)) throw new Error(`Unknown ${label} setting: ${key}`);
+    }
+    const match = normalizePattern(rule.match, `${label}.match`);
+    if (typeof rule.instructions !== 'string' || !rule.instructions.trim() || rule.instructions.length > 1000) {
+      throw new Error(`${label}.instructions must be a non-empty string of at most 1000 characters.`);
+    }
+    return { match, instructions: rule.instructions.trim() };
+  });
+}
+
+/** Return the pathRules matching at least one file in `files`. */
+export function matchingPathRules(files, pathRules) {
+  if (!Array.isArray(pathRules) || !pathRules.length || !Array.isArray(files) || !files.length) return [];
+  const normalized = files.map((file) => String(file || '').replace(/\\/g, '/'));
+  return pathRules.filter((rule) => {
+    try {
+      const pattern = new RegExp(rule.match);
+      return normalized.some((file) => pattern.test(file));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Built-in linter lanes a project turns off; every lane is on by default. */
 function normalizeLintLanes(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('lintLanes must be an object.');
   for (const [lane, enabled] of Object.entries(input)) {
@@ -164,7 +205,7 @@ function normalizeLintCommands(input) {
         throw new Error(`${label}.files is not a valid regular expression: ${error.message}`);
       }
     }
-    if (command.scope !== undefined && !['added-lines', 'all'].includes(command.scope)) throw new Error(`${label}.scope must be added-lines or all.`);
+    if (command.scope !== undefined && !['added-lines', 'changed-files', 'all'].includes(command.scope)) throw new Error(`${label}.scope must be added-lines, changed-files, or all.`);
     if (command.timeoutMinutes !== undefined && (!Number.isInteger(command.timeoutMinutes) || command.timeoutMinutes < 1 || command.timeoutMinutes > 15)) {
       throw new Error(`${label}.timeoutMinutes must be a whole number from 1 to 15.`);
     }

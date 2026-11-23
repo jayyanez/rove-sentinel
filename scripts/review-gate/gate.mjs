@@ -25,7 +25,7 @@ import {
   resolveHeadSnapshot,
   runGit,
 } from './git.mjs';
-import { buildReferenceMap } from './refmap.mjs';
+import { buildPrStructuralDigest, buildReferenceMapData } from './refmap.mjs';
 import { runDeterministicLanes } from './lint.mjs';
 import {
   canonicalChangedPath,
@@ -35,6 +35,7 @@ import {
   promptSafe,
   runCoordinator,
   runHypothesisReviewer,
+  runIntegrationReviewer,
   runReviewer,
   runScout,
   runShardReviewer,
@@ -383,7 +384,7 @@ export async function settleShardWave(shards, runShard, {
  * identity the checkpoint is stored under.
  */
 export function shardAssignmentDigest({
-  shard, provider, round, followUpBaseSha = null, priorBlocking = [], patchDigest, branch = null, author = null, risk = null,
+  shard, provider, round, followUpBaseSha = null, priorBlocking = [], patchDigest, branch = null, author = null, risk = null, prIntent = '',
 }) {
   const blockers = (findings) => (findings || []).map((finding) => [finding.priority, finding.file, finding.title]);
   return hashText(JSON.stringify({
@@ -402,6 +403,7 @@ export function shardAssignmentDigest({
     branch,
     author,
     risk,
+    ...(prIntent ? { prIntentDigest: hashText(prIntent, 32) } : {}),
     priorBlocking: blockers(priorBlocking),
     reverifyBlockers: blockers(shard.reverifyBlockers),
     unassignedBlockers: blockers(shard.unassignedBlockers),
@@ -627,6 +629,83 @@ export function candidateIdentityKey(candidate) {
 }
 
 /**
+ * Whether two distinct candidates likely refer to the same underlying defect
+ * (same file within `lineWindow` lines, or same file sharing >= 2 significant
+ * title tokens). Used to group related candidates into the same adjudication
+ * batch and surface real multi-reviewer corroboration.
+ */
+export function areCandidatesRelated(a, b, { lineWindow = LIMITS.proximityLineWindow } = {}) {
+  if (!a || !b || !a.file || a.file !== b.file) return false;
+  if (Number.isInteger(a.line) && Number.isInteger(b.line) && Math.abs(a.line - b.line) <= lineWindow) {
+    return true;
+  }
+  const tokens = (text) => new Set(
+    String(text || '').toLowerCase().split(/[^a-z0-9_]+/).filter((word) => word.length >= 4),
+  );
+  const left = tokens(a.title);
+  const right = tokens(b.title);
+  let overlap = 0;
+  for (const word of left) {
+    if (right.has(word)) overlap += 1;
+    if (overlap >= 2) return true;
+  }
+  return false;
+}
+
+/**
+ * Partition scout hypotheses evenly into at most `maxGroups` cross-file
+ * integration reviewer batches so large hypothesis waves run in 1-2 CLI
+ * processes instead of spawning one full CLI per hypothesis.
+ */
+export function groupHypotheses(hypotheses, maxGroups = LIMITS.maxIntegrationReviewers) {
+  const list = Array.isArray(hypotheses) ? hypotheses : [];
+  if (!list.length) return [];
+  const count = Math.max(1, Math.min(maxGroups, list.length));
+  const groups = Array.from({ length: count }, () => []);
+  list.forEach((hypothesis, index) => groups[index % count].push(hypothesis));
+  return groups.filter((group) => group.length > 0);
+}
+
+/**
+ * Reconcile explicit `prior_blocker_verdicts` returned by a follow-up shard
+ * reviewer against the prior blockers assigned to that shard. Any assigned
+ * blocker marked `still_present` or `unverified` — or omitted from the
+ * reviewer's verdict array — is mechanically ensured a candidate entry so it
+ * always reaches adjudication instead of vanishing silently.
+ */
+export function reconcilePriorBlockerVerdicts(review, assignedBlockers = []) {
+  if (!review || !Array.isArray(review.prior_blocker_verdicts) || !assignedBlockers.length) return review;
+  const candidateKeys = new Set((review.candidates || []).map((candidate) => findingKey(candidate)));
+  const verdictByKey = new Map(review.prior_blocker_verdicts.map((verdict) => [findingKey(verdict), verdict]));
+  const extra = [];
+  for (const blocker of assignedBlockers) {
+    const key = findingKey(blocker);
+    if (candidateKeys.has(key)) continue;
+    const verdict = verdictByKey.get(key);
+    if (verdict?.status === 'fixed') continue;
+    const reason = verdict
+      ? `Follow-up reviewer marked assigned prior blocker "${verdict.status}": ${verdict.evidence}`
+      : 'Follow-up reviewer omitted this assigned prior blocker from prior_blocker_verdicts; mechanically re-queued for adjudication.';
+    extra.push({
+      id: `${review.provider}-${review.roleIndex}-reverify-${extra.length}`,
+      provider: review.provider,
+      roleIndex: review.roleIndex,
+      title: blocker.title,
+      priority: blocker.priority || 'P2',
+      confidence: 100,
+      category: 'prior-blocker-reverification',
+      file: blocker.file,
+      line: Number.isInteger(blocker.line) && blocker.line >= 1 ? blocker.line : null,
+      scenario: blocker.scenario || 'Prior blocking finding carried from the previous reviewed head.',
+      evidence: reason,
+      proposed_test: 'Verify the prior blocker is fixed at head.',
+    });
+    candidateKeys.add(key);
+  }
+  return extra.length ? { ...review, candidates: [...review.candidates, ...extra] } : review;
+}
+
+/**
  * Adjudication that starts while the reviewers still run (1.13.0). It used
  * to wait for the last shard and hypothesis, then adjudicate everything:
  * on this repository that tail was the longest stage of a review. Each
@@ -688,7 +767,32 @@ export function createAdjudicationStream({
           : { ...existing.candidate, corroboratingReviewers: existing.corroborating };
         continue;
       }
-      const entry = { candidate: { ...candidate, corroboratingReviewers: 1 }, corroborating: 1, dispatched: false };
+      // Proximity/title corroboration across independent reviewers: keep both
+      // candidates so distinct bugs on adjacent lines are never dropped, but
+      // annotate related ids/providers so the adjudicator sees corroboration
+      // and can consolidate exact duplicates cleanly.
+      const relatedIds = [];
+      for (const prior of entries) {
+        const differentReviewer = prior.candidate.provider !== candidate.provider || prior.candidate.roleIndex !== candidate.roleIndex;
+        if (differentReviewer && areCandidatesRelated(prior.candidate, candidate)) {
+          relatedIds.push(prior.candidate.id);
+          if (!prior.dispatched) {
+            const list = Array.isArray(prior.candidate.relatedCandidates) ? prior.candidate.relatedCandidates : [];
+            if (!list.includes(candidate.id)) {
+              prior.candidate = { ...prior.candidate, relatedCandidates: [...list, candidate.id] };
+            }
+          }
+        }
+      }
+      const entry = {
+        candidate: {
+          ...candidate,
+          corroboratingReviewers: 1,
+          ...(relatedIds.length ? { relatedCandidates: relatedIds } : {}),
+        },
+        corroborating: 1,
+        dispatched: false,
+      };
       entries.push(entry);
       if (key !== null) byKey.set(key, entry);
       if (entries.length > maxCandidates) {
@@ -741,16 +845,24 @@ export function createAdjudicationStream({
       return { candidates: entries.map((entry) => entry.candidate), overflow, count: entries.length };
     },
     /**
-     * Send what remains in tail batches and wait for every batch. Returns the
-     * batches in the order they were sent, with each one's settled result.
+     * Send what remains in tail batches (grouped by file so related candidates
+     * land in the same batch for clean consolidation) and wait for every batch.
      */
     async finish() {
       await queue;
       rethrow();
       if (!overflow && !stopped && forced) {
         const rest = pending.splice(0);
+        // Cluster same-file candidates adjacent while preserving first-seen file order.
+        const byFile = new Map();
+        for (const entry of rest) {
+          const file = entry.candidate.file || '';
+          if (!byFile.has(file)) byFile.set(file, []);
+          byFile.get(file).push(entry);
+        }
+        const grouped = [...byFile.values()].flat();
         const size = Math.max(1, tailBatchSize);
-        for (let index = 0; index < rest.length; index += size) send(rest.slice(index, index + size));
+        for (let index = 0; index < grouped.length; index += size) send(grouped.slice(index, index + size));
       }
       return await settledBatches();
     },
@@ -926,16 +1038,11 @@ export function createStageClock() {
  * from enforcement (gate self-review).
  */
 export function followUpShards({
-  followUpPatch, patch, incrementFiles, priorBlocking, maxShards, excludedFiles = [], scriptPaths = [],
+  followUpPatch, patch, incrementFiles, priorBlocking, maxShards, excludedFiles = [], scriptPaths = [], couplings = [],
 }) {
   const bound = Math.max(1, maxShards);
   const fullSections = splitPatchByFile(patch);
-  // A blocker's file may have been renamed by the repair: its new section
-  // covers the old path, so the re-verification shard follows the rename.
   const renamedTo = new Map([...renamedPaths(patch), ...renamedPaths(followUpPatch)]);
-  // Only an increment file with a textual hunk is read by an incremental
-  // shard: a file the repair merely renamed (or that is binary) owns no
-  // shard, so a blocker in it still needs its re-verification shard.
   const textualIncrement = new Set(splitPatchByFile(followUpPatch)
     .filter((section) => !section.metadataReason)
     .map((section) => section.file));
@@ -947,13 +1054,11 @@ export function followUpShards({
   const sections = uncovered.length
     ? fullSections.filter((section) => uncovered.includes(section.file))
     : [];
-  if (!sections.length) return partitionShards(followUpPatch, { maxShards: bound, excludedFiles, scriptPaths });
-  // The re-verification shards share the round's shard cap with the
-  // incremental ones: the wave never exceeds maxShards reviewers.
-  const incremental = partitionShards(followUpPatch, { maxShards: Math.max(1, bound - 1), excludedFiles, scriptPaths });
+  if (!sections.length) return partitionShards(followUpPatch, { maxShards: bound, excludedFiles, scriptPaths, couplings });
+  const incremental = partitionShards(followUpPatch, { maxShards: Math.max(1, bound - 1), excludedFiles, scriptPaths, couplings });
   const reverifyPatch = `${sections.map((section) => section.text).join('\n')}\n`;
   const reverify = partitionShards(reverifyPatch, {
-    maxShards: Math.max(1, bound - incremental.length), excludedFiles, scriptPaths,
+    maxShards: Math.max(1, bound - incremental.length), excludedFiles, scriptPaths, couplings,
   }).map((shard) => ({ ...shard, reverify: true }));
   return [...incremental, ...reverify].map((shard, index) => ({ ...shard, index }));
 }
@@ -1112,6 +1217,7 @@ async function runGateWithLease({
   author: authorOverride = 'auto',
   risk: riskOverride,
   nativeEvidence,
+  prIntent = '',
   force = false,
   dryRun = false,
   progress = () => {},
@@ -1120,8 +1226,14 @@ async function runGateWithLease({
   // wave (tests), unless a dedicated shard reviewer is supplied.
   shardReviewer = reviewer === runReviewer ? runShardReviewer : reviewer,
   hypothesisReviewer = runHypothesisReviewer,
+  // Grouped cross-file integration reviewer is the production default when no
+  // custom per-hypothesis test seam is injected.
+  integrationReviewer = hypothesisReviewer === runHypothesisReviewer ? runIntegrationReviewer : null,
+  dualPass = shardReviewer === runShardReviewer,
+  cacheStaggerMs = shardReviewer === runShardReviewer ? LIMITS.promptCacheStaggerMs : 0,
   scout = runScout,
   coordinator = runCoordinator,
+  consolidateDuplicates = coordinator === runCoordinator,
   deterministicLanes = runDeterministicLanes,
   policy,
   stateRoot,
@@ -1408,10 +1520,16 @@ async function runGateWithLease({
       throw error;
     }
   };
+  const rawShardReviewer = shardReviewer;
+  const rawCoordinator = coordinator;
   reviewer = guardUsageLimits(reviewer, { vetoes: true });
-  shardReviewer = guardUsageLimits(shardReviewer, { vetoes: true });
-  coordinator = guardUsageLimits(coordinator, { vetoes: true });
+  shardReviewer = guardUsageLimits(rawShardReviewer, { vetoes: true });
+  // Optional cross-model second-opinion shard reviewer never vetoes fallback.
+  const secondaryShardReviewer = guardUsageLimits(rawShardReviewer, { vetoes: false });
+  coordinator = guardUsageLimits(rawCoordinator, { vetoes: true });
+  const consolidationCoordinator = guardUsageLimits(rawCoordinator, { vetoes: false });
   hypothesisReviewer = guardUsageLimits(hypothesisReviewer, { vetoes: false });
+  if (integrationReviewer) integrationReviewer = guardUsageLimits(integrationReviewer, { vetoes: false });
   scout = guardUsageLimits(scout, { vetoes: false });
   const usageLimitFailure = async (errors, code = null, failures = []) => {
     const providers = [...new Set(usageLimitHits.map((hit) => hit.provider))];
@@ -1590,9 +1708,20 @@ async function runGateWithLease({
   // `cat-file`), never working-tree files, so it is built from the
   // repository while the review checkout is created (1.13.0). It degrades to
   // an explicit placeholder rather than failing the review.
-  const referenceMapPromise = clock.time('reference-map', () => buildReferenceMap({
+  const emptyRefMapData = () => ({
+    markdown: '',
+    symbolSections: [],
+    calleeSnippets: [],
+    siblings: [],
+    siblingSources: new Map(),
+    couplings: [],
+    fileSymbols: new Map(),
+    truncationNote: '',
+    sweepFailures: 0,
+  });
+  const referenceMapPromise = clock.time('reference-map', () => buildReferenceMapData({
     checkout: context.repoRoot, headSha, patch, files,
-  }).catch(() => ''));
+  }).catch(() => emptyRefMapData()));
   let worktree;
   try {
     worktree = await createDetachedWorktree(context.repoRoot, headSha);
@@ -1605,11 +1734,9 @@ async function runGateWithLease({
   let operationError;
   let completedResult;
   try {
-    // Deterministic pre-computed evidence (v1.6.0): repository-wide usage
-    // sites of changed symbols, untouched co-change siblings, and the open
-    // bug briefs matching changed paths. Seconds of Git work that every
-    // reviewer would otherwise have to spend its small read budget on. Both
-    // degrade to an explicit placeholder rather than failing the review.
+    // Deterministic pre-computed evidence: bidirectional reference map
+    // (downstream callers + enclosing symbols + upstream callee definitions +
+    // untouched co-change siblings), PR structural digest, and open bug briefs.
     progress('Building deterministic reference map and invariant context.');
     let openBriefs = '';
     try {
@@ -1617,7 +1744,9 @@ async function runGateWithLease({
     } catch {
       openBriefs = '';
     }
-    const referenceMap = await referenceMapPromise;
+    const refMapData = await referenceMapPromise;
+    const patchSections = splitPatchByFile(patch, { scriptPaths: reviewPolicy.config.scriptPaths });
+    const prDigest = buildPrStructuralDigest({ files, patchSections, refMapData, metadataOnlyFiles });
     bundle = await createContextBundle({
       checkout: worktree.checkout,
       policyRoot: context.repoRoot,
@@ -1633,7 +1762,10 @@ async function runGateWithLease({
       metadataOnlyFiles,
       stats,
       patch,
-      referenceMap,
+      referenceMap: refMapData.markdown,
+      referenceMapData: refMapData,
+      prDigest,
+      prIntent,
       openBriefs,
       followUpPatch,
       followUpBaseSha,
@@ -1697,9 +1829,9 @@ async function runGateWithLease({
       : [];
     const shards = followUp
       ? followUpShards({
-        followUpPatch, patch, incrementFiles, priorBlocking: priorBlockingList, maxShards: plan.maxShards, excludedFiles, scriptPaths: reviewPolicy.config.scriptPaths,
+        followUpPatch, patch, incrementFiles, priorBlocking: priorBlockingList, maxShards: plan.maxShards, excludedFiles, scriptPaths: reviewPolicy.config.scriptPaths, couplings: refMapData.couplings,
       })
-      : partitionShards(patch, { maxShards: plan.maxShards, excludedFiles, scriptPaths: reviewPolicy.config.scriptPaths });
+      : partitionShards(patch, { maxShards: plan.maxShards, excludedFiles, scriptPaths: reviewPolicy.config.scriptPaths, couplings: refMapData.couplings });
     // A prior blocker in a file no shard holds (a usage-site file the branch
     // never changed) is flagged so every shard reviewer may re-verify it by
     // reading the file at head.
@@ -1738,7 +1870,7 @@ async function runGateWithLease({
     // reviewed again. Candidates are adjudicated afresh either way.
     const patchDigest = hashText(patch, 64);
     const assignments = shards.map((shard, index) => shardAssignmentDigest({
-      shard, provider: shardProviders[index], round, followUpBaseSha, priorBlocking: priorBlockingList, patchDigest, branch, author, risk: risk.level,
+      shard, provider: shardProviders[index], round, followUpBaseSha, priorBlocking: priorBlockingList, patchDigest, branch, author, risk: risk.level, prIntent,
     }));
     // The restart after a usage limit starts from scratch, as --force does.
     const checkpoint = force || providerFallback || accountFallback ? null : await readShardCheckpoint(context.paths, identity).catch(() => null);
@@ -1791,26 +1923,20 @@ async function runGateWithLease({
     // Each shard's model passes are recorded under its number, so a kept
     // review carries its own provenance into the round that reuses it.
     const shardExecutions = shards.map(() => []);
-    const runShard = (shard) => shardReviewer({
-      provider: shardProviders[shard.index],
-      roleIndex: shard.index,
-      lane: 'shard',
-      round,
-      checkout: worktree.checkout,
-      bundle: {
-        ...bundle,
-        providerExecutions: {
-          push(record) {
-            record.shard = shard.index + 1;
-            providerExecutions.push(record);
-            shardExecutions[shard.index].push(record);
-          },
-        },
-      },
-      shard,
-      priorBlocking: priorBlockingList,
-      priorBlockingPath,
-    });
+    // Prompt prefix cache warming: when launching multiple shards for the same
+    // provider with shared inline context, let the first launch of that
+    // provider start immediately and stagger subsequent ones slightly so they
+    // hit the warm prefix cache instead of cold-missing simultaneously.
+    const firstLaunchByProvider = new Set();
+    const waitForCacheWarm = async (provider) => {
+      if (!cacheStaggerMs || !bundle.inline || shards.length < 3) return;
+      if (newProcessLaunchesBlocked() || providerCleanupFailureLatched() || usageLimitHits.length) return;
+      if (!firstLaunchByProvider.has(provider)) {
+        firstLaunchByProvider.add(provider);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, cacheStaggerMs));
+    };
     // A model-written path is matched to the exact changed-file path when the
     // checkout's directory listings identify it (see canonicalChangedPath),
     // so the identity and increment checks below compare the same string.
@@ -1829,6 +1955,47 @@ async function runGateWithLease({
     const canonicalReview = async (review) => {
       await canonicalize(review.candidates.map((candidate) => candidate.file));
       return { ...review, candidates: review.candidates.map((candidate) => ({ ...candidate, file: canonicalFile(candidate.file) })) };
+    };
+    const runShard = async (shard) => {
+      const provider = shardProviders[shard.index];
+      await waitForCacheWarm(provider);
+      const result = await shardReviewer({
+        provider,
+        roleIndex: shard.index,
+        lane: 'shard',
+        round,
+        checkout: worktree.checkout,
+        bundle: {
+          ...bundle,
+          providerExecutions: {
+            push(record) {
+              record.shard = shard.index + 1;
+              providerExecutions.push(record);
+              shardExecutions[shard.index].push(record);
+            },
+          },
+        },
+        shard,
+        priorBlocking: priorBlockingList,
+        priorBlockingPath,
+      });
+      if (round === 'follow-up') {
+        const assigned = [...(shard.reverifyBlockers || []), ...(shard.unassignedBlockers || [])];
+        if (assigned.length && Array.isArray(result?.prior_blocker_verdicts)) {
+          await canonicalize([
+            ...(result.candidates || []).map((candidate) => candidate.file),
+            ...result.prior_blocker_verdicts.map((verdict) => verdict.file),
+          ]);
+          const canonicalized = {
+            ...result,
+            candidates: (result.candidates || []).map((candidate) => ({ ...candidate, file: canonicalFile(candidate.file) })),
+            prior_blocker_verdicts: result.prior_blocker_verdicts.map((verdict) => ({ ...verdict, file: canonicalFile(verdict.file) })),
+          };
+          return reconcilePriorBlockerVerdicts(canonicalized, assigned);
+        }
+        return reconcilePriorBlockerVerdicts(result, assigned);
+      }
+      return result;
     };
     // Adjudication runs while the reviewers do (1.13.0): each review's
     // candidates join the stream as it settles. A round that will fail closed
@@ -1911,6 +2078,45 @@ async function runGateWithLease({
         ? { status: 'fulfilled', value: keptShards[index].review, retried: false, reused: true }
         : settledPending.shift()));
     });
+    // Cross-model second opinion on small diffs (low risk, 1 shard) or the
+    // largest code shard on high risk (when <= 4 shards), running concurrently
+    // in the same pool with the opposite provider so no single model's blind
+    // spot lets a bug through on small or critical code changes.
+    let secondaryShardProviders = [];
+    let secondaryShardPromise = Promise.resolve([]);
+    const distinctProviders = [...new Set(plan.reviewers)];
+    if (dualPass && round === 'full' && distinctProviders.length > 1 && shards.length > 0 && !providerFallback) {
+      const targetShards = risk.level === 'low' && shards.length === 1
+        ? [shards[0]]
+        : risk.level === 'high' && shards.length <= 4
+          ? [shards.filter((s) => s.kind === 'code').sort((a, b) => b.changedLines - a.changedLines)[0]].filter(Boolean)
+          : [];
+      if (targetShards.length) {
+        secondaryShardProviders = targetShards.map((shard) => distinctProviders.find((p) => p !== shardProviders[shard.index]) || distinctProviders[0]);
+        const secondaryTasks = targetShards.map((shard, idx) => () => secondaryShardReviewer({
+          provider: secondaryShardProviders[idx],
+          roleIndex: shards.length + 100 + idx,
+          lane: 'shard-second-opinion',
+          round,
+          checkout: worktree.checkout,
+          bundle: {
+            ...bundle,
+            providerExecutions: {
+              push(record) {
+                record.shard = shard.index + 1;
+                record.secondOpinion = true;
+                providerExecutions.push(record);
+              },
+            },
+          },
+          shard,
+          priorBlocking: [],
+          priorBlockingPath: null,
+          secondaryFocus: 'concurrency/async interleaving, state transitions, error paths, security boundaries, and subtle caller/callee contract mismatches',
+        }));
+        secondaryShardPromise = clock.time('cross-model-second-opinion', () => settleReviewersWithRetry(secondaryTasks, { pool, onSettled: streamOther }));
+      }
+    }
 
     // Saved as soon as the wave settles, before anything can fail the round
     // closed, and removed once the round ends in a report: whatever stops it
@@ -1957,6 +2163,7 @@ async function runGateWithLease({
         if (scoutCleanupCode) {
           // The shard reviews that completed beside the scout are kept too.
           await keepCompletedShards(await shardPromise);
+          await secondaryShardPromise;
           await lanesPromise;
           const { cleanup: adjudicationCleanup } = await haltAdjudication();
           throw await buildFailClosedError({
@@ -1971,18 +2178,32 @@ async function runGateWithLease({
         reviewerErrors.push(`scout: ${scoutAttempt.reason?.message || String(scoutAttempt.reason)}`);
       }
       if (hypotheses.length) {
-        progress(`Testing ${hypotheses.length} narrow hypothes${hypotheses.length === 1 ? 'is' : 'es'}.`);
-        hypothesisProviders = hypotheses.map((_, roleIndex) => plan.reviewers[roleIndex % plan.reviewers.length]);
-        // Hypothesis role indexes are offset past the shard wave so candidate
-        // ids stay unique across both waves.
-        const hypothesisTasks = hypotheses.map((hypothesis, roleIndex) => () => hypothesisReviewer({
-          provider: hypothesisProviders[roleIndex],
-          roleIndex: shards.length + roleIndex,
-          checkout: worktree.checkout,
-          bundle,
-          hypothesis,
-        }));
-        hypothesisPromise = clock.time('hypotheses', () => settleReviewersWithRetry(hypothesisTasks, { pool, onSettled: streamOther }));
+        if (integrationReviewer) {
+          const groups = groupHypotheses(hypotheses, LIMITS.maxIntegrationReviewers);
+          progress(`Testing ${hypotheses.length} cross-file hypothes${hypotheses.length === 1 ? 'is' : 'es'} in ${groups.length} grouped integration reviewer(s).`);
+          hypothesisProviders = groups.map((_, roleIndex) => plan.reviewers[roleIndex % plan.reviewers.length]);
+          const integrationTasks = groups.map((group, roleIndex) => () => integrationReviewer({
+            provider: hypothesisProviders[roleIndex],
+            roleIndex: shards.length + roleIndex,
+            checkout: worktree.checkout,
+            bundle,
+            hypotheses: group,
+          }));
+          hypothesisPromise = clock.time('hypotheses', () => settleReviewersWithRetry(integrationTasks, { pool, onSettled: streamOther }));
+        } else {
+          progress(`Testing ${hypotheses.length} narrow hypothes${hypotheses.length === 1 ? 'is' : 'es'}.`);
+          hypothesisProviders = hypotheses.map((_, roleIndex) => plan.reviewers[roleIndex % plan.reviewers.length]);
+          // Hypothesis role indexes are offset past the shard wave so candidate
+          // ids stay unique across both waves.
+          const hypothesisTasks = hypotheses.map((hypothesis, roleIndex) => () => hypothesisReviewer({
+            provider: hypothesisProviders[roleIndex],
+            roleIndex: shards.length + roleIndex,
+            checkout: worktree.checkout,
+            bundle,
+            hypothesis,
+          }));
+          hypothesisPromise = clock.time('hypotheses', () => settleReviewersWithRetry(hypothesisTasks, { pool, onSettled: streamOther }));
+        }
       }
     }
     const settledShards = await shardPromise;
@@ -1992,6 +2213,7 @@ async function runGateWithLease({
       ...(settledShards[index].delivery ? { delivery: settledShards[index].delivery } : {}),
       ...(keptShards[index] ? { reused: true, reviewedAt: keptShards[index].completedAt, delivery: keptShards[index].delivery } : {}),
     }));
+    const settledSecondary = await secondaryShardPromise;
     const settledHypotheses = await hypothesisPromise;
     // A shard-less diff (every changed file excluded from the textual patch
     // or without a textual hunk)
@@ -2014,11 +2236,12 @@ async function runGateWithLease({
       ));
       reviewerErrors.push(...describeReviewerFailures(settledLens, plan.reviewers));
     }
-    const settledReviewers = [...settledShards, ...settledHypotheses, ...settledLens];
+    const settledReviewers = [...settledShards, ...settledSecondary, ...settledHypotheses, ...settledLens];
     // A failed shard is described once, with its files and size, in the
     // fail-closed error below; other paths keep the role line.
     const shardFailureLines = describeReviewerFailures(settledShards, shardProviders.map((provider) => `${provider} shard`));
     reviewerErrors.push(...shardFailureLines);
+    reviewerErrors.push(...describeReviewerFailures(settledSecondary, secondaryShardProviders.map((provider) => `${provider} second-opinion shard`)));
     reviewerErrors.push(...describeReviewerFailures(settledHypotheses, hypothesisProviders.map((provider) => `${provider} hypothesis`)));
     const reviews = settledReviewers.filter((result) => result.status === 'fulfilled').map((result) => result.value);
     const lanesSettled = await lanesPromise;
@@ -2192,6 +2415,72 @@ async function runGateWithLease({
           }),
         };
         assertAdjudicationCoverage(candidates, adjudication);
+        // Cross-batch duplicate consolidation: when streaming adjudication split
+        // overlapping verified findings on the same file/region across different
+        // batches (e.g. primary shard + second-opinion + integration passes), run
+        // one bounded consolidation pass on only the colliding subset. Only
+        // "Duplicate of <surviving verified id>" dismissals are accepted so a
+        // real defect can never be silently dropped.
+        if (consolidateDuplicates && sentBatches.length > 1) {
+          const batchIndexById = new Map();
+          sentBatches.forEach(({ batch }, idx) => {
+            for (const item of batch) batchIndexById.set(item.id, idx);
+          });
+          const verifiedFindings = adjudication.findings.filter((finding) => finding.disposition === 'verified');
+          const colliding = verifiedFindings.filter((a) => verifiedFindings.some((b) => (
+            a.candidate_id !== b.candidate_id
+            && batchIndexById.get(a.candidate_id) !== batchIndexById.get(b.candidate_id)
+            && areCandidatesRelated(a, b, { lineWindow: 5 })
+          )));
+          if (colliding.length >= 2 && colliding.length <= LIMITS.maxCandidates) {
+            progress(`Consolidating ${colliding.length} overlapping verified finding(s) across adjudication batches.`);
+            const collidingCandidates = colliding.map((finding) => {
+              const orig = candidateById.get(finding.candidate_id);
+              return {
+                ...(orig || {}),
+                id: finding.candidate_id,
+                title: finding.title,
+                priority: finding.priority,
+                file: finding.file,
+                line: finding.line,
+                scenario: finding.scenario || orig?.scenario || '',
+                evidence: finding.reason || orig?.evidence || '',
+                proposed_test: finding.proposed_test || orig?.proposed_test || '',
+                confidence: orig?.confidence ?? 90,
+                category: orig?.category || 'verified-overlap',
+              };
+            });
+            const consolidation = await clock.time('consolidation', () => pool.run(() => runProviderWithOneRetry(() => (
+              consolidationCoordinator({
+                provider: plan.coordinator,
+                checkout: worktree.checkout,
+                bundle,
+                candidates: collidingCandidates,
+                batchIndex: sentBatches.length,
+              })
+            ))));
+            if (consolidation.status === 'fulfilled') {
+              const verdicts = new Map((consolidation.value?.findings || []).map((f) => [f.candidate_id, f]));
+              const survivingVerified = new Set(
+                colliding
+                  .filter((f) => verdicts.get(f.candidate_id)?.disposition !== 'dismissed')
+                  .map((f) => f.candidate_id),
+              );
+              adjudication = {
+                ...adjudication,
+                findings: adjudication.findings.map((finding) => {
+                  const verdict = verdicts.get(finding.candidate_id);
+                  if (!verdict || verdict.disposition !== 'dismissed') return finding;
+                  const dupMatch = /^Duplicate of ([A-Za-z0-9._-]+)\b/i.exec(String(verdict.reason || '').trim());
+                  if (!dupMatch || !survivingVerified.has(dupMatch[1]) || dupMatch[1] === finding.candidate_id) return finding;
+                  return { ...finding, disposition: 'dismissed', reason: verdict.reason };
+                }),
+              };
+            } else if (processTreeCleanupFailureCode(consolidation.reason)) {
+              throw consolidation.reason;
+            }
+          }
+        }
       } catch (error) {
         failedProvider(plan.coordinator, error, adjudicationRetried);
         // Every failed batch, or the error raised after them (a coverage or
@@ -2311,6 +2600,7 @@ async function runGateWithLease({
         deferrals: deferralsAtHead,
         lateDiscoveriesUsed,
         repairRoundsUsed,
+        p3Mode: reviewPolicy.config.p3Mode ?? 'require-disposition',
       },
       ),
       ...carried,

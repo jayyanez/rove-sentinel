@@ -548,10 +548,10 @@ describe('review material for the prompt (1.13.0)', () => {
       execFileSync('git', ['-C', temporaryRoot, 'add', '.']);
       execFileSync('git', ['-C', temporaryRoot, 'commit', '-m', 'base']);
       const headSha = execFileSync('git', ['-C', temporaryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-      const make = (charter: string, inlineMaterial = true) => createContextBundle({
+      const make = (charter: string, inlineMaterial = true, openBriefs?: string) => createContextBundle({
         checkout: temporaryRoot, policyRoot: temporaryRoot, policy: { charter, lessons: '# Lessons\n' },
         baseSha: headSha, headSha, branch: 'b', author: 'human', risk: 'low', riskReasons: ['t'],
-        files: ['a.ts'], stats: { additions: 1, deletions: 0 }, patch: '+x', temporaryRoot, inlineMaterial,
+        files: ['a.ts'], stats: { additions: 1, deletions: 0 }, patch: '+x', temporaryRoot, inlineMaterial, openBriefs,
       });
       const small = await make('# Charter\nBe exact.\n');
       try {
@@ -560,9 +560,17 @@ describe('review material for the prompt (1.13.0)', () => {
         expect(small.inline?.required).toContain(context);
         expect(small.inline?.required).toContain(`===== SENTINEL ${small.inline?.nonce} BEGIN shared-review-charter.md =====\n# Charter\nBe exact.\n===== SENTINEL`);
         expect(small.inline?.required).toContain('BEGIN bug-lessons.md');
-        expect(small.inline?.required).toContain('BEGIN open-bug-briefs.md');
+        // Absent open bug briefs are omitted from inline material to save tokens.
+        expect(small.inline?.required).not.toContain('BEGIN open-bug-briefs.md');
       } finally {
         await small.cleanup();
+      }
+      const withBriefs = await make('# Charter\nBe exact.\n', true, '# Open bug briefs\n\n## docs/bugs/open/b1.md\nDetails.\n');
+      try {
+        expect(withBriefs.inline?.required).toContain('BEGIN open-bug-briefs.md');
+        expect(withBriefs.inline?.required).toContain('docs/bugs/open/b1.md');
+      } finally {
+        await withBriefs.cleanup();
       }
       const large = await make(`# Charter\n${'r'.repeat(100 * 1024)}\n`);
       try {

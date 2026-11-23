@@ -33,8 +33,10 @@ reads the same fields from a file outside the repository, named with
 | `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
 | `models` | Optional per-provider `model`, `effort`, `maxEffort` and per-role `roles`; see [models](models.md) |
 | `maxShards` | Most shards one round of a large change may have, 8 to 128; 16 by default. Each 8 more add a wave of reviewers (a few minutes) and read less per reviewer |
-| `lintLanes` | Turn a built-in linter lane off: `{ "ruff": false }`; all four are on by default |
+| `lintLanes` | Turn a built-in linter lane off: `{ "ruff": false }`; all six (`shellcheck`, `actionlint`, `gitleaks`, `ruff`, `oxlint`, `hadolint`) are on by default |
 | `lintCommands` | Project lint commands to run in the review checkout; see below |
+| `pathRules` | Optional path-scoped review instructions (`{ "match": "^src/api/", "instructions": "..." }`), up to 32 rules, injected only into shards touching matching files |
+| `p3Mode` | `require-disposition` (default: P3 advisories need a fix or recorded deferral before push) or `informational` (P3 findings stay visible in reports and PR comments without blocking push) |
 
 Paths use forward slashes and cannot be absolute or contain `..`. Unknown keys
 and invalid values are refused. A custom charter replaces the bundled prose;
@@ -193,7 +195,7 @@ Project commands run your own checker in the review checkout:
 | `run` | Program and arguments, without a shell; `node` is Sentinel's Node.js. On Windows run a package's script with `node`, not its `.cmd` shim |
 | `format` | `unix` (`path:line:col: message`, an ESLint-style `[Error/rule]` tag sets the severity) or `tsc` |
 | `files` | Optional regular expression: the command runs only when a changed file matches, and `{files}` in `run` becomes those files |
-| `scope` | `added-lines` (default) or `all`, for a checker that is clean on the base and should report every hit |
+| `scope` | `added-lines` (default), `changed-files` (any line in a changed file, catching errors caused by deleted lines), or `all` (for a checker that is clean on the base and should report every hit) |
 | `timeoutMinutes` | 1 to 15; 5 by default |
 | `nodeModules` | Link the trusted checkout's `node_modules` into the review checkout while the command runs |
 

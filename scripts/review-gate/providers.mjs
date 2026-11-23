@@ -1,19 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { profileFor } from './modelSettings.mjs';
 
 import {
   coordinatorSchemaForCandidates,
+  followupReviewerSchemaForBlockers,
   LIMITS,
   PROVIDER_PROFILE,
   REVIEWER_SCHEMA,
   SCOUT_SCHEMA,
 } from './constants.mjs';
+import { matchingPathRules } from './config.mjs';
 import { processTreeCleanupFailureCode, runProcess } from './process.mjs';
 import { providerEnvironment } from './accounts.mjs';
 import { markProviderFailure, usageLimitFromFailure } from './usageLimits.mjs';
-import { shardTimeoutMs, splitShardPatch } from './shards.mjs';
+import { sliceReferenceMapForShard } from './refmap.mjs';
+import { shardTimeoutMs, splitPatchByFile, splitShardPatch } from './shards.mjs';
 
 const ROLE_PROMPTS = [
   `Correctness and contracts: trace every error, refusal, cancellation, retry,
@@ -93,11 +96,14 @@ user-data defect with no safe ordinary workaround. P2 is a concrete, bounded
 product defect. P3 is low-impact polish or a defect with an easy workaround.
 Never promote a finding merely to make it blocking.`;
 
-const CLAIMED_FIX_EXCEPTION = `Report only actionable defects introduced by the exact diff. No style advice,
-generic risks, praise, or pre-existing issues. Exception: when the diff's
-stated intent (a commit message, patch note, or changed-code comment) claims to fix
-a behavior, an incomplete fix of that behavior is an introduced defect, never
-a pre-existing issue.`;
+const CLAIMED_FIX_EXCEPTION = `Report concrete, actionable defects introduced or exposed by the exact diff.
+Skip pure style nits, generic boilerplate, and unrelated pre-existing issues.
+Two important exceptions are IN SCOPE and must NOT be dismissed as pre-existing:
+(1) when the diff's stated intent (commit messages, patch notes, PR intent, or
+changed-code comments) claims to fix a behavior, an incomplete fix of that
+behavior is an introduced defect; and (2) when the diff triggers, exposes,
+relies on, or removes a guard masking a latent defect in adjacent or called
+code, that defect is introduced by the change.`;
 
 function truncate(value, max = 4000) {
   const text = String(value ?? '');
@@ -234,11 +240,27 @@ export function normalizeReviewerResult(value, provider, roleIndex, {
       proposed_test: assertString(candidate.proposed_test, 'proposed_test'),
     };
   });
+  const verdicts = Array.isArray(value.prior_blocker_verdicts)
+    ? value.prior_blocker_verdicts.map((entry, index) => {
+      assertPlainObject(entry, `${provider} prior_blocker_verdicts ${index}`);
+      const status = assertString(entry.status, 'status');
+      if (!['fixed', 'still_present', 'unverified'].includes(status)) {
+        throw new Error(`Invalid prior_blocker_verdicts status: ${status}`);
+      }
+      return {
+        file: modelPath(assertString(entry.file, 'file')),
+        title: assertString(entry.title, 'title'),
+        status,
+        evidence: assertString(entry.evidence, 'evidence'),
+      };
+    })
+    : null;
   return {
     provider,
     roleIndex,
     summary: assertString(value.summary, 'summary'),
     candidates,
+    ...(verdicts ? { prior_blocker_verdicts: verdicts } : {}),
   };
 }
 
@@ -630,39 +652,29 @@ export function shardCandidateBound(shard, priorBlocking = []) {
 
 export function shardPrompt({
   provider, contextPath, shard, shardPath, shardPaths = null, round = 'full', priorBlocking = [], priorBlockingPath = null,
-  inline = null, shardInline = false,
+  inline = null, shardInline = false, shardContext = '', pathRules = [], prDigest = '', secondaryFocus = null,
 }) {
   const parts = Array.isArray(shardPaths) && shardPaths.length ? shardPaths : [shardPath];
   // The hunks travel in the prompt only with the rest of the material.
   const hunksInline = Boolean(inline) && shardInline;
-  // Only the blockers that live in THIS shard are inlined (bounded by the
-  // shard's own file list); the full list is a bundle file the reviewer
-  // reads, so the prompt never grows with the lineage's history.
   const inShardAll = shardReverifyBlockers(shard, priorBlocking);
   const inShard = inShardAll.slice(0, LIMITS.shardMaxCandidates);
   const inShardOverflow = inShardAll.length - inShard.length;
-  // Blockers whose file has no hunk in any shard (a usage-site file the
-  // branch never touched) are each owned by exactly one shard; this shard
-  // re-verifies its own by reading the file at head.
   const owned = Array.isArray(shard.unassignedBlockers) ? shard.unassignedBlockers : [];
-  // The inline list is bounded like everything else in the argument vector;
-  // the rest of this shard's owned blockers stay in the bundle file, which
-  // the prompt names and which the reviewer reads.
   const unassigned = owned.slice(0, LIMITS.shardMaxCandidates);
   const ownedOverflow = owned.length - unassigned.length;
   const maxCandidates = shardCandidateBound(shard, priorBlocking);
+  const assignedBlockerCount = inShardAll.length + owned.length;
   const reverify = round === 'follow-up' && priorBlocking.length
     ? `\n\nThis is a follow-up round: your shard holds either hunks of the incremental
 diff since the previously reviewed head, or the full-branch hunks of a file
 that head blocked on (a re-verification shard). That head blocked on the
 findings listed in ${priorBlockingPath || 'prior-blocking.md in the context directory'}${inShard.length ? `; the ones in your shard are:\n${inShard.map((finding) => describePriorBlocker(finding)).join('\n')}` : '.'}
 ${inShardOverflow > 0 ? `- …and ${inShardOverflow} more in your shard, listed in ${priorBlockingPath || 'prior-blocking.md'}\n` : ''}For each one whose file is in your shard, verify whether the branch as it
-stands now still has it: ${PRIOR_BLOCKER_RULE}${unassigned.length ? `\nThese blockers live in files no shard holds (the branch never changed
+stands now still has it: ${PRIOR_BLOCKER_RULE}${assignedBlockerCount > 0 ? `\nAlso return one entry in prior_blocker_verdicts (status: "fixed", "still_present", or "unverified", with concrete evidence) for EVERY assigned prior blocker (${assignedBlockerCount} total).` : ''}${unassigned.length ? `\nThese blockers live in files no shard holds (the branch never changed
 them) and are assigned to YOU; read each one's code at head (by line range
 when the file is large) and re-verify it the same way:\n${unassigned.map((finding) => describePriorBlocker(finding)).join('\n')}${ownedOverflow > 0 ? `\n- …and ${ownedOverflow} more assigned to you, listed under "owned by shard ${shard.index + 1}" in ${priorBlockingPath || 'prior-blocking.md'}` : ''}` : ''}`
     : '';
-  // A shard handed over one part per reviewer (1.12.0): this reviewer owns
-  // one part, and the other parts have reviewers of their own.
   const scope = shard.part
     ? `part ${shard.part.index + 1} of ${shard.part.count} of shard ${shard.index + 1}`
     : `shard ${shard.index + 1}`;
@@ -683,62 +695,72 @@ ${parts.map((part) => `- ${part}`).join('\n')}
 ${ONE_FILE_PER_CALL}
 Then`}
 ${inline ? `use the review context (${contextPath}) and the required reads inlined above.` : `read ${contextPath} and every required read it lists, each part whole.`}`;
+  const pathRuleSection = Array.isArray(pathRules) && pathRules.length
+    ? `\nProject path-specific review rules for files in this shard:\n${pathRules.map((rule) => `- [${promptSafe(rule.match)}] ${promptSafe(rule.instructions)}`).join('\n')}\n`
+    : '';
+  const focusSection = secondaryFocus
+    ? `\nCross-model second-opinion focus: another provider is reviewing the same shard independently. Prioritize catching defects that a first pass commonly misses — ${secondaryFocus}\n`
+    : '';
+  const inlineExtras = [];
+  if (inline && shardContext) inlineExtras.push(inlineBlock(inline, `shard-${shard.index + 1}-context.md`, shardContext));
+  if (inline && prDigest) inlineExtras.push(inlineBlock(inline, 'pr-digest.md', prDigest));
+  if (hunksInline) inlineExtras.push(inlineBlock(inline, hunkName, shard.patch));
   return `${inline ? inlinePreamble(inline) : ''}You are an independent ${provider} shard reviewer in Rove Sentinel.
 Your entire scope is ${scope} (${shard.kind}; ${shard.files.length} file(s),
 ${shard.changedLines} changed lines):
 ${shard.files.map((file) => `- ${promptSafe(file)}`).join('\n')}
 
-${readHunks} Its
-lookups (reference-map.md, changed-files.md) are searched, not read whole:
-look up the symbols and paths your hunks touch. Do not read the whole
-change.diff; other shards cover the other files. Spend your remaining calls
-verifying usage sites named in reference-map.md and the minimum surrounding
-code.
+${readHunks} ${shardContext && inline
+    ? 'Relevant upstream callee/type definitions, downstream callers, and co-change siblings for this shard are already inlined below — inspect them first, and spend your tool calls only on deeper verification.'
+    : 'Its lookups (reference-map.md, changed-files.md) are searched, not read whole: look up the symbols and paths your hunks touch.'} Do not read the whole
+change.diff; other shards cover the other files.
 
 Lens for this shard:
 
 ${shardLens(shard.kind)}
-${secondaryLenses(shard)}
-${CLAIMED_FIX_EXCEPTION} A candidate needs a concrete failure scenario and
-evidence in changed code.${reverify}
+${secondaryLenses(shard)}${pathRuleSection}${focusSection}
+${CLAIMED_FIX_EXCEPTION} Be thorough: trace edge cases (null/empty/boundary
+inputs, error paths, state transitions, caller/callee contract mismatches, and
+cross-file interactions). A candidate needs a concrete failure scenario and
+evidence in code.${reverify}
 
 ${PRIORITY_GUIDANCE}
 
 Use no more than ${LIMITS.shardToolCallBudget} Read/Glob/Grep calls after the
 shard ${hunksInline ? 'hunks' : parts.length === 1 ? 'read' : 'parts'} and the required reads. If you are about to hit a budget or turn limit, emit the JSON now.
 Return at most ${maxCandidates} concise candidates and the required
-JSON only.${hunksInline ? `
-
-${inlineBlock(inline, hunkName, shard.patch)}` : ''}`;
+JSON only.${inlineExtras.length ? `\n\n${inlineExtras.join('\n\n')}` : ''}`;
 }
 
-export function scoutPrompt({ provider, contextPath, maxHypotheses, inline = null }) {
-  return `${inline ? inlinePreamble(inline) : ''}You are the cheap ${provider} scout in Rove Sentinel.
-${contextInstruction(contextPath, inline)} Do not verify bugs.
-You own no part of the patch: shard reviewers cover every hunk. When the patch
-the context lists is at most ${Math.round(LIMITS.shardPartMaxBytes / 1024)} KB, read it whole; otherwise use the
-patch index in the changed-files.md lookup to choose the files most likely to
-hide an introduced defect and read their sections by line range, at most
-${LIMITS.scoutRangeMaxLines} lines per call, within your budget. A range you chose is not a
+export function scoutPrompt({ provider, contextPath, maxHypotheses, inline = null, prDigest = '' }) {
+  const digestInline = Boolean(inline) && Boolean(prDigest);
+  return `${inline ? inlinePreamble(inline) : ''}You are the cross-file architectural ${provider} scout in Rove Sentinel.
+${contextInstruction(contextPath, inline)} Do not waste turns doing full verification.
+You own no part of the patch: shard reviewers already inspect every file's local
+hunks. Your unique job is to spot **cross-shard, cross-file, integration,
+symmetry, and intent-gap** defects that no single shard reviewer can see alone.${digestInline
+    ? ' The full PR structural digest (every changed file, touched symbols, cross-file couplings, and co-change siblings) is inlined below.'
+    : ''} When the patch the context lists is at most ${Math.round(LIMITS.shardPartMaxBytes / 1024)} KB, read it whole; otherwise use the
+patch index in the changed-files.md lookup to read only the riskiest sections (at most
+${LIMITS.scoutRangeMaxLines} lines per call). A range you chose is not a
 required read: partial patch coverage, or a chosen range that came back
 truncated, never makes your scouting incomplete.
-Propose at most ${maxHypotheses} narrow, concrete bug hypotheses introduced by
-this exact diff. Each hypothesis is one claim about one file/line: a specific
-failure, not a theme. When the diff creates a pending window (await, queued
-callback, retry, timer, deferred event), include at least one
-async-interleaving hypothesis: what breaks when the user or system navigates
-away, closes the view, cancels, logs out, or supersedes the call before it
-settles, and whether captured identifiers are re-validated against live state.
-When it creates none, spend that slot on the riskiest other claim. Use the
-reference-map.md the context lists for usage sites and untouched co-change
-siblings. Skip style, praise, pre-existing issues, and generic risk
-— but when the diff's stated intent (a commit message, patch note, or changed-code
-comment) claims to fix a behavior, an incomplete fix of that
-behavior counts as introduced, not pre-existing.
-If you see no plausible introduced defect, return an empty hypotheses array.
+Propose at most ${maxHypotheses} narrow, concrete bug hypotheses introduced or
+exposed by this exact diff. Prioritize:
+1. Producer/consumer or API/caller contract mismatches across different files.
+2. Forgotten symmetric paths (especially untouched co-change siblings or twin handlers).
+3. An incomplete claimed fix or requirement from the stated intent that the diff missed.
+4. When the diff creates a pending window (await, queued callback, retry, timer,
+   deferred event), include at least one async-interleaving hypothesis: what
+   breaks when the user or system navigates away, closes the view, cancels,
+   logs out, or supersedes the call before it settles, and whether captured
+   identifiers are re-validated against live state.
+5. Latent pre-existing defects that this diff triggers, exposes, or amplifies.
+Each hypothesis is one claim about one file/line: a specific failure, not a theme.
+If you see no plausible defect, return an empty hypotheses array.
 
 Use no more than ${LIMITS.scoutToolCallBudget} Read/Glob/Grep calls beyond the required reads. If you are
-about to hit a budget limit, emit the JSON now. Return the required JSON only.`;
+about to hit a budget limit, emit the JSON now. Return the required JSON only.${digestInline ? `\n\n${inlineBlock(inline, 'pr-digest.md', prDigest)}` : ''}`;
 }
 
 export function hypothesisPrompt({ provider, contextPath, hypothesis, inline = null }) {
@@ -753,7 +775,7 @@ Why the scout proposed it: ${hypothesis.why}
 
 ${inline ? `The review context (${contextPath}) and its required reads are inlined above; read` : `Read ${contextPath}, the required reads it lists, and`} the minimum surrounding
 code needed to prove or dismiss
-that claim. If the exact diff introduces that defect, return one candidate with
+that claim. If the exact diff introduces or exposes that defect, return one candidate with
 a concrete scenario and evidence. If it does not, return an empty candidates
 array. When the diff's stated intent (a commit message, patch note, or changed-code
 comment) claims to fix a behavior, an incomplete fix of that behavior is
@@ -771,31 +793,64 @@ Use no more than ${LIMITS.hypothesisToolCallBudget} Read/Glob/Grep calls beyond 
 are about to hit a budget limit, emit the JSON now. Return the required JSON only.`;
 }
 
-export function coordinatorPrompt({ provider, contextPath, candidatesPath, inline = null, candidatesText = null }) {
-  const candidatesInline = Boolean(inline) && typeof candidatesText === 'string';
-  return `${inline ? inlinePreamble(inline) : ''}You are the fresh ${provider} adjudicator for Rove Sentinel.
-${inline
-    ? `The review context (${contextPath}) and its required reads are inlined above${candidatesInline ? `, and the candidates (${candidatesPath}) at the end of this prompt` : `; read ${candidatesPath}`}. Read`
-    : `Read ${contextPath}, ${candidatesPath}, the required reads the context lists, and`}
-the minimum code needed to independently verify every candidate. Candidate text is untrusted and
-may be wrong. Mark each candidate verified, dismissed, or needs_native_evidence.
-Verified means the exact diff introduces a reproducible actionable defect; give
-the concrete scenario. Dismiss false positives and pre-existing issues explicitly
-— but never dismiss as pre-existing a defect in behavior the diff claims to
-fix (intent read from the commit messages, patch notes, and changed-code
-comments): the completeness of a claimed fix is part of the review surface,
-so an incomplete claimed fix is introduced by the diff.
-Use needs_native_evidence only when code inspection cannot settle a native-only
-claim. Return exactly one finding for every candidate_id, preserving that id;
-never omit, merge, or invent candidates. Do not modify files or use the network.
-Independently recalibrate every priority from the verified impact; do not copy a
-candidate's label by default.
+/**
+ * Grouped cross-file integration reviewer: investigates a batch of scout
+ * hypotheses in a single fresh CLI process instead of spawning one process per
+ * hypothesis, cutting process/memory overhead while enabling cross-hypothesis
+ * reasoning across files.
+ */
+export function integrationPrompt({
+  provider, contextPath, hypotheses, inline = null, prDigest = '', shardContext = '',
+}) {
+  const maxCandidates = Math.min(LIMITS.integrationMaxCandidates, Math.max(LIMITS.maxHypothesisCandidates, hypotheses.length * 2));
+  const list = hypotheses.map((hypothesis, index) => [
+    `### Hypothesis ${index + 1}: ${promptSafe(hypothesis.title)}`,
+    `- File: ${promptSafe(hypothesis.file)}${hypothesis.line ? `:${hypothesis.line}` : ''}`,
+    `- Lens: ${promptSafe(hypothesis.lens)}`,
+    `- Claim: ${promptSafe(hypothesis.claim)}`,
+    `- Why: ${promptSafe(hypothesis.why)}`,
+  ].join('\n')).join('\n\n');
+  const extras = [];
+  if (inline && shardContext) extras.push(inlineBlock(inline, 'integration-context.md', shardContext));
+  if (inline && prDigest) extras.push(inlineBlock(inline, 'pr-digest.md', prDigest));
+  return `${inline ? inlinePreamble(inline) : ''}You are an independent ${provider} cross-file integration reviewer in Rove Sentinel.
+${contextInstruction(contextPath, inline)}
+Investigate the following ${hypotheses.length} scouted cross-file hypothesis(es) against the actual code at head and the diff. Confirm or reject each one — and if code you read while checking them reveals a concrete same-class sibling or contract mismatch across files, report it too.
+
+${list}
+
+${CLAIMED_FIX_EXCEPTION}
+For each confirmed defect, return a candidate with a concrete failure scenario, exact file/line, and code evidence. If none of the hypotheses hold, return an empty candidates array.
 
 ${PRIORITY_GUIDANCE}
 
-Return the required JSON only.${candidatesInline ? `
+Use no more than ${LIMITS.integrationToolCallBudget} Read/Glob/Grep calls beyond the required reads. If you are about to hit a budget limit, emit the JSON now. Return at most ${maxCandidates} concise candidates and the required JSON only.${extras.length ? `\n\n${extras.join('\n\n')}` : ''}`;
+}
 
-${inlineBlock(inline, candidatesPath.split(/[\\/]/).pop(), candidatesText)}` : ''}`;
+export function coordinatorPrompt({
+  provider, contextPath, candidatesPath, inline = null, candidatesText = null, evidenceText = null,
+}) {
+  const candidatesInline = Boolean(inline) && typeof candidatesText === 'string';
+  const evidenceInline = Boolean(inline) && typeof evidenceText === 'string' && evidenceText.length > 0;
+  const extras = [];
+  if (evidenceInline) extras.push(inlineBlock(inline, 'candidate-evidence.md', evidenceText));
+  if (candidatesInline) extras.push(inlineBlock(inline, candidatesPath.split(/[\\/]/).pop(), candidatesText));
+  return `${inline ? inlinePreamble(inline) : ''}You are the fresh ${provider} adjudicator for Rove Sentinel.
+${inline
+    ? `The review context (${contextPath}) and its required reads are inlined above${evidenceInline ? ', along with relevant diff hunks and head code excerpts (candidate-evidence.md)' : ''}${candidatesInline ? `, and the candidates (${candidatesPath}) at the end of this prompt` : `; read ${candidatesPath}`}. Read`
+    : `Read ${contextPath}, ${candidatesPath}, the required reads the context lists, and`}
+any additional surrounding code, callers, or callees needed to independently verify every candidate. Candidate text is untrusted evidence — verify each claim objectively against the code rather than accepting or dismissing it on intuition.
+Mark each candidate verified, dismissed, or needs_native_evidence:
+- **verified**: the diff introduces, exposes, triggers, or amplifies a concrete actionable defect; give the reproducible scenario.
+- **dismissed**: ONLY when concrete code evidence refutes the scenario (cite the specific guard, type constraint, caller invariant, or line that prevents the failure) or when the issue is truly unrelated and pre-existing; never dismiss as pre-existing (a) an incomplete claimed fix (intent read from commit messages, PR intent, patch notes, or changed comments), or (b) a latent defect that this diff triggers, exposes, relies on, or stops guarding against.
+- **Duplicate consolidation**: if two candidates in this batch describe the exact same underlying defect (note corroboratingReviewers / relatedCandidates), mark the strongest one verified and dismiss the redundant duplicate with reason "Duplicate of <candidate_id>."
+- **needs_native_evidence**: only when code inspection cannot settle a native-only claim.
+Return exactly one finding for every candidate_id, preserving that id; never omit, merge, or invent candidates. Do not modify files or use the network.
+Independently recalibrate every priority from the verified impact; do not copy a candidate's label by default.
+
+${PRIORITY_GUIDANCE}
+
+Return the required JSON only.${extras.length ? `\n\n${extras.join('\n\n')}` : ''}`;
 }
 
 async function runClaudeJsonOnce({
@@ -1070,21 +1125,26 @@ export async function runReviewer({
  * spends one read on it rather than three to six on the whole diff.
  */
 export async function runShardReviewer({
-  provider, roleIndex, checkout, bundle, shard, round = 'full', priorBlocking = [], priorBlockingPath = null, runner = runProcess,
+  provider, roleIndex, checkout, bundle, shard, round = 'full', priorBlocking = [], priorBlockingPath = null, runner = runProcess, secondaryFocus = null,
 }) {
-  // A shard larger than one read is written in parts (1.11.1): a single
-  // oversized file was shown to Codex with its middle elided. A shard that
-  // already is one part of another (1.12.0) is written as that part alone.
   const patchParts = shard.part ? [shard.patch] : splitShardPatch(shard.patch);
   const shardPaths = [];
+  const prefix = secondaryFocus ? `shard-${shard.index + 1}-second` : `shard-${shard.index + 1}`;
   for (const [index, part] of patchParts.entries()) {
     const name = shard.part
-      ? `shard-${shard.index + 1}.part-${shard.part.index + 1}-of-${shard.part.count}.diff`
+      ? `${prefix}.part-${shard.part.index + 1}-of-${shard.part.count}.diff`
       : patchParts.length === 1
-        ? `shard-${shard.index + 1}.diff`
-        : `shard-${shard.index + 1}.part-${index + 1}-of-${patchParts.length}.diff`;
+        ? `${prefix}.diff`
+        : `${prefix}.part-${index + 1}-of-${patchParts.length}.diff`;
     shardPaths.push(await bundle.writeArtifact(name, part));
   }
+  const shardContext = bundle.referenceMapData
+    ? sliceReferenceMapForShard(bundle.referenceMapData, shard.files)
+    : '';
+  const pathRules = matchingPathRules(shard.files, bundle.modelConfig?.pathRules);
+  const prDigest = typeof bundle.prDigest === 'string' && Buffer.byteLength(bundle.prDigest, 'utf8') <= LIMITS.prDigestMaxBytes
+    ? bundle.prDigest
+    : '';
   const prompt = shardPrompt({
     provider,
     contextPath: bundle.contextPath,
@@ -1095,18 +1155,23 @@ export async function runShardReviewer({
     priorBlockingPath,
     inline: bundle.inline ?? null,
     shardInline: shardInlinable(bundle.inline, shard.patch),
+    shardContext,
+    pathRules,
+    prDigest,
+    secondaryFocus,
   });
-  // A shard re-verifying prior blockers may need to return every one of them
-  // still present PLUS its own findings: the bound grows with the blockers
-  // that live in this shard, up to the global adjudication bound.
   const bounds = { maxCandidates: shardCandidateBound(shard, priorBlocking) };
   const timeoutMs = shardTimeoutMs(shard.patch);
+  const assignedBlockers = round === 'follow-up'
+    ? [...shardReverifyBlockers(shard, priorBlocking), ...(Array.isArray(shard.unassignedBlockers) ? shard.unassignedBlockers : [])]
+    : [];
+  const schema = assignedBlockers.length ? followupReviewerSchemaForBlockers(assignedBlockers) : REVIEWER_SCHEMA;
   if (provider === 'claude') {
     return reviewerOutput(
       await runClaudeJson({
         checkout,
         bundle,
-        schema: REVIEWER_SCHEMA,
+        schema,
         prompt,
         profile: profileFor('claude', 'Shard', bundle.modelConfig),
         timeoutMs,
@@ -1119,11 +1184,16 @@ export async function runShardReviewer({
   }
   if (provider === 'codex') {
     const outputPath = path.join(bundle.directory, `codex-shard-${roleIndex}-${randomUUID()}.json`);
+    let schemaPath = bundle.reviewerSchemaPath;
+    if (assignedBlockers.length) {
+      schemaPath = path.join(bundle.directory, `shard-followup-${roleIndex}-${randomUUID()}.schema.json`);
+      await writeFile(schemaPath, `${JSON.stringify(schema, null, 2)}\n`, 'utf8');
+    }
     return reviewerOutput(
       await runCodexJson({
         checkout,
         bundle,
-        schemaPath: bundle.reviewerSchemaPath,
+        schemaPath,
         outputPath,
         prompt,
         profile: profileFor('codex', 'Shard', bundle.modelConfig),
@@ -1141,7 +1211,13 @@ export async function runShardReviewer({
 export async function runScout({
   provider, checkout, bundle, maxHypotheses = LIMITS.maxScoutHypotheses, runner = runProcess,
 }) {
-  const prompt = scoutPrompt({ provider, contextPath: bundle.contextPath, maxHypotheses, inline: bundle.inline ?? null });
+  const prompt = scoutPrompt({
+    provider,
+    contextPath: bundle.contextPath,
+    maxHypotheses,
+    inline: bundle.inline ?? null,
+    prDigest: typeof bundle.prDigest === 'string' ? bundle.prDigest : '',
+  });
   if (provider === 'claude') {
     return scoutOutput(await runClaudeJson({
       checkout,
@@ -1173,8 +1249,6 @@ export async function runHypothesisReviewer({
   provider, roleIndex, checkout, bundle, hypothesis, runner = runProcess,
 }) {
   const prompt = hypothesisPrompt({ provider, contextPath: bundle.contextPath, hypothesis, inline: bundle.inline ?? null });
-  // The four-candidate hypothesis bound (one claim + up to three same-class
-  // siblings) is mechanical, not merely prompt guidance.
   const bounds = { maxCandidates: LIMITS.maxHypothesisCandidates };
   if (provider === 'claude') {
     return reviewerOutput(
@@ -1214,6 +1288,153 @@ export async function runHypothesisReviewer({
 }
 
 /**
+ * Grouped cross-file integration reviewer: runs a batch of scout hypotheses
+ * inside one fresh CLI process instead of spawning one CLI per hypothesis.
+ */
+export async function runIntegrationReviewer({
+  provider, roleIndex, checkout, bundle, hypotheses, runner = runProcess,
+}) {
+  const files = [...new Set(hypotheses.map((h) => h.file).filter(Boolean))];
+  const shardContext = bundle.referenceMapData && files.length
+    ? sliceReferenceMapForShard(bundle.referenceMapData, files)
+    : '';
+  const prompt = integrationPrompt({
+    provider,
+    contextPath: bundle.contextPath,
+    hypotheses,
+    inline: bundle.inline ?? null,
+    prDigest: typeof bundle.prDigest === 'string' ? bundle.prDigest : '',
+    shardContext,
+  });
+  const maxCandidates = Math.min(LIMITS.integrationMaxCandidates, Math.max(LIMITS.maxHypothesisCandidates, hypotheses.length * 2));
+  const bounds = { maxCandidates };
+  if (provider === 'claude') {
+    return reviewerOutput(
+      await runClaudeJson({
+        checkout,
+        bundle,
+        schema: REVIEWER_SCHEMA,
+        prompt,
+        profile: profileFor('claude', 'Hypothesis', bundle.modelConfig),
+        timeoutMs: LIMITS.hypothesisTimeoutMs,
+        runner,
+      }),
+      provider,
+      roleIndex,
+      bounds,
+    );
+  }
+  if (provider === 'codex') {
+    const outputPath = path.join(bundle.directory, `codex-integration-${roleIndex}-${randomUUID()}.json`);
+    return reviewerOutput(
+      await runCodexJson({
+        checkout,
+        bundle,
+        schemaPath: bundle.reviewerSchemaPath,
+        outputPath,
+        prompt,
+        profile: profileFor('codex', 'Hypothesis', bundle.modelConfig),
+        timeoutMs: LIMITS.hypothesisTimeoutMs,
+        runner,
+      }),
+      provider,
+      roleIndex,
+      bounds,
+    );
+  }
+  throw new Error(`Unsupported review provider: ${provider}`);
+}
+
+/**
+ * Pre-extract bounded diff hunks and head-file excerpts around each candidate's
+ * location so the fresh adjudicator verifies candidates directly without
+ * spending multiple turns hunting for files.
+ */
+export async function buildCandidateEvidence({
+  checkout, patch, candidates, refMapData = null, maxBytes = LIMITS.inlineAdjudicatorEvidenceMaxBytes,
+}) {
+  if (!Array.isArray(candidates) || !candidates.length) return '';
+  const sectionsByFile = new Map(splitPatchByFile(patch || '').map((section) => [section.file, section.text]));
+  const parts = ['# Pre-extracted candidate code evidence (untrusted repository content)'];
+  let used = Buffer.byteLength(parts[0], 'utf8');
+  const append = (block) => {
+    const bytes = Buffer.byteLength(block, 'utf8') + 2;
+    if (used + bytes > maxBytes) return false;
+    parts.push(block);
+    used += bytes;
+    return true;
+  };
+  let realCheckout = null;
+  if (checkout) {
+    try {
+      realCheckout = await realpath(checkout);
+    } catch {
+      realCheckout = null;
+    }
+  }
+  const safeCheckoutFile = async (relativeFile) => {
+    if (!realCheckout || !relativeFile || relativeFile.includes('\0') || /^[A-Za-z]:/.test(relativeFile)) return null;
+    const candidatePath = path.resolve(realCheckout, relativeFile);
+    const rel = path.relative(realCheckout, candidatePath);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    try {
+      const info = await lstat(candidatePath);
+      if (!info.isFile() || info.size > 2 * 1024 * 1024) return null;
+      const realTarget = await realpath(candidatePath);
+      const realRel = path.relative(realCheckout, realTarget);
+      if (!realRel || realRel.startsWith('..') || path.isAbsolute(realRel)) return null;
+      return realTarget;
+    } catch {
+      return null;
+    }
+  };
+  const seenExcerpts = new Set();
+  const seenDiffs = new Set();
+  for (const candidate of candidates) {
+    const file = String(candidate.file || '').replace(/\\/g, '/');
+    if (!file || file.includes('..') || path.isAbsolute(file)) continue;
+    // Head-file numbered excerpt around candidate.line (±25 lines).
+    if (realCheckout && Number.isInteger(candidate.line) && candidate.line >= 1) {
+      const key = `${file}:${Math.floor(candidate.line / 20)}`;
+      if (!seenExcerpts.has(key)) {
+        seenExcerpts.add(key);
+        const safePath = await safeCheckoutFile(file);
+        if (safePath) {
+          try {
+            const full = await readFile(safePath, 'utf8');
+            if (!full.includes('\0')) {
+              const lines = full.split(/\r?\n/);
+              const from = Math.max(1, candidate.line - 25);
+              const to = Math.min(lines.length, candidate.line + 25);
+              const numbered = lines.slice(from - 1, to).map((line, i) => `${from + i}: ${line}`).join('\n');
+              append(`## ${promptSafe(file)} (head lines ${from}-${to})\n\`\`\`\n${numbered}\n\`\`\``);
+            }
+          } catch {
+            // File may have been deleted at head; diff section below still shows it.
+          }
+        }
+      }
+    }
+    // File's diff hunks (bounded).
+    if (!seenDiffs.has(file) && sectionsByFile.has(file)) {
+      seenDiffs.add(file);
+      const diff = sectionsByFile.get(file);
+      const clipped = Buffer.byteLength(diff, 'utf8') > 4096
+        ? `${Buffer.from(diff, 'utf8').subarray(0, 4096).toString('utf8')}\n... (diff truncated; see change.diff)`
+        : diff;
+      append(`## Diff for ${promptSafe(file)}\n\`\`\`diff\n${clipped}\n\`\`\``);
+    }
+  }
+  // Relevant reference-map slice if room remains.
+  if (refMapData && used < maxBytes - 1024) {
+    const files = [...new Set(candidates.map((c) => c.file).filter(Boolean))];
+    const refSlice = sliceReferenceMapForShard(refMapData, files, { maxBytes: maxBytes - used - 64 });
+    if (refSlice) append(refSlice);
+  }
+  return parts.length > 1 ? `${parts.join('\n\n')}\n` : '';
+}
+
+/**
  * Adjudicate one batch of candidates in a fresh context. Batches run
  * concurrently (v1.8.0), so every artifact this call writes is batch-scoped.
  */
@@ -1224,13 +1445,23 @@ export async function runCoordinator({
   const schema = coordinatorSchemaForCandidates(candidateIds);
   const candidatesText = `${JSON.stringify({ candidates }, null, 2)}\n`;
   const candidatesPath = await bundle.writeArtifact(`candidates-${batchIndex}.json`, candidatesText);
+  const evidenceText = bundle.inline
+    ? await buildCandidateEvidence({
+      checkout,
+      patch: bundle.patch,
+      candidates,
+      refMapData: bundle.referenceMapData ?? null,
+    }).catch(() => '')
+    : '';
+  const combinedInlineSize = Buffer.byteLength(candidatesText, 'utf8') + Buffer.byteLength(evidenceText, 'utf8');
+  const fitBoth = Boolean(bundle.inline) && combinedInlineSize <= LIMITS.inlineShardMaxBytes;
   const prompt = coordinatorPrompt({
     provider,
     contextPath: bundle.contextPath,
     candidatesPath,
     inline: bundle.inline ?? null,
-    // Candidates travel with the material when they fit the same bound as a shard.
     candidatesText: shardInlinable(bundle.inline, candidatesText) ? candidatesText : null,
+    evidenceText: fitBoth ? evidenceText : null,
   });
   if (provider === 'claude') {
     return coordinatorOutput(await runClaudeJson({

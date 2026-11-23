@@ -65,6 +65,7 @@ export function applyConvergencePolicy(
     // author's repair effort — carry `deferrable: true`.
     repairRoundsUsed = 0,
     repairRoundBudget = LIMITS.lineageRepairRoundBudget,
+    p3Mode = 'require-disposition',
   } = {},
 ) {
   const budgetReached = repairRoundsUsed >= repairRoundBudget;
@@ -96,6 +97,12 @@ export function applyConvergencePolicy(
       );
     }
     if (finding.priority === 'P3') {
+      if (p3Mode === 'informational') {
+        return advisory(
+          'P3 informational advisory (p3Mode: informational); visible in reports without blocking push.',
+          { requiresDisposition: false },
+        );
+      }
       return advisory('P3 findings are non-blocking from the first review; fix or defer it with a recorded reason before pushing.');
     }
     // P2 from here on.
