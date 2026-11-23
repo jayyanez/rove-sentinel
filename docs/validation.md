@@ -32,11 +32,12 @@ and the updated existing test suites cover:
   path canonicalization and mechanical re-synthesis via `reconcilePriorBlockerVerdicts` when a
   prior blocker is `still_present`, `unverified`, or missing a verdict.
 - **Policy, PR intent, and deterministic lanes:** optional `pathRules` (1–32 rules, omitted from
-  normalized config when unset to keep existing policy digests unchanged) and `matchingPathRules`
+  normalized config when unset) and `matchingPathRules`
   injection into matching shards; optional `p3Mode: "informational"` keeping P3 advisories
   visible without requiring deferral; `selectReviewLessons` scoring symbol keywords and
   `Tags:` / `Paths:` metadata; quoted, bounded untrusted `prIntent` via `gate --intent` and
-  `listReadyPullRequests` (included in `shardAssignmentDigest`); omitting absent placeholder
+  `readPullRequestBody` (included in `shardAssignmentDigest`); omitting exact placeholder
+  `open-bug-briefs.md` and `bug-lessons.md` from both `Required reads` and inline prompt material;
   built-in `oxlint` (fixed text-only config) and `hadolint` lanes; Ruff surfacing newly introduced
   hard syntax/undefined-name errors and Oxlint surfacing environment-independent hard
   syntax/correctness errors on any line of a changed file (mapped against base);
