@@ -56,24 +56,25 @@ function parseArgs(args) {
       continue;
     }
     const eq = value.indexOf('=');
-    const key = eq === -1 ? value.slice(2) : value.slice(2, eq);
-    if (valueFlags.has(key)) {
+    const rawKey = value.slice(2);
+    const splitKey = eq === -1 ? rawKey : value.slice(2, eq);
+    if (valueFlags.has(splitKey)) {
       if (eq !== -1) {
         const inlineValue = value.slice(eq + 1);
-        if (!inlineValue) throw new Error(`--${key} requires a value.`);
-        options[key] = inlineValue;
+        if (!inlineValue) throw new Error(`--${splitKey} requires a value.`);
+        options[splitKey] = inlineValue;
       } else {
         const next = args[index + 1];
-        if (!next || (!freeformValueFlags.has(key) && next.startsWith('--'))) {
-          throw new Error(`--${key} requires a value.`);
+        if (!next || (!freeformValueFlags.has(splitKey) && next.startsWith('--'))) {
+          throw new Error(`--${splitKey} requires a value.`);
         }
-        options[key] = next;
+        options[splitKey] = next;
         index += 1;
       }
-    } else if (key.startsWith('no-')) {
-      options[key.slice(3)] = false;
+    } else if (rawKey.startsWith('no-')) {
+      options[rawKey.slice(3)] = false;
     } else {
-      options[key] = true;
+      options[rawKey] = true;
     }
   }
   return { options, positional };

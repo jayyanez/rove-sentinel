@@ -73,7 +73,11 @@ Live incumbent-engine self-review (`rove-sentinel@1.20.3`, `pnpm review:gate -- 
   `toolLanes.mjs`, reference-map edge cases (same-named imports, unchanged callers, sibling scopes,
   commented imports, Go/C declarations, Git-quoted paths, shared co-change commits, and digest byte
   caps), Windows `tools` guidance, CLI `--intent` parsing, contract test coverage, and release notes.
-  Follow-up round pending on the fix commit.
+- Round 2 (`a2cbb80`, follow-up round, 4 shards, 1.5 m): `PASS` with 0 P0/P1/P2 blockers,
+  0 undisposed advisories, and 0 markdownlint/gitleaks hits. Three follow-up P3 polish items
+  (`cli.mjs` boolean `--flag=value` parsing, `prIntent` assertion in dry-run CLI test, and
+  `scope: "all"` attribution for hits in unchanged files) were also fixed and verified in the
+  final follow-up round.
 
 ## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
 

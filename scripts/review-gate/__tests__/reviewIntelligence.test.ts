@@ -1385,7 +1385,7 @@ describe('self-review regressions (1.21.0)', () => {
     expect(Buffer.byteLength(digest, 'utf8')).toBeLessThanOrEqual(700);
   });
 
-  it('accepts --intent with leading dashes and --intent=value in cli.mjs', async () => {
+  it('accepts --intent with leading dashes and --intent=value in cli.mjs without enabling boolean flags via =no', async () => {
     const root = await tempDir('sentinel-cli-intent-');
     const stateRoot = await tempDir('sentinel-cli-intent-state-');
     const paths = await ensureState(stateRoot);
@@ -1408,7 +1408,37 @@ describe('self-review regressions (1.21.0)', () => {
       cliPath, 'gate', '--repo', root, '--state-root', stateRoot, '--base', base, '--head', head, '--dry-run', '--json', ...extraArgs,
     ], { encoding: 'utf8', env: { ...process.env, ROVE_SENTINEL_UPDATE_NOTIFICATIONS: '0' } });
 
-    expect(JSON.parse(runCli(['--intent', '--leading-dashes fix'])).status).toBe('planned');
-    expect(JSON.parse(runCli(['--intent=--equals-form fix'])).status).toBe('planned');
+    expect(JSON.parse(runCli(['--intent', '--leading-dashes fix']))).toMatchObject({
+      status: 'planned',
+      prIntent: '--leading-dashes fix',
+    });
+    expect(JSON.parse(runCli(['--intent=--equals-form fix']))).toMatchObject({
+      status: 'planned',
+      prIntent: '--equals-form fix',
+    });
+    // A boolean flag with `=no` must NOT be parsed as `true` (`limits --json=no` prints text, not JSON).
+    const limitsWithEquals = execFileSync(process.execPath, [cliPath, 'limits', '--json=no'], { encoding: 'utf8' });
+    expect(limitsWithEquals).toContain('Rove Sentinel 1.21.0:');
+    expect(() => JSON.parse(limitsWithEquals)).toThrow();
+    expect(() => execFileSync(process.execPath, [
+      cliPath, 'gate', '--repo', root, '--state-root', stateRoot, '--base', base, '--head', head, '--dry-run', '--intent=', '--json',
+    ], { encoding: 'utf8', stdio: 'pipe', env: { ...process.env, ROVE_SENTINEL_UPDATE_NOTIFICATIONS: '0' } })).toThrow(/--intent requires a value/);
+    // Also verify `scope: 'all'` attributes hits in unchanged files outside changed files accurately.
+    const checkout = await tempDir('sentinel-scope-all-');
+    await writeFile(path.join(checkout, 'a.ts'), 'const x = 1;\n');
+    await writeFile(path.join(checkout, 'b.ts'), 'const y = 2;\n');
+    const allCmd = normalizeConfig({
+      lintCommands: [{ name: 'tsc', run: ['node', 'tsc.js'], format: 'tsc', scope: 'all' }],
+    }).lintCommands[0];
+    const allLane = await runProjectCommandLane({
+      checkout,
+      files: ['a.ts'],
+      patch: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-const x = 0;\n+const x = 1;\n',
+      command: allCmd,
+      run: async () => ({ code: 1, stdout: "b.ts(5,1): error TS2304: Missing in unchanged file\n", stderr: '' }),
+      resolve: async (n: string) => n,
+    });
+    expect(allLane.findings[0].scenario).toContain('outside the changed files');
+    expect(allLane.note).toContain('outside changed files');
   });
 });

@@ -1683,7 +1683,11 @@ async function runGateWithLease({
   };
 
   if (dryRun) {
-    return { status: 'planned', ...baseReport };
+    return {
+      status: 'planned',
+      ...baseReport,
+      ...(typeof prIntent === 'string' && prIntent.trim() ? { prIntent: prIntent.trim() } : {}),
+    };
   }
 
   if (risk.level === 'skip') {

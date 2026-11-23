@@ -142,7 +142,12 @@ function canonicalPathLookup(files, added, { caseInsensitive = process.platform 
 }
 
 /** Shape a linter hit as a deterministic finding (see lint.mjs). */
-export function toolFinding({ source, rule, title, file, line, detail, priority, onAddedLine = true }) {
+export function toolFinding({ source, rule, title, file, line, detail, priority, onAddedLine = true, inChangedFile = true }) {
+  const scenario = onAddedLine
+    ? `Reported by ${source} on a line this diff added.`
+    : inChangedFile
+      ? `Reported by ${source} on an untouched line of a changed file.`
+      : `Reported by ${source} outside the changed files.`;
   return {
     candidate_id: `${source}-0`,
     title: `${rule}: ${title}`,
@@ -151,9 +156,7 @@ export function toolFinding({ source, rule, title, file, line, detail, priority,
     line: Number.isInteger(line) && line >= 1 ? line : null,
     disposition: 'verified',
     reason: detail || title,
-    scenario: onAddedLine
-      ? `Reported by ${source} on a line this diff added.`
-      : `Reported by ${source} on an untouched line of a changed file.`,
+    scenario,
     proposed_test: `Run ${source} on the file; the hit disappears once fixed.`,
     source,
     adjudicatedDisposition: 'deterministic',
@@ -218,14 +221,15 @@ async function runTool(lane, command, args, { cwd, run, timeoutMs, env, input, e
   }
 }
 
-function finish(lane, findings, { total, files, omitted = 0, onAddedLineCount = findings.length, maxFindings = LIMITS.maxDeterministicFindings }) {
+function finish(lane, findings, { total, files, omitted = 0, onAddedLineCount = findings.length, outsideChangedFilesCount = 0, maxFindings = LIMITS.maxDeterministicFindings }) {
   // Blocking hits come first, so a bound never hides one behind advisories.
   const ordered = [...findings.filter((finding) => finding.priority !== 'P3'), ...findings.filter((finding) => finding.priority === 'P3')];
   const kept = ordered.slice(0, maxFindings);
-  const offHunkCount = Math.max(0, findings.length - onAddedLineCount);
-  const scopeNote = offHunkCount > 0
-    ? `${onAddedLineCount} on added lines, ${offHunkCount} on untouched lines of changed files`
-    : `${findings.length} on added lines`;
+  const offHunkChangedCount = Math.max(0, findings.length - onAddedLineCount - outsideChangedFilesCount);
+  const scopeParts = [`${onAddedLineCount} on added lines`];
+  if (offHunkChangedCount > 0) scopeParts.push(`${offHunkChangedCount} on untouched lines of changed files`);
+  if (outsideChangedFilesCount > 0) scopeParts.push(`${outsideChangedFilesCount} outside changed files`);
+  const scopeNote = scopeParts.join(', ');
   return {
     lane,
     status: 'ok',
@@ -718,13 +722,16 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
   const relative = await checkoutRelativizer(checkout);
   const findings = [];
   let onAddedLineCount = 0;
+  let outsideChangedFilesCount = 0;
   for (const hit of hits) {
     const file = canonical(await relative(path.isAbsolute(hit.file) ? hit.file : path.join(checkout, hit.file)));
     if (!file) continue;
     const onAddedLine = Boolean(added.get(file)?.has(hit.line));
+    const inChangedFile = changedSet.has(file);
     if (scope === 'added-lines' && !onAddedLine) continue;
-    if (scope === 'changed-files' && !changedSet.has(file)) continue;
+    if (scope === 'changed-files' && !inChangedFile) continue;
     if (onAddedLine) onAddedLineCount += 1;
+    else if (!inChangedFile) outsideChangedFilesCount += 1;
     findings.push(toolFinding({
       source: lane,
       rule: hit.rule || lane,
@@ -734,6 +741,7 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
       detail: hit.message,
       priority: hit.severity === 'error' ? 'P2' : 'P3',
       onAddedLine,
+      inChangedFile,
     }));
   }
   return finish(lane, findings, {
@@ -741,6 +749,7 @@ export async function runProjectCommandLane({ checkout, files, patch, command, r
     files: usesFiles ? targets.length : selected.length,
     omitted: usesFiles ? leftOut : 0,
     onAddedLineCount,
+    outsideChangedFilesCount,
   });
 }
 
