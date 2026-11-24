@@ -505,7 +505,10 @@ export async function runPrePush({
         // A PASS whose verified advisories were neither fixed nor deferred
         // is not pushable (v1.8.0): the decision must be recorded, not
         // skipped — and the refusal is decided before a PASS line is printed.
-        const pendingRefusal = await undisposedRefusal(context.paths, attestation, targetSha, { branch });
+        const pendingRefusal = await undisposedRefusal(context.paths, attestation, targetSha, {
+          branch,
+          p3Mode: reviewPolicy?.config?.p3Mode,
+        });
         if (pendingRefusal) throw new Error(pendingRefusal);
         output(formatGateResult({ ...attestation, cached: true }));
         reviewed += 1;
@@ -556,7 +559,10 @@ export async function runPrePush({
         output(formatGateResult(response.result));
         throw new Error(nonPassRemediation(response.status));
       }
-      const freshRefusal = await undisposedRefusal(context.paths, response.result, targetSha, { branch });
+      const freshRefusal = await undisposedRefusal(context.paths, response.result, targetSha, {
+        branch,
+        p3Mode: reviewPolicy?.config?.p3Mode,
+      });
       if (freshRefusal) throw new Error(freshRefusal);
       output(formatGateResult(response.result));
       reviewed += 1;

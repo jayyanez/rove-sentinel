@@ -324,8 +324,8 @@ describe('deterministic lanes', () => {
     const result = await runDeterministicLanes({ checkout, files: ['docs/a.md', 'src-tauri/src/lib.rs'], patch, stateRoot, run, config: { clippy: true } });
     // (`run` is the fake for cargo; the Markdown lane's child process is real here.)
     expect(result.lanes.slice(0, 2).map((lane) => [lane.lane, lane.status])).toEqual([['markdownlint', 'ok'], ['clippy', 'ok']]);
-    // The linter lanes (1.13.0) follow; none of them reports a finding here.
-    expect(result.lanes.slice(2).map((lane) => lane.lane)).toEqual(['shellcheck', 'actionlint', 'gitleaks', 'ruff']);
+    // The linter lanes follow; none of them reports a finding here.
+    expect(result.lanes.slice(2).map((lane) => lane.lane)).toEqual(['shellcheck', 'actionlint', 'gitleaks', 'ruff', 'oxlint', 'hadolint']);
     expect(result.findings.map((finding) => finding.candidate_id)).toEqual(['deterministic-0', 'deterministic-1']);
     // A lane that could not produce diagnostics stays a note, never a finding.
     const errored = await runDeterministicLanes({

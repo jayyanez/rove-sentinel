@@ -1,7 +1,7 @@
 import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
 import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.20.3), from the
+// What this engine version accepts and where it stops (1.21.0), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -40,12 +40,12 @@ export function sentinelLimits() {
       {
         id: 'candidates',
         limit: String(LIMITS.maxCandidates),
-        text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (4 per shard in a round of more than 12 shards, at most ${LIMITS.maxRoundCandidates}) ; ${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis; more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
+        text: `At most ${LIMITS.maxCandidates} distinct candidates per round reach adjudication (4 per shard in a round of more than 12 shards, at most ${LIMITS.maxRoundCandidates}) ; ${LIMITS.shardMaxCandidates} per shard, ${LIMITS.maxHypothesisCandidates} per hypothesis, ${LIMITS.integrationMaxCandidates} per grouped integration pass; more fails the round closed. Candidates under confidence ${LIMITS.candidateConfidenceFloor} are not adjudicated; the report keeps up to ${LIMITS.maxReportedLowConfidence} of them.`,
       },
       {
         id: 'linters',
         limit: 'installed tools',
-        text: 'shellcheck, actionlint, gitleaks and ruff run when installed on the host (rove-sentinel tools lists them and installs them after asking); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
+        text: 'shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint run when installed on the host (rove-sentinel tools lists them, installs managed packages after asking — all six via Homebrew on macOS, or shellcheck/actionlint/gitleaks/ruff via winget on Windows — and prints manual install links for tools without a managed package such as oxlint and hadolint on Windows); project commands run only from installed policy. A missing tool is a note in the report, not a pass.',
       },
       {
         id: 'clippy',

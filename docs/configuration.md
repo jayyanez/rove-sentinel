@@ -33,8 +33,10 @@ reads the same fields from a file outside the repository, named with
 | `providers` | `auto` (default), `both`, `claude`, or `codex`; installed authentication requirements |
 | `models` | Optional per-provider `model`, `effort`, `maxEffort` and per-role `roles`; see [models](models.md) |
 | `maxShards` | Most shards one round of a large change may have, 8 to 128; 16 by default. Each 8 more add a wave of reviewers (a few minutes) and read less per reviewer |
-| `lintLanes` | Turn a built-in linter lane off: `{ "ruff": false }`; all four are on by default |
+| `lintLanes` | Turn a built-in linter lane off: `{ "ruff": false }`; all six (`shellcheck`, `actionlint`, `gitleaks`, `ruff`, `oxlint`, `hadolint`) are on by default |
 | `lintCommands` | Project lint commands to run in the review checkout; see below |
+| `pathRules` | Optional path-scoped review instructions (`{ "match": "^src/api/", "instructions": "..." }`), up to 32 rules, injected only into shards touching matching files |
+| `p3Mode` | `require-disposition` (default: P3 advisories need a fix or recorded deferral before push) or `informational` (P3 findings stay visible in reports and PR comments without blocking push) |
 
 Paths use forward slashes and cannot be absolute or contain `..`. Unknown keys
 and invalid values are refused. A custom charter replaces the bundled prose;
@@ -152,17 +154,18 @@ checkers can run as `lintCommands`.
 
 ## Linter lanes
 
-Sentinel runs shellcheck, actionlint, gitleaks and ruff on the changed files
-whenever they are installed on the host. The first `gate` you run on a
-machine that lacks some of them says which (not under `--json`; the hook and the
-watcher do not),
-and `doctor` and `tools` always do. Sentinel
-installs them when you ask (winget on Windows, Homebrew on macOS; elsewhere it
-links each tool's instructions):
+Sentinel runs shellcheck, actionlint, gitleaks, ruff, oxlint and hadolint on the
+changed files whenever they are installed on the host. The first `gate` you run
+on a machine that lacks some of them says which (not under `--json`; the hook
+and the watcher do not), and `doctor` and `tools` always do. Sentinel installs
+managed packages when you ask (winget on Windows for shellcheck, actionlint,
+gitleaks and ruff; Homebrew on macOS for all six) and links manual install
+instructions for any tool without a managed package (including oxlint and
+hadolint on Windows, and every tool on Linux):
 
 ```powershell
 npx --no-install rove-sentinel tools            # what is missing and how to get it
-npx --no-install rove-sentinel tools --install  # asks, then installs
+npx --no-install rove-sentinel tools --install  # asks, then installs managed packages
 npx --no-install rove-sentinel tools --install --yes  # for an agent or a script
 ```
 
@@ -171,10 +174,19 @@ The winget equivalent is
 A running watcher finds tools winget or Homebrew just installed without a
 restart.
 
-They read the project's own configuration where the tool supports it
-(`.shellcheckrc`, `.github/actionlint.yaml`, ruff's `pyproject.toml`), except
-gitleaks, which always uses its built-in rules. Only hits on lines the change
-added are reported.
+They read the project's own configuration where the tool supports text-only
+configuration (`.shellcheckrc`, `.github/actionlint.yaml`, ruff's
+`pyproject.toml`, hadolint's `.hadolint.yaml`). Both `gitleaks` and `oxlint`
+run with fixed built-in rules without loading repository configuration files
+(so an untrusted branch's `oxlint.config.ts` can never execute code); projects
+that want their own Oxlint config can add a trusted `lintCommands` entry named
+`oxlint`, which overrides the built-in lane. By default only hits on lines the change added are reported; Ruff also reports
+newly introduced hard syntax and undefined-name errors (absent at the mapped
+base line) anywhere in a changed file, and Oxlint reports newly introduced
+environment-independent hard syntax and correctness errors (`no-const-assign`,
+`no-dupe-args`, `no-dupe-class-members`, `no-dupe-keys`, `no-redeclare`, and
+parse errors) anywhere in a changed file without flagging project/runtime
+globals.
 
 Project commands run your own checker in the review checkout:
 
@@ -193,7 +205,7 @@ Project commands run your own checker in the review checkout:
 | `run` | Program and arguments, without a shell; `node` is Sentinel's Node.js. On Windows run a package's script with `node`, not its `.cmd` shim |
 | `format` | `unix` (`path:line:col: message`, an ESLint-style `[Error/rule]` tag sets the severity) or `tsc` |
 | `files` | Optional regular expression: the command runs only when a changed file matches, and `{files}` in `run` becomes those files |
-| `scope` | `added-lines` (default) or `all`, for a checker that is clean on the base and should report every hit |
+| `scope` | `added-lines` (default), `changed-files` (any line in a changed file, catching errors caused by deleted lines), or `all` (for a checker that is clean on the base and should report every hit) |
 | `timeoutMinutes` | 1 to 15; 5 by default |
 | `nodeModules` | Link the trusted checkout's `node_modules` into the review checkout while the command runs |
 

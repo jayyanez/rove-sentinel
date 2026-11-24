@@ -83,7 +83,7 @@ export function formatDispositionRefusal(pending, headSha, reportId = null, { ba
  * The pre-push check: an attested PASS whose verified advisories are neither
  * fixed nor deferred does not push. Returns the refusal text or null.
  */
-export async function undisposedRefusal(paths, result, headSha, { branch } = {}) {
+export async function undisposedRefusal(paths, result, headSha, { branch, p3Mode = 'require-disposition' } = {}) {
   if (!result) return null;
   // Attestation identity excludes the branch, but lineages and deferrals are
   // branch-scoped: the same commit pushed on another branch must not reuse
@@ -147,9 +147,12 @@ export async function undisposedRefusal(paths, result, headSha, { branch } = {})
       const deferred = Boolean(deferral) && typeof deferral === 'object' &&
         typeof deferral.reason === 'string' && deferral.reason.trim().length >= 12 &&
         typeof deferral.headSha === 'string' && /^[a-f0-9]{40}$/.test(deferral.headSha);
-      // ...and the policy leaves a P3 unadjudicated only on a follow-up round.
+      // ...and the policy leaves a P3 unadjudicated only on a follow-up round,
+      // or marks a P3 informational only when installed policy sets
+      // p3Mode: "informational".
       const unadjudicatedP3 = finding.adjudicatedDisposition === 'unadjudicated' && finding.priority === 'P3' && result.round === 'follow-up';
-      return !(deferred || unadjudicatedP3);
+      const informationalP3 = p3Mode === 'informational' && finding.priority === 'P3' && finding.informational === true;
+      return !(deferred || unadjudicatedP3 || informationalP3);
     }
     return false;
   });

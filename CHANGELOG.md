@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.21.0 — Deeper context, cross-file integration review, and faster verification
+
+This release raises defect recall across multi-file changes while tightening token
+usage and latency. All existing configurations keep working unchanged: opt-in
+policy options (`pathRules`, `p3Mode`, and `lintCommands[].scope: "changed-files"`)
+are omitted from normalized configuration when unset, while the new built-in
+`oxlint` and `hadolint` lanes run automatically on matching files whenever those
+tools are installed (and can be disabled per repository via
+`lintLanes.oxlint: false` or `lintLanes.hadolint: false`). As in every release
+that increments the engine or charter version, upgrading refreshes the installed
+policy snapshot digest.
+
+- **Bidirectional reference map and surgical per-shard context.** `refmap.mjs` now
+  extracts enclosing functions/classes for edits inside existing bodies (including
+  Python/Ruby indent-scoped blocks), prioritizes production functions/classes/types
+  over test-only or local helpers, and resolves upstream callee/type definitions from
+  local relative imports plus a bounded fallback search — all within the existing
+  8-way Git concurrency bound. Each shard reviewer now receives a bounded surgical
+  slice (`shard-N-context.md`) of upstream callee definitions, downstream callers,
+  and co-change siblings inline, plus a compact PR structural digest (`pr-digest.md`).
+- **Coupling-aware sharding.** Changed files linked by local relative imports or
+  shared changed symbols are clustered together into the same shard whenever shard
+  budgets allow, so producer and consumer edits are reviewed side by side.
+- **Cross-file scout and grouped integration review.** The scout now focuses on
+  cross-shard, cross-file, symmetry, and intent-gap hypotheses using the inline PR
+  digest, and Sentinel consolidates those hypotheses into up to 2 grouped cross-file
+  integration reviewer passes (`maxIntegrationReviewers: 2`, `integrationMaxCandidates: 10`)
+  instead of launching one CLI subprocess per hypothesis.
+- **Cross-model second opinion on small/high-risk changes.** When both Claude and
+  Codex are active, low-risk single-shard changes and high-risk changes of up to 4
+  shards run an independent cross-model second-opinion reviewer on the primary code
+  shard. Low-risk reviews now also route across both providers when available.
+- **Higher-recall, evidence-backed adjudication.** Lowered `candidateConfidenceFloor`
+  from 50 to 40, added proximity and token-similarity corroboration alongside exact
+  deduplication, grouped tail adjudication batches by file, pre-extracted ±25-line
+  head excerpts and diff hunks inline (`candidate-evidence.md`), and tightened the
+  adjudicator contract so dismissals require concrete code evidence and latent defects
+  triggered, exposed, or relied on by the diff are not dismissed as pre-existing.
+- **Mechanical follow-up blocker verdicts.** Follow-up shard reviewers with assigned
+  prior blockers now return structured `prior_blocker_verdicts` (`fixed`,
+  `still_present`, `unverified` with evidence). Any blocker left `still_present`,
+  `unverified`, or missing a verdict is mechanically re-synthesized into adjudication
+  so an unverified blocker cannot silently disappear.
+- **Project `pathRules`, `p3Mode`, bounded PR intent, and smarter lessons.**
+  Installed policy can now declare glob-scoped `pathRules` (1–32 rules) injected into
+  matching shards, and `p3Mode: "informational"` so verified P3 advisories appear in
+  reports without blocking pushes on manual deferral. PR title and bounded body (via
+  the GitHub watcher or `gate --intent TEXT`) now enter context as quoted, untrusted
+  evidence of stated intent. Lesson selection scores symbol keywords and `Tags:` /
+  `Paths:` headers.
+- **Expanded deterministic lint coverage.** Added built-in `oxlint` (JS/TS,
+  text-only fixed config) and `hadolint` (Dockerfile) lanes, fixed the
+  added-lines blind spot so newly introduced hard syntax/undefined-name errors
+  in Ruff and environment-independent hard syntax/correctness errors in Oxlint
+  (absent at the mapped base line) surface on any line of a changed file without
+  blaming pre-existing baseline errors, and added `scope: "changed-files"` for
+  project `lintCommands`.
+- **Leaner prompt overhead and cache-warm staggering.** Trimmed default diff context
+  from 80 to 40 lines per side (`patchContextLines: 40`), omitted empty placeholder
+  `open-bug-briefs.md` and `bug-lessons.md` blocks from inline prompts, and staggered
+  wave-1 launches per provider by 2.5 seconds (`promptCacheStaggerMs`) on waves of 3+
+  shards when inline context material is enabled (`bundle.inline`) to improve
+  shared-prefix prompt cache hit rates.
+
 ## 1.20.3 — `repair` lists every Windows process and updates when the bootstrap runs it
 
 Two ways `repair` failed on a Windows host, both found by running it for real, and a repair

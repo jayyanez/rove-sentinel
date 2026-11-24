@@ -10,6 +10,8 @@ import {
   linkNodeModules,
   runActionlintLane,
   runGitleaksLane,
+  runHadolintLane,
+  runOxlintLane,
   runProjectCommandLane,
   runRuffLane,
   runShellcheckLane,
@@ -537,13 +539,18 @@ export function laneFailure(settled) {
  * can reject except a process-tree cleanup failure, which must reach the
  * gate's fence.
  */
-export async function runDeterministicLanes({ checkout, files, patch, stateRoot, run, env, config, repoRoot = null, resolve }) {
-  const toolOptions = { checkout, files, patch, ...(run ? { run } : {}), ...(env ? { env } : {}), ...(resolve ? { resolve } : {}) };
+export async function runDeterministicLanes({ checkout, files, patch, baseSha = null, stateRoot, run, env, config, repoRoot = null, resolve }) {
+  const toolOptions = { checkout, files, patch, ...(baseSha ? { baseSha } : {}), ...(run ? { run } : {}), ...(env ? { env } : {}), ...(resolve ? { resolve } : {}) };
   const enabled = (lane) => config?.lintLanes?.[lane] !== false;
   const off = (lane) => Promise.resolve({ lane, status: 'skipped', note: 'turned off in installed policy', findings: [] });
   // Project commands share one node_modules link, made before they start and
   // removed after the last one ends.
   const commands = Array.isArray(config?.lintCommands) ? config.lintCommands : [];
+  const projectCommandNames = new Set(commands.map((command) => command.name));
+  const builtinEnabled = (lane) => enabled(lane) && !projectCommandNames.has(lane);
+  const skippedBuiltin = (lane) => (projectCommandNames.has(lane)
+    ? Promise.resolve({ lane, status: 'skipped', note: 'overridden by project lintCommands entry', findings: [] })
+    : off(lane));
   const nodeModules = commands.some((command) => command.nodeModules) && repoRoot
     ? await linkNodeModules(checkout, repoRoot).catch((error) => ({ linked: false, note: `node_modules could not be linked: ${error?.message || String(error)}`, release: async () => {} }))
     : null;
@@ -561,6 +568,8 @@ export async function runDeterministicLanes({ checkout, files, patch, stateRoot,
       enabled('actionlint') ? runActionlintLane(toolOptions) : off('actionlint'),
       enabled('gitleaks') ? runGitleaksLane(toolOptions) : off('gitleaks'),
       enabled('ruff') ? runRuffLane(toolOptions) : off('ruff'),
+      builtinEnabled('oxlint') ? runOxlintLane(toolOptions) : skippedBuiltin('oxlint'),
+      builtinEnabled('hadolint') ? runHadolintLane(toolOptions) : skippedBuiltin('hadolint'),
       ...commands.map((command) => runProjectCommandLane({ ...toolOptions, command }).then((lane) => (
         command.nodeModules && nodeModules?.note && lane.status !== 'ok' ? { ...lane, note: `${lane.note}; ${nodeModules.note}` } : lane
       ))),

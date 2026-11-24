@@ -1,5 +1,93 @@
 # Standalone validation record
 
+## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
+
+Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (40 new tests)
+and the updated existing test suites cover:
+
+- **Bidirectional and enclosing-aware reference map:** `findEnclosingSymbol` for brace-delimited
+  and Python/Ruby indent-scoped edits inside existing bodies (ignoring balanced one-line siblings
+  and comment-only edits); tiered symbol extraction prioritizing production functions, classes,
+  and types over local helpers and test-only symbols; upstream callee/type resolution from local
+  relative imports and bounded fallback `git grep` sharing a single 8-way Git concurrency pool;
+  surgical per-shard reference-map slices (`sliceReferenceMapForShard`) and compact PR structural
+  digests (`buildPrStructuralDigest`).
+- **Coupling-aware sharding:** `partitionShards` clustering changed files connected by local
+  imports or shared changed symbols into the same shard while preserving test-family attachment
+  and deterministic ordering when no couplings exist.
+- **Cross-file scout, grouped integration review, and dual-pass coverage:** `scoutPrompt`
+  inlining the PR structural digest and focusing on cross-file/symmetry/intent-gap hypotheses
+  while keeping the `You own no part of the patch` completeness contract; `groupHypotheses`
+  consolidating hypotheses into up to 2 grouped integration passes; `runGate` executing grouped
+  integration reviewers and an independent cross-model second-opinion reviewer on small low-risk
+  and small high-risk changes when both providers are active; low-risk dual-provider routing.
+- **Adjudication and follow-up convergence:** lowered `candidateConfidenceFloor` (40); proximity
+  and token-similarity corroboration (`areCandidatesRelated`); file-grouped tail adjudication
+  batches; cross-batch duplicate consolidation for overlapping verified findings on the same
+  file/region (honoring only `Duplicate of <surviving verified id>` dismissals so real defects
+  cannot be dropped); pre-extracted ±25-line head excerpts and diff hunks
+  (`buildCandidateEvidence`, hardened against path traversal, symlinks, drive-relative paths, and
+  binary/oversized files); evidence-backed dismissal and latent-defect rules in prompts and
+  charter; structured `prior_blocker_verdicts` (`fixed`, `still_present`, `unverified`) with
+  path canonicalization and mechanical re-synthesis via `reconcilePriorBlockerVerdicts` when a
+  prior blocker is `still_present`, `unverified`, or missing a verdict.
+- **Policy, PR intent, and deterministic lanes:** optional `pathRules` (1–32 rules, omitted from
+  normalized config when unset) and `matchingPathRules`
+  injection into matching shards; optional `p3Mode: "informational"` keeping P3 advisories
+  visible without requiring deferral; `selectReviewLessons` scoring symbol keywords and
+  `Tags:` / `Paths:` metadata; quoted, bounded untrusted `prIntent` via `gate --intent` and
+  `readPullRequestBody` (included in `shardAssignmentDigest`); omitting exact placeholder
+  `open-bug-briefs.md` and `bug-lessons.md` from both `Required reads` and inline prompt material;
+  built-in `oxlint` (fixed text-only config) and `hadolint` lanes; Ruff surfacing newly introduced
+  hard syntax/undefined-name errors and Oxlint surfacing environment-independent hard
+  syntax/correctness errors on any line of a changed file (mapped against base);
+  `lintCommands[].scope: "changed-files"`; package contract, limits parity, and public-repository
+  hygiene checks.
+
+All 41 test files (1,140 deterministic tests, 0 failures, 0 skipped, including 40 new tests in
+`reviewIntelligence.test.ts`) and `pnpm verify:package` (`rove-sentinel@1.21.0` isolated
+consumer smoke test) passed on Windows.
+
+Live on a Windows host against authenticated Claude Code (`claude-opus-5-5`) and Codex
+(`gpt-6.2-sol`) CLIs using an isolated temporary repository with three seeded defects (an
+untouched caller dereferencing a newly nullable return value, a latent `parseTimeoutMs("") -> NaN`
+defect exposed by removing a caller guard, and an incomplete claimed fix described in commit
+messages and `prIntent`):
+
+- Full high-risk round: 3/3 seeded defects verified as P2, 0 false positives, 0 schema errors;
+  cross-batch consolidation collapsed 9 overlapping verified findings across 4 adjudication
+  batches down to the exact 3 unique defects (`reference-map 0s · shards 29s · scout 25s ·
+  cross-model-second-opinion 34s · hypotheses 39s · adjudication 1.1m · consolidation 48s`).
+- Follow-up rounds with 2 defects fixed and 1 left unfixed, exercised on both Claude (sim #1,
+  81 s) and Codex (sim #2, 84 s): both CLIs accepted `followupReviewerSchemaForBlockers`
+  (`prior_blocker_verdicts`) cleanly, closed the 2 fixed blockers, and kept the unfixed blocker
+  enforced as `[persisting]`.
+
+Live incumbent-engine self-review (`rove-sentinel@1.20.3`, `pnpm review:gate -- --base origin/main
+--head HEAD`, Claude + Codex):
+
+- Round 1 (`44e8bbb`, full high-risk round): identified and fixed P2/P3 defects across pre-push
+  validation of `p3Mode: "informational"`, low-risk agent shard routing, cross-batch consolidation
+  priority and persisting-blocker preservation, cache-stagger cleanup-fence enforcement, zero-shard
+  lens follow-up blocker verdicts and non-empty verdict evidence, exact placeholder detection in
+  `context.mjs`, lazy per-PR body fetching in `github.mjs`, Ruff `invalid-syntax` and baseline-diffed
+  off-hunk hard-error filtering plus Windows path casing and untouched-line attribution in
+  `toolLanes.mjs`, reference-map edge cases (same-named imports, unchanged callers, sibling scopes,
+  commented imports, Go/C declarations, Git-quoted paths, shared co-change commits, and digest byte
+  caps), Windows `tools` guidance, CLI `--intent` parsing, contract test coverage, and release notes.
+- Round 2 (`a2cbb80`, follow-up round, 4 shards, 1.5 m): `PASS` with 0 P0/P1/P2 blockers,
+  0 undisposed advisories, and 0 markdownlint/gitleaks hits. Three follow-up P3 polish items
+  were fixed in `26674f3`, which also passed (`PASS`, 53 s).
+- CodeRabbit + PR-watcher full-review fixes: added fixed static `--config` +
+  `--disable-nested-config` for text-only Oxlint (keeping head and baseline rules identical),
+  preserved backward compatibility for existing `lintCommands` named `oxlint`/`hadolint`, enforced
+  cross-batch relatedness in duplicate consolidation, rejected duplicate/conflicting
+  `prior_blocker_verdicts`, preserved duplicate textual sections per path and fitting coupling
+  clusters across shard boundaries, cached per-file declaration indexes in `refmap.mjs` and
+  advanced fallback lexing through hunk context, added hunk-mapped base line matching plus a
+  shared lane deadline and explicit baseline-coverage notes in `toolLanes.mjs`, and added the
+  grouped integration candidate cap to `limits.mjs`.
+
 ## 1.20.3 `repair` lists every Windows process and updates when the bootstrap runs it — 2026-11-22
 
 Deterministic tests cover: the Windows listing read one line a process, a name and command

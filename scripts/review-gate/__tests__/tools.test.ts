@@ -16,8 +16,8 @@ const machine = (...present: string[]) => async (name: string) => (present.inclu
 
 describe('linter tools on a new machine (1.13.0)', () => {
   it('lists the enabled tools this machine lacks', async () => {
-    expect(await missingTools({ resolve: machine('ruff') })).toEqual(['shellcheck', 'actionlint', 'gitleaks']);
-    expect(await missingTools({ resolve: machine('ruff'), config: { lintLanes: { gitleaks: false } } })).toEqual(['shellcheck', 'actionlint']);
+    expect(await missingTools({ resolve: machine('ruff') })).toEqual(['shellcheck', 'actionlint', 'gitleaks', 'oxlint', 'hadolint']);
+    expect(await missingTools({ resolve: machine('ruff'), config: { lintLanes: { gitleaks: false, oxlint: false, hadolint: false } } })).toEqual(['shellcheck', 'actionlint']);
   });
 
   it('plans winget on Windows, Homebrew on macOS, and instructions elsewhere', () => {
@@ -35,11 +35,11 @@ describe('linter tools on a new machine (1.13.0)', () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'rove-tools-notice-'));
     temporary.push(directory);
     const record = path.join(directory, 'tools-notice.json');
-    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'gitleaks'), record, platform: 'win32' })).toContain('shellcheck, actionlint are not installed');
-    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'gitleaks'), record, platform: 'win32' })).toBeNull();
+    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'gitleaks', 'oxlint', 'hadolint'), record, platform: 'win32' })).toContain('shellcheck, actionlint are not installed');
+    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'gitleaks', 'oxlint', 'hadolint'), record, platform: 'win32' })).toBeNull();
     // Another set is news again; nothing missing says nothing.
-    expect(await firstUseToolsNotice({ resolve: machine('ruff'), record, platform: 'win32' })).toContain('gitleaks');
-    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'gitleaks', 'shellcheck', 'actionlint'), record, platform: 'win32' })).toBeNull();
+    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'oxlint', 'hadolint'), record, platform: 'win32' })).toContain('gitleaks');
+    expect(await firstUseToolsNotice({ resolve: machine('ruff', 'gitleaks', 'shellcheck', 'actionlint', 'oxlint', 'hadolint'), record, platform: 'win32' })).toBeNull();
     expect(JSON.parse(await readFile(record, 'utf8')).missing).toEqual(['shellcheck', 'actionlint', 'gitleaks']);
   });
 
@@ -56,8 +56,8 @@ describe('linter tools on a new machine (1.13.0)', () => {
     const resolve = async (name: string) => (present.includes(name) ? `/bin/${name}` : null);
     const result = await installTools({ run, resolve, platform: 'win32' });
     expect(runs.map((args) => args[args.indexOf('--id') + 1])).toEqual(['koalaman.shellcheck', 'rhysd.actionlint', 'Gitleaks.Gitleaks']);
-    expect(result).toMatchObject({ installed: ['shellcheck', 'actionlint'], missing: ['gitleaks'], failed: [{ tool: 'gitleaks', detail: 'No package found' }] });
+    expect(result).toMatchObject({ installed: ['shellcheck', 'actionlint'], missing: ['gitleaks', 'oxlint', 'hadolint'], failed: [{ tool: 'gitleaks', detail: 'No package found' }] });
     expect(await installTools({ run, resolve: machine('ruff'), platform: 'win32' })).toMatchObject({ installed: [], note: 'winget is not available on this machine' });
-    expect(await installTools({ run, resolve: machine(), platform: 'linux' })).toMatchObject({ installed: [], missing: ['shellcheck', 'actionlint', 'gitleaks', 'ruff'] });
+    expect(await installTools({ run, resolve: machine(), platform: 'linux' })).toMatchObject({ installed: [], missing: ['shellcheck', 'actionlint', 'gitleaks', 'ruff', 'oxlint', 'hadolint'] });
   });
 });

@@ -18,7 +18,7 @@ Start here:
 Review:
   gate [--base REF] [--head REF] [--branch NAME]
        [--author auto|claude|codex|grok|human] [--risk low|medium|high]
-       [--native-evidence TEXT] [--force] [--dry-run] [--json]
+       [--intent TEXT] [--native-evidence TEXT] [--force] [--dry-run] [--json]
        [--detach [--log PATH]] [--state-root PATH] [--accounts FILE]
   defer --report ID --finding ID[,ID...]|all --reason TEXT
        [--base REF] [--head REF] [--branch NAME]

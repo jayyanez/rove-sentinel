@@ -1,5 +1,5 @@
-export const GATE_VERSION = '1.20.3';
-export const CHARTER_VERSION = '1.8.0';
+export const GATE_VERSION = '1.21.0';
+export const CHARTER_VERSION = '1.9.0';
 export const COMMENT_MARKER = '<!-- rove-shared-review-gate -->';
 export const TASK_PREFIX = 'Rove-Shared-Review-Gate';
 
@@ -11,13 +11,12 @@ export const LIMITS = Object.freeze({
   // The review patch (1.14.0: 4 MiB before). Shards no longer grow with the
   // change up to this bound; their number does (see maxReviewShards).
   maxPatchBytes: 8 * 1024 * 1024,
-  // Context around a change run in the review patch (1.12.0): up to this many
-  // lines on each side, but no more than `patchContextSideBytes` of them, and
-  // never fewer than `patchContextMinLines`. Lines alone made six one-line
-  // edits to a file of 300-character lines a section of well over 100 KB
-  // (a consumer project, 2026-10-10); 4 KB is what 80 lines of ordinary code cost, so
-  // code averaging up to ~50 bytes a line keeps all 80.
-  patchContextLines: 80,
+  // Context around a change run in the review patch: up to 40 lines on each
+  // side (80 lines of surrounding code total), bounded by `patchContextSideBytes`,
+  // and never fewer than `patchContextMinLines`. Paired with bidirectional
+  // reference-map slicing (callers + callee definitions), this keeps shards
+  // compact and focused without starving reviewers of local context.
+  patchContextLines: 40,
   patchContextSideBytes: 4 * 1024,
   patchContextMinLines: 3,
   maxProcessOutputBytes: 2 * 1024 * 1024,
@@ -31,16 +30,21 @@ export const LIMITS = Object.freeze({
   // A round of many shards may adjudicate four candidates a shard (1.14.0).
   maxRoundCandidates: 200,
   maxReviewerCandidates: 12,
-  // Candidates below this confidence do not reach adjudication. They are no
-  // longer discarded without trace (1.13.0): up to `maxReportedLowConfidence`
-  // of them are kept in the report, so a defect an external reviewer later
-  // raises can be told apart as "seen and held back" or "never seen".
-  candidateConfidenceFloor: 50,
+  // Candidates below this confidence do not reach adjudication. Lowered from
+  // 50 to 40 so real subtle defects reviewers flag with moderate confidence
+  // still reach independent verification; up to `maxReportedLowConfidence`
+  // below the floor remain in the report for recall analysis.
+  candidateConfidenceFloor: 40,
   maxReportedLowConfidence: 40,
   // Hypothesis reviewers stay narrow: one primary claim plus up to three
   // same-class siblings observed in code they already read (v1.6.0).
   maxHypothesisCandidates: 4,
   maxScoutHypotheses: 8,
+  // Grouped cross-file integration reviewers consolidate scout hypotheses into
+  // at most this many bounded passes instead of spawning one CLI per hypothesis.
+  maxIntegrationReviewers: 2,
+  integrationToolCallBudget: 12,
+  integrationMaxCandidates: 10,
   reviewerToolCallBudget: 16,
   scoutToolCallBudget: 8,
   // A patch range the scout reads in one call: ~400 diff lines stay well
@@ -57,6 +61,10 @@ export const LIMITS = Object.freeze({
   // exceed what local CPU/network and subscription rate limits tolerate as one
   // burst; excess tasks queue and start as slots free (v1.6.0).
   providerConcurrency: 8,
+  // Short stagger (ms) after the first same-provider launch in a multi-shard
+  // wave so sibling processes can hit the provider's prompt prefix cache
+  // instead of all cold-missing the shared inline context simultaneously.
+  promptCacheStaggerMs: 2500,
   // Sharded coverage (v1.8.0): the textual patch is partitioned into
   // file-group shards of about this many changed lines, capped per risk
   // class, so every changed hunk is read by exactly one reviewer with its
@@ -125,6 +133,15 @@ export const LIMITS = Object.freeze({
   // read from files, in parts, as before.
   inlineRequiredMaxBytes: 96 * 1024,
   inlineShardMaxBytes: 128 * 1024,
+  // Surgical per-shard reference slice (callers + callee definitions + siblings)
+  // and per-batch adjudicator code evidence inlined directly into prompts so
+  // reviewers avoid spending tool-call turns rediscovering known context.
+  inlineShardContextMaxBytes: 16 * 1024,
+  inlineAdjudicatorEvidenceMaxBytes: 16 * 1024,
+  prDigestMaxBytes: 10 * 1024,
+  // Candidates on the same file within this line window are grouped into the
+  // same adjudication batch so corroboration and duplicate consolidation work.
+  proximityLineWindow: 15,
   // Adjudication runs in fresh batches of at most this many candidates so the
   // coordinator stage is bounded by one small batch instead of one large one.
   coordinatorBatchSize: 5,
@@ -163,6 +180,10 @@ export const LIMITS = Object.freeze({
   refMapMaxReferenceLines: 240,
   refMapMaxRefsPerSymbol: 12,
   refMapMaxHitsPerSymbol: 200,
+  // Upstream callee/type definition snippets extracted for changed code.
+  refMapMaxCallees: 24,
+  refMapMaxCalleeBytes: 20 * 1024,
+  refMapMaxFallbackCalleeGreps: 12,
   // Git processes the map runs at once (1.13.0); its sweeps are read-only.
   refMapGitConcurrency: 8,
   // Co-change sibling mining bounds (v1.6.0).
@@ -179,6 +200,8 @@ export const LIMITS = Object.freeze({
   // (1.13.0) so every reviewer sees the stated intent without a read.
   intentMaxCommits: 30,
   intentMaxBytes: 4 * 1024,
+  // Bounded untrusted PR title/body or local --intent text.
+  prIntentMaxBytes: 3 * 1024,
   providerRetryLimit: 1,
   // One active high-risk review plus one queued review can each consume the
   // full reviewer + coordinator budget. Keep the hook bound above that total.
@@ -318,6 +341,38 @@ export const REVIEWER_SCHEMA = Object.freeze({
   },
   required: ['summary', 'candidates', 'effort_request', 'review_complete'],
 });
+
+/**
+ * Reviewer schema for a follow-up reviewer assigned prior blockers: adds a
+ * required `prior_blocker_verdicts` entry per assigned blocker so a fix must
+ * be explicitly attested rather than inferred from silent omission.
+ */
+export function followupReviewerSchemaForBlockers(priorBlockers) {
+  if (!Array.isArray(priorBlockers) || priorBlockers.length === 0) return REVIEWER_SCHEMA;
+  return {
+    ...REVIEWER_SCHEMA,
+    properties: {
+      ...REVIEWER_SCHEMA.properties,
+      prior_blocker_verdicts: {
+        type: 'array',
+        minItems: priorBlockers.length,
+        maxItems: priorBlockers.length,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            file: { type: 'string' },
+            title: { type: 'string' },
+            status: { type: 'string', enum: ['fixed', 'still_present', 'unverified'] },
+            evidence: { type: 'string', minLength: 1 },
+          },
+          required: ['file', 'title', 'status', 'evidence'],
+        },
+      },
+    },
+    required: [...REVIEWER_SCHEMA.required, 'prior_blocker_verdicts'],
+  };
+}
 
 export const COORDINATOR_SCHEMA = Object.freeze({
   type: 'object',
