@@ -1,6 +1,6 @@
 # What Sentinel accepts, and where it stops
 
-**Engine version:** 1.21.0
+**Engine version:** 1.21.1
 
 Every release updates this page. A limit or a workaround written down under an
 earlier version may no longer apply: Sentinel's limits come from the engine
@@ -28,7 +28,7 @@ needed.
 When a review still fails, read the report's own account of why
 ([troubleshooting](troubleshooting.md)) rather than a rule from memory.
 
-## Limits of 1.21.0
+## Limits of 1.21.1
 
 | Area | Limit | What happens past it |
 | --- | --- | --- |
@@ -45,6 +45,7 @@ When a review still fails, read the report's own account of why
 | Pre-push input | Git's ref list for one push: 4 MiB | The push is refused |
 | Repair rounds | 6 reviewed heads on one base; 2 blocking late discoveries | Eligible P2 findings become deferrable with a reason; P0/P1 always block |
 | Rerun after a fail-closed round | Completed shards kept 24 hours for the exact head | Older ones are reviewed again |
+| Rerun of a head whose round ended in a FAIL | Settles from that round while its report and its follow-up base's report are kept (50 reports) | No provider is selected or runs: its verdicts stand, the deferrals recorded since apply and the lanes run again. It is reviewed afresh when the round waits for native evidence, a deferral the round applied is no longer recorded, a recorded deferral follows a renamed file, a lane with hits in the round cannot run to completion, the rerun states another `--intent`, either report is pruned, or under `gate --force`; `gate --dry-run` says whether a rerun can settle; the lanes and the records are checked again when it runs |
 | A provider that fails a round, or reports its usage limit | One restart per review. Held out of `auto` reviews for 1 hour after a failure; until the reported reset after a usage limit (1 hour when none could be read, at most 8 days) | Under `auto` the review restarts once without it; a second failure fails closed. An explicit requirement never falls back, and a usage limit refuses it until the reset |
 | Local installation (`install --local`) | Its hook is in Git's own hooks folder, which Git runs only while `core.hooksPath` is unset, on a file system with hard links | `install --local` refuses while `core.hooksPath` is set or another pre-push hook is there, and preserves both; it refuses a Git directory without hard links before changing anything. See [installation](installation.md#install-without-changing-the-repository) |
 | Codex CLI for the default model | 0.170.0 or later for GPT-6.2 Sol, the default from 1.20.0 (0.159.0 for GPT-6.1 Sol) | A review or `doctor` that selects Codex refuses before model work, naming the version; no other model is chosen. Update Codex, or pin a model it supports ([models](models.md#client-compatibility)) |
@@ -74,7 +75,7 @@ The exact values are in `scripts/review-gate/constants.mjs`; the
 
 ## Limits that remain
 
-These are real in 1.21.0; work within them rather than around them.
+These are real in 1.21.1; work within them rather than around them.
 
 - The 8 MiB patch bound has no setting. Measure a long branch before it
   approaches the bound. In PowerShell:

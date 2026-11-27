@@ -1,5 +1,38 @@
 # Standalone validation record
 
+## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
+
+Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (17 new tests)
+cover: a follow-up head that failed on a persisting P2, deferred, and rerun with no provider
+available settling with no reviewer or adjudicator call while the injected reviewer would have
+named a new defect, the deferral applied, the deterministic lanes run once, the round,
+follow-up base, repair-round and late-discovery counts unchanged, the head's lineage record
+replaced (one record, the same reviewed-head count), an attestation the pre-push disposition
+check accepts, and the next head counting the settled head once; a rerun with a P1 left
+blocking giving the same FAIL without a review, settling again from the settled report while
+naming the round that reviewed, `--dry-run` naming the round it would settle from, and a new
+`--intent` or `--force` reviewing afresh with the same classification; a lane hit still present
+enforced again, a lane with hits that stops part-way sending the head to a fresh review that
+enforces what that run reported without running the lanes again, through a restart after a
+provider's usage limit too, with the lanes' own time in the report, and run again by a restart
+under another installed policy than they ran under (a lane result is handed only to a run of
+its exact identity), and a hit its lane no longer reports dropped; the intent the
+reviewers read kept through a settlement that states none, the same intent settling and another
+one reviewed; a deferred late-discovery blocker keeping its spent
+round in the report and the lineage record, through a settlement and a forced fresh rerun; a
+deferral removed while the lanes run sending the head to a fresh review that reads the records
+anew; a round with a finding waiting for native evidence reviewed again, and
+`defer` saying so; which reports can settle (status, each of the six identity fields, branch,
+author, risk, a different stated intent (none stated settles), round, follow-up base, native evidence, malformed findings, a
+deferral no longer recorded, a deferral following a renamed file); when a run may settle at all
+(`--force`, provider and account restarts, a skipped change, the head's own record); which
+recorded deferrals still have a renamed path to follow (the fresh round's rule, a record's
+existing file ignoring its former paths); and how a recorded deferral applies to
+settled findings (never to P0/P1, not to a dismissal, every lane hit dropped for the fresh
+ones). The settling tests fail on 1.21.0's sources (the reviewer runs again on the
+unchanged head). 1,157 tests passed in 42 files on Windows on the development host, and the package smoke
+passed (`rove-sentinel@1.21.1`).
+
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
 
 Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (40 new tests)

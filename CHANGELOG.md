@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.21.1 — A rerun of an unchanged head settles from the round that reviewed it
+
+A rerun of the same head after `defer` no longer reviews that head again from scratch.
+Nothing needs doing to receive it: it arrives as an ordinary automatic update, or through
+`rove-sentinel update` where a project turned automatic updates off. As in every release that
+increments the engine version, upgrading refreshes the installed policy snapshot digest, so a
+branch's next review after the update is a new lineage.
+
+- **The rerun after a deferral settles instead of sampling again.** Deferring a blocking P2
+  printed "rerun the gate", and the rerun reviewed the unchanged head as a new round: its
+  reviewers drew another sample of the same code and blocked on findings the round before had
+  not named, so a repair loop that had reached its exit started over. In 100 rounds across two
+  consumer projects, 15 of 18 same-head reruns after a FAIL blocked again that way, and those
+  reruns took 34 of the 326 Codex runs. A rerun of a head whose round ended in a FAIL now
+  settles from that round when nothing but recorded decisions changed: the same repository,
+  base, head, policy, branch, author, risk and round classification, its report and its
+  follow-up base's report still kept, every deferral it applied still recorded (checked again
+  once the lanes are done), no recorded deferral following a renamed file, no finding waiting
+  for native evidence, and no other intent stated than the round read. That is decided before any provider is
+  selected or probed, so a settling run neither needs a provider nor advances account rotation.
+  The round's verdicts stand, a deferral recorded since applies as it would in any round (never
+  to P0/P1), and the deterministic lanes run again and are enforced as a fresh round enforces
+  them; when a lane that had hits in the round cannot run to completion, the head is reviewed
+  afresh instead. The settling run writes its own report
+  (`settledFrom` names the round that reviewed, through any chain of settling runs), replaces
+  the head's lineage record without counting the head twice or refunding a late-discovery round
+  it spent, and attests when nothing blocks; the attestation carries the settled round's
+  provider evidence, marked as reused.
+- **The same model verdicts for the same commit.** A rerun of an unchanged head without a
+  deferral that settles gives the round's model verdicts again instead of a new sample; only the
+  deterministic lanes' hits can change. One that cannot settle is reviewed afresh, as before, and
+  that review, and any restart of it after a provider or account failure, enforces the lane
+  result the settling attempt already has, while the installed policy is the one those lanes ran
+  under. A restart under a policy installed meanwhile runs the lanes again, and the restarts
+  after it enforce that newer result. `gate --force` still reviews the head afresh, and a
+  restart after a provider failure never settles. `gate --dry-run` says when a rerun would
+  settle and from which round; `defer` says when its rerun is reviewed again because the round
+  waits for native evidence, and otherwise points to `gate --dry-run`.
+- **A rerun of the same head keeps the late-discovery round it spent.** A fresh rerun of a head
+  (`--force`, or one that cannot settle) no longer gives back a late-discovery round when its
+  finding is now deferred, as its reviewed-head count was already kept.
+
 ## 1.21.0 — Deeper context, cross-file integration review, and faster verification
 
 This release raises defect recall across multi-file changes while tightening token

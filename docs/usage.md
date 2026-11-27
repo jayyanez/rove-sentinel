@@ -68,6 +68,20 @@ Use the actual IDs and any base/head arguments printed by your report. A changed
 head or incompatible report must be reviewed again; a deferral cannot manufacture
 a review of a different commit.
 
+After deferring a blocking finding, rerun the gate on the same head. An
+unchanged head settles from its latest round, without another model review:
+that round's verdicts stand, your deferrals apply, the deterministic lanes run
+again, and the head passes once nothing undeferred blocks. Rerunning an
+unchanged head without a deferral gives the same model verdicts; only the
+lanes' hits can change. The head is reviewed again when its round waits for
+native evidence, a deferral the round applied is no longer recorded, a recorded
+deferral follows a renamed file, a lane with hits in the round cannot run to
+completion, the round's report or its follow-up base's report has been pruned,
+or the rerun states another `--intent` than the round read (a head that passed
+is reused whatever intent a later run states). `gate --dry-run` says whether a
+rerun can settle; the lanes and the records are checked again when it runs. Use `gate --force` only when you want a fresh review of the same
+commit.
+
 ## GitHub pull requests
 
 The installed watcher polls ready, non-draft PRs on github.com. By default it
