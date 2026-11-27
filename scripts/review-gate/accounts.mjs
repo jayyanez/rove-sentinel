@@ -354,7 +354,7 @@ export function describeAccountHold(provider, label, record) {
     : `${provider} account "${label}" usage limit reached; retry after ${record.retryAfter}`;
 }
 
-/** The lines a result, a report's reader or a comment shows about accounts. */
+/** The lines a result or a report's reader shows about accounts (never a GitHub comment). */
 export function formatAccounts(result) {
   const lines = [];
   const selection = isObject(result?.accounts) ? result.accounts : null;

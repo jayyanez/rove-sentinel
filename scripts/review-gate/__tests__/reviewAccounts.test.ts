@@ -364,7 +364,7 @@ describe('a review with accounts', () => {
     expectNoFolders(await readFile(paths.accountState, 'utf8'));
   });
 
-  it("uses the author's own account as the last resort, and says so everywhere", async () => {
+  it("uses the author's own account as the last resort, and says so everywhere but on GitHub", async () => {
     const accounts = configured(['personal', 'team']);
     const { run, progress, paths, stateRoot } = await review({
       policy: policy('claude'), accounts,
@@ -377,7 +377,8 @@ describe('a review with accounts', () => {
     expect(progress).toContain('No other claude account is usable; this review uses the author\'s own claude account "personal".');
     const text = formatGateResult(result);
     expect(text).toContain('Author\'s account: claude reviewed under the author\'s own account "personal"; no other claude account was usable.');
-    expect(unescaped(renderGateComment(result))).toContain('the author\'s own account "personal"');
+    // A pull request comment is as public as its repository: it names no account (1.21.1).
+    expect(unescaped(renderGateComment(result))).not.toMatch(/\bpersonal\b|\bteam\b|Accounts|Author.{0,2}s account/);
     const report = await readReport(paths, result.reportId);
     expect(report.accounts).toEqual({ claude: { label: 'personal', authorOwn: true } });
     const attestation = await readAttestation(paths, result.identity);
@@ -421,7 +422,7 @@ describe('a review with accounts', () => {
     const text = formatGateResult(result);
     expect(text).toContain('Account fallback: codex account "main" left out after its usage limit');
     expect(text).toContain('the review restarted from scratch with "spare"');
-    expect(unescaped(renderGateComment(result))).toContain('codex account "main" left out after its usage limit');
+    expect(unescaped(renderGateComment(result))).not.toMatch(/\bmain\b|\bspare\b|Accounts|Account fallback/);
     const report = await readReport(paths, result.reportId);
     expect(report.accountFallbacks).toHaveLength(1);
     expectNoFolders(JSON.stringify(report));

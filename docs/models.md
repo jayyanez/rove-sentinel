@@ -251,7 +251,7 @@ under the login Sentinel inherits, exactly as before. With accounts:
   [plan](plans/review-accounts.md#research) has the research.
 - **The author's own account, last.** When no other account of that
   provider is usable, the review uses the author's own, and the progress, the
-  report, the attestation, the comment and the text result say so.
+  report, the attestation and the text result say so.
 - **Holds and restarts per account.** An account that reports its usage limit,
   or whose work fails the round after its retry, is held as a provider would
   be, and the review restarts from scratch with the provider's next account,
@@ -269,11 +269,16 @@ under the login Sentinel inherits, exactly as before. With accounts:
 - **Restarts review the same commits.** A restart, for an account or a
   provider, reviews the base, head and branch the first round resolved, even
   if `HEAD` has moved since.
-- **Evidence by label.** Reports, attestations, comments and text results
+- **Evidence by label, kept local.** Reports, attestations and text results
   carry `accounts` (the label per provider, and `authorOwn` for the author's
   provider: `true`, `false`, or `null` when the review's requester is not
   known, as for a pull request found on GitHub) and `accountFallbacks`; each
-  provider execution names its `account`. Folders never appear.
+  provider execution names its `account`. Folders never appear. The GitHub
+  comment names no account at all (1.21.1): it is as public as its
+  repository, and the accounts a person reviews with are their own setup. An
+  ERROR comment does not publish the error either, since an error can name an
+  account; the reason stays on the reviewing machine, in the watcher's
+  outcome record for the head (and the report of a round that failed closed).
 - `status` lists each account by label, signed in or not, with its hold and
   last review; `doctor` and `install` probe every configured account, those
   of a provider the requirement leaves out included, list them under

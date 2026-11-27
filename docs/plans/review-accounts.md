@@ -178,17 +178,19 @@ the allowance left can replace the rotation inside `rankAccounts`.
    not drop fails closed. Safety
    stops (a process-tree cleanup failure, the launch fence, a lane, an error
    that is not a provider's, the round's veto) never restart.
-7. **Evidence.** Every report, attestation, GitHub summary and comment, and
-   text result of a review that used accounts carries, by label only:
-   `accounts` (per provider, the label used, and for the author's provider
-   `authorOwn`: `true`, `false`, or `null` when unknown) and `accountFallbacks`
-   (each switch: `provider`, `from`, `to`, `reason`, `resetAt`,
-   `retryAfter`). Each `providerExecutions` record names its `account`. The
-   text result and the comment say, for example,
+7. **Evidence.** Every report, attestation and text result of a review that
+   used accounts carries, by label only: `accounts` (per provider, the label
+   used, and for the author's provider `authorOwn`: `true`, `false`, or
+   `null` when unknown) and `accountFallbacks` (each switch: `provider`,
+   `from`, `to`, `reason`, `resetAt`, `retryAfter`). Each
+   `providerExecutions` record names its `account`. The text result says,
+   for example,
    `Account fallback: codex account "main" left out after its usage limit (retry after …); the review restarted from scratch with "spare".`
    and
    `Author's account: claude reviewed under the author's own account "personal"; no other claude account was usable.`
    Progress says `codex account "main" usage limit reached (retry after …); restarting this review with another codex account.`
+   The GitHub comment carried these lines until 1.21.0; from 1.21.1 it names
+   no account, and an ERROR comment publishes no error text.
 8. **Status and doctor.** `status` lists `accounts`: each label, whether it is
    signed in (probed with that account's folder only), its live hold and its
    last review; an unreadable accounts file is reported as `accounts.error`.
@@ -229,9 +231,9 @@ after a usage limit.
 - Folders stay on the machine: in the user's accounts file and in a reviewer
   process's environment. Requests carry digests, the account state is keyed by
   label, and reports, attestations, comments, progress and error messages name
-  labels only. The policy digest does not change: the accounts file is not
-  policy, and a review under another account of the same provider is the same
-  review.
+  labels only. (From 1.21.1 the GitHub comment names no account at all.) The
+  policy digest does not change: the accounts file is not policy, and a review
+  under another account of the same provider is the same review.
 
 ## Acceptance
 
@@ -245,7 +247,8 @@ after a usage limit.
 3. The author's account: excluded while another is usable; the default folder
    when the variable is unset; matched across a trailing separator and, on
    Windows, letter case; used as the last resort and recorded as such in the
-   progress, the report, the attestation, the text result and the comment;
+   progress, the report, the attestation, the text result and, before 1.21.1,
+   the comment;
    `null` when the requester is unknown; a malformed identity refused.
 4. Ranking: no hold before a failure hold, a usage limit never; least recently
    used first; excluded and signed-out accounts left out.
