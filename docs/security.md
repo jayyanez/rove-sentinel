@@ -48,7 +48,7 @@ CLI's own sign-in status with the folder set. A request queued for the watcher
 carries a digest of the author's folder, and reports, attestations and logs
 name accounts by label only. A GitHub comment names no account, and an ERROR
 comment publishes no error text (1.21.1); a deterministic lane that did not
-finish is named in its summary by its status, never by its note (1.21.2); a
+finish is named in the comment's summary by its status, never by its note (1.21.2); a
 finding's own text is published as written. A credential variable that
 overrides the folder (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`,
 `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`) refuses a review that would use that

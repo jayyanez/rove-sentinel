@@ -23,7 +23,7 @@ lineage.
   completed review's summary quoted each deterministic lane's own note, and a lane that failed,
   timed out or was unavailable can quote a tool's output or a local path; a cleanup failure
   added its folders. Results now carry a public summary for the comment, in which a lane that
-  finished keeps its counts, any other is named by its status (for example `eslint: error`),
+  finished keeps its note, which Sentinel writes itself, any other is named by its status (for example `eslint: error`),
   and a cleanup failure is only said to have happened. A result without a public summary
   publishes none of its summary, except a skipped change's. The local report keeps every note.
   A finding's own text is published as before: a lane's finding is its tool's message, which
