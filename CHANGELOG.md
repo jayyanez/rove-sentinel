@@ -15,13 +15,15 @@ branch's next review after the update is a new lineage.
   consumer projects, 15 of 18 same-head reruns after a FAIL blocked again that way, and those
   reruns took 34 of the 326 Codex runs. A rerun of a head whose round ended in a FAIL now
   settles from that round when nothing but recorded decisions changed: the same repository,
-  base, head, policy, branch, author, risk, stated intent and round classification, its report
-  still kept, every deferral it applied still recorded, no recorded deferral following a renamed
-  file, and no finding waiting for native evidence. That is decided before any provider is
+  base, head, policy, branch, author, risk and round classification, its report and its
+  follow-up base's report still kept, every deferral it applied still recorded (checked again
+  once the lanes are done), no recorded deferral following a renamed file, no finding waiting
+  for native evidence, and no other intent stated than the round read. That is decided before any provider is
   selected or probed, so a settling run neither needs a provider nor advances account rotation.
   The round's verdicts stand, a deferral recorded since applies as it would in any round (never
-  to P0/P1), and the deterministic lanes run again and are enforced as that round enforced them;
-  a lane that cannot recheck keeps its earlier hits. The settling run writes its own report
+  to P0/P1), and the deterministic lanes run again and are enforced as a fresh round enforces
+  them; a lane that cannot recheck keeps the earlier hits it does not report again, under
+  candidate ids of their own. The settling run writes its own report
   (`settledFrom` names the round that reviewed, through any chain of settling runs), replaces
   the head's lineage record without counting the head twice or refunding a late-discovery round
   it spent, and attests when nothing blocks; the attestation carries the settled round's
@@ -30,7 +32,10 @@ branch's next review after the update is a new lineage.
   deferral gives the round's model verdicts again instead of a new sample; only the
   deterministic lanes' hits can change. `gate --force` still reviews the head afresh, and a
   restart after a provider failure never settles. `gate --dry-run` says when a rerun would
-  settle, and `defer` says whether its rerun settles or is reviewed again.
+  settle and from which round, and `defer` says whether its rerun settles or is reviewed again.
+- **A rerun of the same head keeps the late-discovery round it spent.** A fresh rerun of a head
+  (`--force`, or one that cannot settle) no longer gives back a late-discovery round when its
+  finding is now deferred, as its reviewed-head count was already kept.
 
 ## 1.21.0 — Deeper context, cross-file integration review, and faster verification
 

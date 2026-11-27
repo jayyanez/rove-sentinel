@@ -11,7 +11,7 @@ import { deferFindings, undisposedRefusal } from '../dispositions.mjs';
 import {
   deferralsFollowRenames, formatGateResult, runGate, settleAllowed, settleSourceMismatch,
 } from '../gate.mjs';
-import { ensureState, readAttestation, readLineageReviews, readReport } from '../storage.mjs';
+import { ensureState, readAttestation, readLineageReviews, readReport, removeDisposition } from '../storage.mjs';
 
 // A rerun of an unchanged head after a deferral settles from the round that
 // reviewed it (1.21.1). Before, it reviewed the head again from scratch: the
@@ -210,6 +210,7 @@ describe('a rerun of an unchanged head after a deferral', () => {
     const twice = await review(secondHead);
     expect(reviewer).not.toHaveBeenCalled();
     expect(twice).toMatchObject({ status: 'fail', settledFrom: { reportId: second.reportId } });
+    await expect(review(secondHead, { dryRun: true, prIntent: '' })).resolves.toMatchObject({ settlesFrom: second.reportId });
 
     // A stated intent the round never read is reviewed.
     const intended = await review(secondHead, { prIntent: 'A pull request body the round never read' });
@@ -247,11 +248,26 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(titles(still)).toEqual(['Bounded defect', 'rule: a lane hit']);
     expect(still.findings.find((finding: { title: string }) => finding.title === 'rule: a lane hit')).toMatchObject({ blockingReason: 'first-review' });
 
-    // The lane could not run: its earlier hit is kept, and the report says so.
+    // The lane could not run: its earlier hit is kept under an id of its own,
+    // and the report says so.
     lanes.value = { lanes: [{ lane: 'lint', status: 'unavailable', note: 'lint is not installed on this host' }], findings: [] };
     const unavailable = await review(repository.head);
     expect(titles(unavailable)).toEqual(['Bounded defect', 'rule: a lane hit']);
-    expect(unavailable.summary).toContain('The earlier hits of lint are kept');
+    expect(unavailable.findings.find((finding: { title: string }) => finding.title === 'rule: a lane hit').candidate_id).toBe('kept-deterministic-0');
+    expect(unavailable.summary).toContain('Earlier hits of lint are kept');
+
+    // A lane that timed out after part of its work: what it reported is
+    // enforced beside the earlier hit, which it did not report again, and the
+    // ids stay distinct; a hit it reported again is not doubled.
+    const partialHit = { ...laneHit, title: 'rule: another lane hit' };
+    lanes.value = { lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [partialHit] };
+    const partial = await review(repository.head);
+    expect(titles(partial)).toEqual(['Bounded defect', 'rule: a lane hit', 'rule: another lane hit']);
+    const ids = partial.findings.map((finding: { candidate_id: string }) => finding.candidate_id);
+    expect(new Set(ids).size).toBe(ids.length);
+    lanes.value = { lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [laneHit] };
+    const again = await review(repository.head);
+    expect(titles(again)).toEqual(['Bounded defect', 'rule: a lane hit', 'rule: another lane hit']);
 
     // The lane ran and no longer reports it: only the model's finding is left.
     lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
@@ -278,6 +294,37 @@ describe('a rerun of an unchanged head after a deferral', () => {
     const record = (await readLineageReviews(paths, convergenceLineage(late.identity, branch)))
       .find((entry) => entry.headSha === late.identity.headSha);
     expect(record).toMatchObject({ lateDiscoveries: 1 });
+    // A fresh rerun of the same head keeps it as well.
+    const forced = await review(late.identity.headSha, { force: true });
+    expect(forced).toMatchObject({ convergence: { lateDiscoveriesUsed: 1 } });
+    expect(forced).not.toHaveProperty('settledFrom');
+  });
+
+  it('reviews the head afresh when a deferral it applies is removed while the lanes run', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-pruned';
+    const named = { value: [{ title: 'Bounded defect' }] as Named[] };
+    const { reviewer, deterministicLanes, review, defer } = harness(repository, branch, named);
+    await review(repository.head);
+    const second = await review(await commit(repository.root, 43));
+    await defer(second.identity.headSha, second.reportId);
+    const paths = await ensureState(repository.stateRoot);
+    const lineage = convergenceLineage(second.identity, branch);
+    let removed = false;
+    deterministicLanes.mockImplementation(async () => {
+      if (!removed) {
+        removed = true;
+        await removeDisposition(paths, lineage, findingKey({ file: 'src/lib/example.ts', title: 'Bounded defect' }));
+      }
+      return { lanes: [], findings: [] };
+    });
+    reviewer.mockClear();
+    const progress = vi.fn();
+    const rerun = await review(second.identity.headSha, { progress });
+    expect(progress).toHaveBeenCalledWith(expect.stringContaining('is no longer recorded'));
+    expect(reviewer).toHaveBeenCalled();
+    expect(rerun).not.toHaveProperty('settledFrom');
+    expect(rerun).toMatchObject({ status: 'fail' });
   });
 
   it('reviews again a round with a finding that waits for native evidence, and says so when deferring', async () => {
@@ -318,9 +365,11 @@ describe('which report can settle a rerun', () => {
     expect(settleSourceMismatch({ ...report, risk: 'medium' }, expected)).toMatch(/risk/);
     expect(settleSourceMismatch({ ...report, round: 'full' }, expected)).toMatch(/round/);
     expect(settleSourceMismatch({ ...report, followUpBaseSha: 'g' }, expected)).toMatch(/follow-up base/);
-    expect(settleSourceMismatch(report, { ...expected, prIntentDigest: 'abc' })).toMatch(/intent/);
-    expect(settleSourceMismatch({ ...report, prIntentDigest: 'abc' }, expected)).toMatch(/intent/);
+    // A rerun that states no intent settles; one that states another is reviewed.
+    expect(settleSourceMismatch({ ...report, prIntentDigest: 'abc' }, expected)).toBeNull();
     expect(settleSourceMismatch({ ...report, prIntentDigest: 'abc' }, { ...expected, prIntentDigest: 'abc' })).toBeNull();
+    expect(settleSourceMismatch({ ...report, prIntentDigest: 'abc' }, { ...expected, prIntentDigest: 'xyz' })).toMatch(/another intent/);
+    expect(settleSourceMismatch(report, { ...expected, prIntentDigest: 'abc' })).toMatch(/another intent/);
     expect(settleSourceMismatch(report, { ...expected, pendingRenames: true })).toMatch(/renamed/);
     expect(settleSourceMismatch(null, expected)).toBe('no report');
   });
@@ -359,6 +408,11 @@ describe('which report can settle a rerun', () => {
     // A record keyed to a path between two renames follows through its history.
     expect(deferralsFollowRenames(new Map([['k', { file: 'src/mid.ts', previousFiles: ['src/old.ts'] }]]), renamedTo)).toBe(true);
     expect(deferralsFollowRenames(new Map([['k', { file: 'src/other.ts' }]]), renamedTo)).toBe(false);
+    // A record whose own file exists at the head ignores its former paths,
+    // as the fresh round does, however often the head is rerun.
+    const reused = new Map([['k', { file: 'src/reused.ts', previousFiles: ['src/old.ts'] }]]);
+    expect(deferralsFollowRenames(reused, renamedTo, { existingFiles: new Set(['src/reused.ts']) })).toBe(false);
+    expect(deferralsFollowRenames(reused, renamedTo)).toBe(true);
     expect(deferralsFollowRenames(new Map([['k', { file: 'src/old.ts' }]]), new Map())).toBe(false);
   });
 });
@@ -396,10 +450,15 @@ describe('the findings a settled round carries', () => {
     expect(settled[0]).not.toHaveProperty('deferrable');
     expect(settled[1]).toBe(findings[1]);
     expect(settled[2]).toBe(findings[2]);
-    expect(settled[3]).toBe(findings[4]);
+    expect(settled[3]).toEqual({ ...findings[4], candidate_id: 'kept-c-Unrechecked lane hit' });
     expect(settled[4]).toMatchObject({ disposition: 'advisory', requiresDisposition: false, deferral: expect.any(Object) });
     expect(settled[5]).toBe(findings[6]);
-    // Without the lane rechecked, every earlier hit is kept.
+    // Without the lane rechecked, every earlier hit is kept; one a lane
+    // reported again is replaced by the fresh hit.
     expect(settledFindings(findings, new Map()).map((finding) => finding.title)).toContain('Rechecked lane hit');
+    const replaced = new Set([findingKey({ file: 'src/a.ts', title: 'Unrechecked lane hit' })]);
+    expect(settledFindings(findings, new Map(), { replaced }).map((finding) => finding.title)).not.toContain('Unrechecked lane hit');
+    // A kept id is not prefixed twice along a chain of settling runs.
+    expect(settledFindings(settled, new Map())[3].candidate_id).toBe('kept-c-Unrechecked lane hit');
   });
 });

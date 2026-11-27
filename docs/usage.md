@@ -73,9 +73,12 @@ unchanged head settles from its latest round, without another model review:
 that round's verdicts stand, your deferrals apply, the deterministic lanes run
 again, and the head passes once nothing undeferred blocks. Rerunning an
 unchanged head without a deferral gives the same model verdicts; only the
-lanes' hits can change. A round with a finding that waits for native evidence,
-a changed `--intent`, or a deferral that follows a renamed file is reviewed
-again. Use `gate --force` only when you want a fresh review of the same commit.
+lanes' hits can change. The head is reviewed again when its round waits for
+native evidence, a deferral the round applied is no longer recorded, a recorded
+deferral follows a renamed file, or the rerun states another `--intent` than
+the round read (a head that passed is reused whatever intent a later run
+states). Use `gate --force` only when you want a fresh review of the same
+commit.
 
 ## GitHub pull requests
 

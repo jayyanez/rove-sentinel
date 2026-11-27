@@ -1108,28 +1108,43 @@ export function settleAllowed({ force = false, providerFallback = null, accountF
 }
 
 /**
- * Whether a recorded deferral is keyed under a path this head renamed: a
- * fresh round re-records it under the new path before it enforces anything,
- * which settling does not do, so such a head is reviewed. Pure.
+ * Whether a recorded deferral would follow a rename of this head: a fresh
+ * round re-records it under the new path before it enforces anything, which
+ * settling does not do, so such a head is reviewed. The rule is the fresh
+ * round's own (renameTargetFor), given which recorded files exist at the
+ * head. Pure.
  */
-export function deferralsFollowRenames(deferrals, renamedTo) {
+export function deferralsFollowRenames(deferrals, renamedTo, { existingFiles = new Set() } = {}) {
   if (!(renamedTo instanceof Map) || renamedTo.size === 0) return false;
-  const destinations = new Set(renamedTo.values());
-  return [...(deferrals?.values?.() ?? [])].some((record) => {
-    const file = typeof record?.file === 'string' ? record.file : null;
-    if (file && renamedTo.has(file)) return renamedTo.get(file) !== file;
-    // Already under the path the head gives it: nothing to follow.
-    if (file && destinations.has(file)) return false;
-    return (Array.isArray(record?.previousFiles) ? record.previousFiles : [])
-      .some((earlier) => typeof earlier === 'string' && renamedTo.has(earlier));
-  });
+  return [...(deferrals?.values?.() ?? [])].some((record) => renameTargetFor(
+    record, renamedTo, { currentFileExists: existingFiles.has(record?.file) },
+  ) !== null);
+}
+
+/** The recorded files a head holds, read from Git objects (no checkout). */
+async function filesAtHead(repoRoot, headSha, files) {
+  const present = new Set();
+  for (const file of new Set(files.filter((entry) => typeof entry === 'string' && entry))) {
+    const result = await runGit(repoRoot, ['cat-file', '-e', `${headSha}:${file}`], { allowFailure: true, result: true })
+      .catch(() => null);
+    if (result?.code === 0) present.add(file);
+  }
+  return present;
+}
+
+/** The round a settling run names: the one that ran reviewers (1.21.1). */
+function settledFromOf(source) {
+  return source.settledFrom?.reportId
+    ? { reportId: source.settledFrom.reportId, reviewedAt: source.settledFrom.reviewedAt ?? null }
+    : { reportId: source.id, reviewedAt: source.createdAt ?? null };
 }
 
 /**
  * Why a stored report cannot settle this rerun of its head, or null when it
- * can (1.21.1): a FAIL of this exact identity, branch, author, risk and
- * stated intent, classified as this rerun classifies it (the same round and
- * follow-up base), whose findings are well formed. It is reviewed again, as
+ * can (1.21.1): a FAIL of this exact identity, branch, author and risk,
+ * classified as this rerun classifies it (the same round and follow-up
+ * base), whose findings are well formed, and which read the intent this
+ * rerun states, if it states one. It is reviewed again, as
  * before, when a finding waits for native evidence (the evidence a rerun
  * brings is weighed by a fresh adjudication), when a deferral it applied is
  * no longer recorded (without its record the finding would block again), or
@@ -1146,7 +1161,9 @@ export function settleSourceMismatch(report, {
   if ((report.branch ?? null) !== (branch ?? null)) return 'its branch differs';
   if (report.author !== author) return 'its author differs';
   if (report.risk !== risk) return 'its risk differs';
-  if ((report.prIntentDigest ?? null) !== (prIntentDigest ?? null)) return 'its stated intent differs';
+  // A rerun that states no intent (as the printed defer command does) settles;
+  // one that states another intent than the round read is reviewed with it.
+  if (prIntentDigest && (report.prIntentDigest ?? null) !== prIntentDigest) return 'the rerun states another intent';
   if ((report.round ?? report.convergence?.round) !== round) return 'its round differs';
   if ((report.followUpBaseSha ?? null) !== (followUpBaseSha ?? null)) return 'its follow-up base differs';
   if (!Array.isArray(report.findings) || !report.findings.length) return 'it carries no findings';
@@ -1211,9 +1228,7 @@ async function settleFromReport(settle) {
   } = settle;
   // A chain of settling runs names the round that reviewed, never a run
   // that launched no reviewer.
-  const settledFrom = source.settledFrom?.reportId
-    ? { reportId: source.settledFrom.reportId, reviewedAt: source.settledFrom.reviewedAt ?? null }
-    : { reportId: source.id, reviewedAt: source.createdAt ?? null };
+  const settledFrom = settledFromOf(source);
   progress(`Settling ${headSha.slice(0, 12)} from report ${settledFrom.reportId}: this exact head, base, policy and intent were reviewed there, so no reviewer runs; the deferrals recorded since apply and the deterministic lanes run again (gate --force reviews the head afresh).`);
   const baseReport = settleReportBase(settle);
   const clock = createStageClock();
@@ -1243,9 +1258,12 @@ async function settleFromReport(settle) {
       });
     }
     const lanes = lanesSettled.value || { lanes: [], findings: [] };
-    // Only a lane that ran to completion replaces its earlier hits; one that
-    // is unavailable, timed out or failed this time keeps them enforced.
+    // Every hit the lanes report now is enforced, as a fresh round enforces
+    // it, partial lanes' included. Only a lane that ran to completion
+    // replaces its earlier hits; one that is unavailable, timed out or
+    // failed keeps those it did not report again.
     const rechecked = new Set(lanes.lanes.filter((lane) => lane.status === 'ok').map((lane) => lane.lane));
+    const replaced = new Set(lanes.findings.map((finding) => findingKey(finding)));
     // The lanes' hits are classified exactly as the settled round classified
     // them: the same round, increment, prior blockers and budgets.
     const renamedTo = renameMapFor(patch, followUpPatch);
@@ -1255,8 +1273,8 @@ async function settleFromReport(settle) {
       ))
       : []);
     const enforcedFindings = [
-      ...settledFindings(source.findings, deferrals, { rechecked }),
-      ...applyConvergencePolicy(lanes.findings.filter((finding) => rechecked.has(finding.source)), {
+      ...settledFindings(source.findings, deferrals, { rechecked, replaced }),
+      ...applyConvergencePolicy(lanes.findings, {
         round,
         incrementFiles: incrementFiles ? new Set(incrementFiles) : null,
         priorBlockingKeys,
@@ -1266,14 +1284,23 @@ async function settleFromReport(settle) {
         p3Mode: reviewPolicy.config.p3Mode ?? 'require-disposition',
       }),
     ];
+    // Every deferral this run applies must still be recorded once the lanes
+    // are done (a disposition write prunes the shared records): otherwise
+    // the head is reviewed afresh rather than attested on a decision the
+    // push check would not find.
+    const recorded = await readDispositions(context.paths, lineage);
+    if (enforcedFindings.some((finding) => finding.deferral && !recorded.has(finding.findingKey || findingKey(finding)))) {
+      progress(`A deferral this settlement applied is no longer recorded; ${headSha.slice(0, 12)} is reviewed afresh.`);
+      return null;
+    }
     const verified = blockingFindings(enforcedFindings);
     const advisories = advisoryFindings(enforcedFindings);
     const dismissed = enforcedFindings.filter((finding) => finding.disposition === 'dismissed');
     const status = verified.length ? 'fail' : 'pass';
-    const pending = undisposedAdvisories(enforcedFindings, deferrals);
+    const pending = undisposedAdvisories(enforcedFindings, recorded);
     const laneNotes = lanes.lanes.filter((lane) => lane.status !== 'skipped').map((lane) => `${lane.lane}: ${lane.note}`);
-    const kept = [...new Set((source.findings || [])
-      .filter((finding) => finding?.adjudicatedDisposition === 'deterministic' && !rechecked.has(finding.source))
+    const kept = [...new Set(enforcedFindings
+      .filter((finding) => finding.adjudicatedDisposition === 'deterministic' && String(finding.candidate_id).startsWith('kept-'))
       .map((finding) => finding.source))];
     const summary = [
       `Settled from report ${settledFrom.reportId}, the round that reviewed this exact head, base, policy and intent${settledFrom.reviewedAt ? ` (${settledFrom.reviewedAt})` : ''}: no reviewer ran, its verdicts stand and the deferrals recorded since apply.`,
@@ -1281,7 +1308,7 @@ async function settleFromReport(settle) {
         ? `${advisories.length} lower-severity finding(s) remain visible as non-blocking advisories under the bounded-convergence policy${pending.length ? `; ${pending.length} of them need a fix or a recorded deferral before this head can be pushed` : ''}.`
         : '',
       laneNotes.length ? `Deterministic lanes — ${laneNotes.join('; ')}.` : '',
-      kept.length ? `The earlier hits of ${kept.join(', ')} are kept: the lane could not recheck them.` : '',
+      kept.length ? `Earlier hits of ${kept.join(', ')} are kept: the lane could not recheck them.` : '',
     ].filter(Boolean).join(' ');
     // A late-discovery round the head spent stays spent, even when the
     // deferral now makes that finding an advisory.
@@ -1653,7 +1680,9 @@ async function runGateWithLease({
   const lineageReviews = risk.level === 'skip'
     ? []
     : await readLineageReviews(context.paths, lineage);
-  const deferrals = risk.level === 'skip'
+  // Reassigned only when a settlement that lost a deferral falls through to
+  // a fresh review, which must read the records as they now are.
+  let deferrals = risk.level === 'skip'
     ? new Map()
     : await readDispositions(context.paths, lineage);
   // A follow-up round is justified by ATTENTION FOCUS: the incremental diff
@@ -1703,7 +1732,7 @@ async function runGateWithLease({
   const followUpReview = followUpBaseSha
     ? ancestorReviews.filter((review) => review.headSha === followUpBaseSha)
     : [];
-  const priorBlocking = priorBlockingFromReviews(followUpReview, deferrals);
+  let priorBlocking = priorBlockingFromReviews(followUpReview, deferrals);
   const lateDiscoveriesUsed = ancestorReviews.reduce(
     (max, review) => Math.max(max, review.lateDiscoveries || 0),
     0,
@@ -1738,7 +1767,10 @@ async function runGateWithLease({
     Math.max(0, (ownRecord?.reviewedHeads || 0) - 1),
   );
   // A rerun of a head this lineage already reviewed to a FAIL settles from
-  // that round (1.21.1), before any provider is selected or probed: the
+  // that round (1.21.1), before any provider is selected or probed. Like a
+  // PASS, which is reused whatever intent a later run states, a FAIL is
+  // bound to its identity, and a rerun that states another intent than the
+  // round read is reviewed with it. The
   // commit, base and policy are the same, so a new review would only draw
   // another sample of the same code — a sample no head without a deferral
   // ever gets, and one that found other blockers in unchanged code instead
@@ -1750,9 +1782,12 @@ async function runGateWithLease({
   const settleSource = settleAllowed({ force, providerFallback, accountFallback, risk: risk.level, ownRecord })
     ? await readReport(context.paths, ownRecord.reportId).catch(() => null)
     : null;
+  const headRenames = settleSource ? renameMapFor(patch, followUpPatch) : new Map();
+  const pendingRenames = headRenames.size > 0 && deferralsFollowRenames(deferrals, headRenames, {
+    existingFiles: await filesAtHead(context.repoRoot, headSha, [...deferrals.values()].map((record) => record?.file)),
+  });
   const settleFrom = settleSource && settleSourceMismatch(settleSource, {
-    identity, branch, author, risk: risk.level, round, followUpBaseSha, deferrals, prIntentDigest,
-    pendingRenames: deferralsFollowRenames(deferrals, renameMapFor(patch, followUpPatch)),
+    identity, branch, author, risk: risk.level, round, followUpBaseSha, deferrals, prIntentDigest, pendingRenames,
   }) === null ? settleSource : null;
   if (settleFrom) {
     const settle = {
@@ -1761,8 +1796,21 @@ async function runGateWithLease({
       deterministicLanes, progress, round, followUpBaseSha, priorBlocking, deferrals, lateDiscoveriesUsed,
       repairRoundsUsed, risk, prIntentDigest,
     };
-    if (dryRun) return { status: 'planned', ...settleReportBase(settle), round, settlesFrom: settleFrom.id };
-    return await settleFromReport(settle);
+    if (dryRun) {
+      return {
+        status: 'planned',
+        ...settleReportBase(settle),
+        round,
+        settlesFrom: settledFromOf(settleFrom).reportId,
+        ...(typeof prIntent === 'string' && prIntent.trim() ? { prIntent: prIntent.trim() } : {}),
+      };
+    }
+    // Null when a deferral it applied was removed while the lanes ran: the
+    // head is then reviewed afresh, below.
+    const settled = await settleFromReport(settle);
+    if (settled) return settled;
+    deferrals = await readDispositions(context.paths, lineage);
+    priorBlocking = priorBlockingFromReviews(followUpReview, deferrals);
   }
   // Review accounts (docs/plans/review-accounts.md): a provider the accounts
   // file declares is held, chosen and fallen back from per account. A
@@ -3007,7 +3055,12 @@ async function runGateWithLease({
     ].filter(Boolean).join(' ');
     const resultConvergence = {
       ...convergence,
-      lateDiscoveriesUsed: lateDiscoveriesUsed + lateDiscoveriesConsumed(enforcedFindings),
+      // A late-discovery round this head already spent stays spent on a rerun
+      // of it, as its reviewed-head count does (1.21.1).
+      lateDiscoveriesUsed: Math.max(
+        lateDiscoveriesUsed + lateDiscoveriesConsumed(enforcedFindings),
+        Number.isInteger(ownRecord?.lateDiscoveries) ? ownRecord.lateDiscoveries : 0,
+      ),
       blockingReasons: verified.map((finding) => finding.blockingReason),
       undisposedAdvisories: pending.length,
     };

@@ -7,6 +7,7 @@ import {
   attestationIdentity,
   pruneDispositions,
   readDispositions,
+  readLineageReviews,
   readReport,
   recordDisposition,
   removeDisposition,
@@ -340,9 +341,13 @@ export async function deferFindings({
     }
   }
   const blockedAny = selected.some((finding) => finding.disposition === 'verified');
-  // A report waiting for native evidence is reviewed again; any other FAIL
-  // of an unchanged head settles from its latest round (1.21.1).
-  const reviewedAgain = (report.findings || []).some((finding) => finding?.disposition === 'needs_native_evidence');
+  // The rerun settles from the head's latest round (1.21.1), which may be a
+  // later report than the one named here; a round waiting for native
+  // evidence is reviewed again.
+  const latestId = (await readLineageReviews(context.paths, lineage).catch(() => []))
+    .find((record) => record.headSha === headSha)?.reportId;
+  const latest = (latestId && latestId !== report.id ? await readReport(context.paths, latestId).catch(() => null) : null) ?? report;
+  const reviewedAgain = (latest.findings || []).some((finding) => finding?.disposition === 'needs_native_evidence');
   return {
     headSha,
     branch,
@@ -350,8 +355,8 @@ export async function deferFindings({
     deferred: deferred.map(({ key, title, file, priority, reason: why }) => ({ key, title, file, priority, reason: why })),
     next: blockedAny
       ? reviewedAgain
-        ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied; a finding of this report waits for native evidence, so the head is reviewed again.`
-        : `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied: an unchanged head settles from its latest round without another review (gate --force reviews it afresh).`
+        ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied; its latest round waits for native evidence, so the head is reviewed again.`
+        : `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied: an unchanged head settles from its latest round without another review, unless the rerun states another --intent (gate --force reviews it afresh).`
       : 'The deferrals apply immediately: the attested head can be pushed, and the PR comment will list them.',
   };
 }
