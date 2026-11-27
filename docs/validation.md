@@ -4,7 +4,7 @@
 
 Deterministic tests, each failing without its fix: `process.test.ts` gives an exited Windows
 root that closes its pipes at 300 ms the whole grace, decides a root that exits before taskkill
-finds it as an exited root (closed during or after taskkill) calls it orphaned when its pipes
+finds it as an exited root (closed during or after taskkill), calls it orphaned when its pipes
 stay open, and still fails closed when taskkill fails for any other reason with the root gone
 and closed; `github.test.ts` reaches every pull request and reports the publish error with the
 events folder replaced by a file, and republishes a stored failing outcome with its public

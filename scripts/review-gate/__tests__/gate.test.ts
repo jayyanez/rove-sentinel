@@ -179,6 +179,12 @@ describe('what a pull request comment says about the lanes (1.21.2)', () => {
     const win = localRoots({ checkout: String.raw`C:\Users\example\AppData\Local\Temp\rove-review-ab\checkout`, repoRoot: String.raw`D:\work\app`, platform: 'win32' });
     expect(clean(win, 'import("c:/users/EXAMPLE/AppData/Local/Temp/rove-review-ab/checkout/src/x").A')).toBe('import("<checkout>/src/x").A');
     expect(clean(win, String.raw`D:\work\app\node_modules, D:\work\app-shared\y`)).toBe(String.raw`<repository>\node_modules, D:\work\app-shared\y`);
+    // Forms a tool prints: a file URL, Windows' long-path prefix, and the
+    // folder ending a sentence.
+    expect(clean(win, 'at file:///C:/Users/example/AppData/Local/Temp/rove-review-ab/checkout/src/x.ts:3')).toBe('at file:///<checkout>/src/x.ts:3');
+    expect(clean(win, String.raw`couldn't read \\?\C:\Users\example\AppData\Local\Temp\rove-review-ab\checkout\Cargo.toml`)).toBe(String.raw`couldn't read \\?\<checkout>\Cargo.toml`);
+    expect(clean(win, String.raw`cannot read D:\work\app. Then D:\work\app.old stays`)).toBe(String.raw`cannot read <repository>. Then D:\work\app.old stays`);
+    expect(clean(win, 'XC:/Users/example/AppData/Local/Temp/rove-review-ab/checkout')).toBe('XC:/Users/example/AppData/Local/Temp/rove-review-ab/checkout');
     const posix = localRoots({ checkout: '/srv/repo/co', repoRoot: '/srv/repo', platform: 'linux' });
     expect(clean(posix, '/srv/repository/x /srv/repo-old/x /mnt/srv/repo/x (/srv/repo)')).toBe('/srv/repository/x /srv/repo-old/x /mnt/srv/repo/x (<repository>)');
     // A folder at a drive's or filesystem's top is left as written.

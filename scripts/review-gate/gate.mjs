@@ -1178,8 +1178,10 @@ export function localRoots({ checkout, repoRoot, stateRoot, platform = process.p
     token,
     // Either separator, as a tool may print the path either way, and only a
     // whole folder: not inside a longer name (`/srv/repo` never takes
-    // `/srv/repository`) nor after another folder (`/mnt/srv/repo`).
-    pattern: new RegExp(`(?<![\\w.~\\\\/-])${root.split(/[\\/]+/).map(escape).join('[\\\\/]+')}(?=$|[\\\\/]|[^\\w.~-])`, platform === 'win32' ? 'gi' : 'g'),
+    // `/srv/repository`) nor after another folder (`/mnt/srv/repo`). A drive
+    // path may follow `file:///` or `\\?\`, so only a word character before
+    // its drive letter rules it out; a period that ends a sentence ends it.
+    pattern: new RegExp(`${/^[A-Za-z]:/.test(root) ? '(?<![\\w])' : '(?<![\\w.~\\\\/-])'}${root.split(/[\\/]+/).map(escape).join('[\\\\/]+')}(?=$|[\\\\/]|\\.(?![\\w~-])|[^\\w.~-])`, platform === 'win32' ? 'gi' : 'g'),
   }));
 }
 
