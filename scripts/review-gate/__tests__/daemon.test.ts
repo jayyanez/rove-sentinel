@@ -97,13 +97,16 @@ describe('a watcher whose GitHub failure record cannot be written or removed', (
 
   it('keeps a poll that failed a GitHub error, not a storage one', async () => {
     const { stateRoot, paths } = await watcherState();
+    const progress: string[] = [];
     try {
       await runWatcher({
-        repoRoot: process.cwd(), stateRoot, once: true,
+        repoRoot: process.cwd(), stateRoot, once: true, progress: (line: string) => progress.push(line),
         syncPulls: async () => { throw new Error('GitHub refused the comment'); },
         recoverResources: async () => {}, recoverQueuedClaims: async () => {},
       });
       expect((await githubErrors(paths)).map((event: { message: string }) => event.message)).toEqual(['GitHub refused the comment']);
+      // The backoff was set: the watcher says when it retries.
+      expect(progress.some((line) => /^GitHub watcher error; retrying in \d+s: GitHub refused the comment$/.test(line))).toBe(true);
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }
