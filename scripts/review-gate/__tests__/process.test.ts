@@ -239,6 +239,26 @@ describe('bounded review subprocesses', () => {
     expect(spawnProcess).not.toHaveBeenCalled();
   });
 
+  it('gives an exited Windows root the whole grace to close its pipes before calling its tree orphaned', async () => {
+    // Under load an overflowing child that exited at once could close its
+    // pipes later than 100 ms; it was called orphaned and the cleanup fence
+    // paused the watcher (1.21.2). Its close at 300 ms is a normal exit.
+    const child = Object.assign(new EventEmitter(), {
+      pid: 123, exitCode: 0, signalCode: null, kill: vi.fn(),
+    });
+    const spawnProcess = vi.fn();
+    const pending = terminateProcessTree(child, {
+      platform: 'win32',
+      spawnProcess,
+      isWindowsProcessAlive: vi.fn(() => false),
+      graceMs: 2_000,
+    });
+    setTimeout(() => child.emit('close', 0, null), 300);
+
+    await expect(pending).resolves.toBeUndefined();
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
   it('gives taskkill its own time to end a busy provider tree, separate from the exit grace', async () => {
     // A timed-out Codex tree took taskkill longer than the 2-second grace on a
     // loaded host, and the cleanup fence then closed the whole gate (1.11.1).

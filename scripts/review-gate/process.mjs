@@ -295,6 +295,13 @@ export async function terminateProcessTree(
       Math.min(graceMs, 100),
     )) return;
     if (child.exitCode !== null || !isWindowsProcessAlive(child.pid, killProcess)) {
+      // A root that exited on its own can still be draining its pipes on a
+      // loaded host: give it the whole grace to close them before calling its
+      // tree orphaned. A descendant that holds them still fails closed, only
+      // later. Under load, one in about 35 overflowing children that exited at
+      // once was called orphaned after 100 ms, and the fence paused the
+      // watcher (1.21.2).
+      if (await waitForNaturalClose(child, graceMs)) return;
       throwOrphanedTree();
     }
     try {
