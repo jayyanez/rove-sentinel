@@ -1426,8 +1426,10 @@ export async function writeDaemonError(paths, error) {
  * reads this. It stays across a restart, since a restart fixes nothing by itself,
  * and goes with the next poll that succeeds, or with an install.
  */
-export async function recordGithubFailure(paths, error, at = new Date()) {
-  const previous = await readJson(paths.githubFailure).catch(() => null);
+// `fresh` starts the count again: the record on disk is one a successful
+// poll could not remove, not this failure's predecessor (1.21.2).
+export async function recordGithubFailure(paths, error, at = new Date(), { fresh = false } = {}) {
+  const previous = fresh ? null : await readJson(paths.githubFailure).catch(() => null);
   await atomicWriteJson(paths.githubFailure, {
     schemaVersion: 1,
     count: (Number.isInteger(previous?.count) ? previous.count : 0) + 1,

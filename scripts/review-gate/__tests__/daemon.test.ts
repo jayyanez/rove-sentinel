@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -20,7 +20,7 @@ import {
 } from '../daemon.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
-import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readJson, recordGithubFailure, sleep } from '../storage.mjs';
 
 describe('a watcher whose GitHub polls keep failing', () => {
   it('keeps count of the failures in a row, the first one\'s time and the last reason, until a poll succeeds', async () => {
@@ -63,6 +63,63 @@ describe('a watcher whose events folder cannot be written', () => {
         recoverResources: async () => {}, recoverQueuedClaims: async () => {},
       });
       expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, message: 'GitHub refused the comment' });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a watcher whose GitHub failure record cannot be written or removed', () => {
+  async function watcherState() {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-record-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    // A folder stands where the failure record is: writing or removing it fails.
+    await mkdir(paths.githubFailure, { recursive: true });
+    return { stateRoot, paths };
+  }
+  const githubErrors = async (paths: { events: string }) => (await Promise.all((await readdir(paths.events))
+    .map(async (name) => JSON.parse(await readFile(path.join(paths.events, name), 'utf8')))))
+    .filter((event: { type?: string }) => event.type === 'github-error');
+
+  it('keeps a poll that succeeded a success', async () => {
+    const { stateRoot, paths } = await watcherState();
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, syncPulls: async () => {},
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(await githubErrors(paths)).toEqual([]);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a poll that failed a GitHub error, not a storage one', async () => {
+    const { stateRoot, paths } = await watcherState();
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true,
+        syncPulls: async () => { throw new Error('GitHub refused the comment'); },
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect((await githubErrors(paths)).map((event: { message: string }) => event.message)).toEqual(['GitHub refused the comment']);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a GitHub failure record a success could not remove', () => {
+  it('starts its count again when told the record on disk is stale', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-fresh-'));
+    const paths = await ensureState(stateRoot);
+    try {
+      await recordGithubFailure(paths, new Error('first'), new Date('2026-01-01T10:00:00.000Z'));
+      await recordGithubFailure(paths, new Error('second'), new Date('2026-01-01T10:02:00.000Z'));
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: '2026-01-01T10:00:00.000Z' });
+      await recordGithubFailure(paths, new Error('after a success'), new Date('2026-01-01T11:00:00.000Z'), { fresh: true });
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, since: '2026-01-01T11:00:00.000Z', message: 'after a success' });
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

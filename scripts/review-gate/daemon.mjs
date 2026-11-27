@@ -339,6 +339,8 @@ export async function runWatcher({
     let stopped = false;
     let nextGithubAt = 0;
     let githubBackoffMs = LIMITS.githubPollMs;
+    // Set when a successful poll could not remove the last failure record.
+    let githubFailureStale = false;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };
     let stopTermination = null;
@@ -390,6 +392,11 @@ export async function runWatcher({
               activity: 'paused',
             });
           } else if (github && Date.now() >= nextGithubAt && await readWatcherGithub(context.paths)) {
+            // The poll's outcome and the next poll's time are settled before
+            // anything is recorded, and the records are best effort: storage
+            // that fails can neither turn this outcome into another nor move
+            // the schedule (1.21.2).
+            let pollError = null;
             try {
               await runWithHeartbeat(
                 context,
@@ -407,21 +414,27 @@ export async function runWatcher({
                   ),
                 }),
               );
-              githubBackoffMs = LIMITS.githubPollMs;
-              await clearGithubFailure(context.paths);
             } catch (error) {
-              // An events folder that cannot be written must not replace this
-              // error with its own, nor skip the failure record and backoff
-              // below (1.21.2).
+              pollError = error;
+            }
+            githubBackoffMs = pollError
+              ? Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs)
+              : LIMITS.githubPollMs;
+            nextGithubAt = Date.now() + githubBackoffMs;
+            if (pollError) {
               await recordEvent(context.paths, {
                 type: 'github-error',
-                message: error?.message || String(error),
+                message: pollError?.message || String(pollError),
               }).catch(() => {});
-              await recordGithubFailure(context.paths, error);
-              githubBackoffMs = Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs);
-              progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${error.message}`);
+              // A record a success could not remove is not this failure's
+              // predecessor: the count starts again.
+              await recordGithubFailure(context.paths, pollError, new Date(), { fresh: githubFailureStale })
+                .then(() => { githubFailureStale = false; }, () => {});
+              progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${pollError.message}`);
+            } else {
+              await clearGithubFailure(context.paths)
+                .then(() => { githubFailureStale = false; }, () => { githubFailureStale = true; });
             }
-            nextGithubAt = Date.now() + githubBackoffMs;
           }
           watcherBackoffMs = LIMITS.queuePollMs;
           watcherDelayDetails = { activity: paused ? 'paused' : 'idle' };

@@ -10,11 +10,13 @@ fails for lack of system resources, far above the provider bound of 8). Determin
 each failing without its fix: `github.test.ts` reaches every pull request and reports the
 publish error with the events folder replaced by a file, and republishes a stored failing
 outcome with its public summary; `daemon.test.ts` keeps the GitHub failure record when the
-events folder breaks during the poll; `gate.test.ts` names lanes by status in the public
+events folder breaks during the poll, keeps a successful poll a success and a failed one a
+GitHub error when the failure record can be neither written nor removed, and starts a new
+count for a record a success could not remove; `gate.test.ts` names lanes by status in the public
 summary, keeps a failing lane's local folder out of a real `runGate` round's comment, keeps a
 cleanup failure's folders local, and publishes no summary not written for the comment except a
 skipped change's; `settleDeferrals.test.ts` gives a settled round the same public summary.
-1,167 tests passed in 42 files on Windows on the development host, and the package smoke passed
+1,170 tests passed in 42 files on Windows on the development host, and the package smoke passed
 (`rove-sentinel@1.21.2`).
 
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
