@@ -21,8 +21,9 @@ lineage.
   and its backoff. Those events are now best effort, and the watcher settles a poll's outcome
   and the next poll's time before it writes anything: a failure record that cannot be written
   or removed no longer turns a poll into another outcome or moves the schedule. A record a
-  success cannot remove stays, and `status` shows it, until a later success removes it. A poll
-  that fails without a reason counts as a failure.
+  success cannot remove stays, and `status` shows it, until a later success removes it; a
+  failure meanwhile adds to its count and keeps its first time. A poll that fails without a
+  reason counts as a failure.
 - **A pull request comment's summary names a lane that did not finish by its status.** A
   completed review's summary quoted each deterministic lane's own note, and a lane that
   failed, timed out or was unavailable can quote a tool's output or a local path; a cleanup

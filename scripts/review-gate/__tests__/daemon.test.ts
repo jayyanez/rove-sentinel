@@ -30,7 +30,6 @@ describe('a watcher whose GitHub polls keep failing', () => {
     try {
       await runWatcher({
         repoRoot: process.cwd(), stateRoot, once: true,
-        // eslint-disable-next-line prefer-promise-reject-errors
         syncPulls: () => Promise.reject(undefined),
         recoverResources: async () => {}, recoverQueuedClaims: async () => {},
       });
