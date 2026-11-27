@@ -3,7 +3,6 @@ import { ensureCommitAvailable, inferAuthor, mergeBase, repoSlugFromRemote } fro
 import { applyRecordedDeferrals } from './dispositions.mjs';
 import { processTreeCleanupFailureCode, providerCleanupFailureRecord, runProcess, safetyPauseReason } from './process.mjs';
 import { formatProviderFallback } from './usageLimits.mjs';
-import { withoutAccountLabels } from './accounts.mjs';
 import {
   attestationIdentity,
   readAttestation,
@@ -186,6 +185,12 @@ export function findOwnedGateComment(comments, publisherLogin) {
   ));
 }
 
+// An ERROR comment publishes no error text (1.21.1): an error can name the
+// accounts a person reviews with, a local path or a provider CLI's own output,
+// and a comment is as public as its repository. The local report and the
+// watcher log keep the reason.
+export const GITHUB_ERROR_SUMMARY = 'The local review could not complete and did not produce an attestation. The reason is in the local report and the watcher log: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI\'s output).';
+
 export function renderGateComment(result) {
   const advisoryFindings = (result.findings || [])
     .filter((finding) => finding.disposition === 'advisory');
@@ -206,12 +211,12 @@ export function renderGateComment(result) {
     `- Risk: ${result.risk || 'unknown'}`,
     `- Gate: ${identity.gateVersion || 'unknown'} / charter ${identity.charterVersion || 'unknown'}`,
     ...(result.providerSelection?.length ? [`- Selected providers: ${result.providerSelection.join(', ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}`] : []),
-    ...(result.providerFallback?.dropped?.length ? [`- ${githubText(withoutAccountLabels(formatProviderFallback(result.providerFallback)), 300)}`] : []),
+    ...(result.providerFallback?.dropped?.length ? [`- ${githubText(formatProviderFallback(result.providerFallback), 300)}`] : []),
     // No account line (1.21.1): a comment is as public as its repository, and
     // the accounts a person reviews with are their own setup. The local
     // report, the attestation and the text result keep them by label.
     '',
-    githubText(withoutAccountLabels(result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
+    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;

@@ -4,11 +4,11 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { withoutAccountLabels } from '../accounts.mjs';
 import { COMMENT_MARKER } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import {
   findOwnedGateComment,
+  GITHUB_ERROR_SUMMARY,
   githubText,
   listReadyPullRequests,
   renderGateComment,
@@ -87,11 +87,22 @@ describe('shared review PR comment', () => {
     expect(body).not.toContain('Noise');
   });
 
-  it('never names a review account: a comment is as public as its repository', () => {
+  // Every form Sentinel's own errors take that names an account, a folder or
+  // a CLI's output: an ERROR comment publishes none of them (1.21.1).
+  const LEAKS = [
+    "Provider requirement codex cannot be satisfied: every configured codex account (mainx9, sparey8) is held back by its usage limit; retry after 2026-11-28T00:00:00Z.",
+    "No configured codex account is signed in through its subscription: mainx9: Codex is not authenticated through ChatGPT. sparey8: Codex is not authenticated through ChatGPT.",
+    "two codex accounts are labelled \"MAINX9\".",
+    "codex accounts \"mainx9\" and \"sparey8\" name the same folder.",
+    "codex account \"sparey8\" usage limit reached; retry after 2026-11-28T00:00:00Z.",
+    "Codex exited 1: could not read C:\\Users\\example\\.codex-personalz7\\auth.json",
+  ];
+
+  it('never names a review account or publishes error text: a comment is as public as its repository', () => {
     const body = renderGateComment({
       status: 'error',
       risk: 'high',
-      summary: 'The review failed closed. codex account "mainx9" usage limit reached; retry after 2026-11-28T00:00:00Z; every configured codex account is held (mainx9, sparey8).',
+      summary: `The local review could not complete and did not produce an attestation: ${LEAKS.join(' ')}`,
       identity: { headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) },
       providerSelection: ['claude', 'codex'],
       providerFallback: { dropped: ['codex'], reason: 'usage-limit', retryAfter: '2026-11-28T00:00:00Z', restarted: true },
@@ -101,24 +112,22 @@ describe('shared review PR comment', () => {
       },
       accountFallbacks: [{ provider: 'codex', from: 'mainx9', to: 'sparey8', reason: 'usage-limit', retryAfter: '2026-11-28T00:00:00Z' }],
     });
-    for (const label of ['personalz7', 'sparey8', 'mainx9']) expect(body).not.toContain(label);
+    for (const secret of ['personalz7', 'sparey8', 'mainx9', 'MAINX9', 'auth.json']) expect(body).not.toContain(secret);
     expect(body).not.toMatch(/Accounts|Account fallback|Author.{0,2}s account/);
-    // What happened stays readable, without whose accounts it happened to.
-    expect(body).toContain('usage limit reached');
-    expect(body).toContain('account is held');
+    expect(body).toContain('Shared review gate: ERROR');
+    // What happened stays readable, without whose setup it happened in.
+    expect(body).toContain(githubText(GITHUB_ERROR_SUMMARY, 4000));
     expect(body).toContain('Provider fallback');
   });
 
-  it('removes every account label form Sentinel writes, and nothing else', () => {
-    expect(withoutAccountLabels('claude account "team.1" failed a recent review and is held back'))
-      .toBe('claude account failed a recent review and is held back');
-    expect(withoutAccountLabels('every configured codex account is held (main, spare)'))
-      .toBe('every configured codex account is held');
-    expect(withoutAccountLabels('No other claude account is usable; this review uses the author\'s own claude account "me".'))
-      .toBe('No other claude account is usable; this review uses the author\'s own claude account.');
-    expect(withoutAccountLabels('A finding about "quoted" text (with parentheses).'))
-      .toBe('A finding about "quoted" text (with parentheses).');
-    expect(withoutAccountLabels(undefined)).toBe('');
+  it('still publishes the summary of a review that completed', () => {
+    const body = renderGateComment({
+      status: 'fail', risk: 'high', summary: 'One verified race in the scheduler.',
+      identity: { headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) },
+      accounts: { codex: { label: 'sparey8' } },
+    });
+    expect(body).toContain('One verified race in the scheduler');
+    expect(body).not.toContain('sparey8');
   });
 
   it('labels provider failures as errors rather than native uncertainty', () => {
@@ -340,6 +349,28 @@ describe('shared review PR comment', () => {
       applyDeferrals: async () => { throw new Error('dispositions unreadable'); },
     })).rejects.toThrow('dispositions unreadable');
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("publishes no error text when the watcher's review throws", async () => {
+    const context = await makeContext();
+    const pr = pullRequest();
+    const publish = vi.fn(async () => ({ changed: true, commentId: 1 }));
+    for (const leak of LEAKS) {
+      publish.mockClear();
+      await syncPullRequests({
+        context,
+        runGate: vi.fn(async () => { throw new Error(leak); }),
+        listPullRequests: async () => [pr],
+        ensureCommit: vi.fn(async () => {}),
+        resolveMergeBase: vi.fn(async (_repo, base) => base),
+        publish,
+        now: () => Date.now() + 10_000_000_000,
+      });
+      expect(publish).toHaveBeenCalledTimes(1);
+      const body = renderGateComment(publish.mock.calls[0][3]);
+      for (const secret of ['personalz7', 'sparey8', 'mainx9', 'MAINX9', 'auth.json']) expect(body).not.toContain(secret);
+      expect(body).toContain('Shared review gate: ERROR');
+    }
   });
 
   it('bounds technical-error retries for one unchanged identity', async () => {

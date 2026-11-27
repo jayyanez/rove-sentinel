@@ -378,7 +378,7 @@ describe('a review with accounts', () => {
     const text = formatGateResult(result);
     expect(text).toContain('Author\'s account: claude reviewed under the author\'s own account "personal"; no other claude account was usable.');
     // A pull request comment is as public as its repository: it names no account (1.21.1).
-    expect(unescaped(renderGateComment(result))).not.toMatch(/personal|team|account/i);
+    expect(unescaped(renderGateComment(result))).not.toMatch(/\bpersonal\b|\bteam\b|Accounts|Author.{0,2}s account/);
     const report = await readReport(paths, result.reportId);
     expect(report.accounts).toEqual({ claude: { label: 'personal', authorOwn: true } });
     const attestation = await readAttestation(paths, result.identity);
@@ -422,7 +422,7 @@ describe('a review with accounts', () => {
     const text = formatGateResult(result);
     expect(text).toContain('Account fallback: codex account "main" left out after its usage limit');
     expect(text).toContain('the review restarted from scratch with "spare"');
-    expect(unescaped(renderGateComment(result))).not.toMatch(/"main"|"spare"|Account fallback/);
+    expect(unescaped(renderGateComment(result))).not.toMatch(/\bmain\b|\bspare\b|Accounts|Account fallback/);
     const report = await readReport(paths, result.reportId);
     expect(report.accountFallbacks).toHaveLength(1);
     expectNoFolders(JSON.stringify(report));

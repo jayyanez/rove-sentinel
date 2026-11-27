@@ -30,10 +30,12 @@ recorded deferrals still have a renamed path to follow (the fresh round's rule, 
 existing file ignoring its former paths); and how a recorded deferral applies to
 settled findings (never to P0/P1, not to a dismissal, every lane hit dropped for the fresh
 ones). The settling tests fail on 1.21.0's sources (the reviewer runs again on the
-unchanged head). `scripts/review-gate/__tests__/github.test.ts` adds two: a comment for a
-result with accounts, an account fallback, the author's own account and labels in its summary
-names none of them (it fails on the comment of 1.21.0), and the label forms Sentinel writes are
-removed while other quoted text stays. 1,159 tests passed in 42 files on Windows on the development host, and the package smoke
+unchanged head). `scripts/review-gate/__tests__/github.test.ts` adds three: an ERROR comment
+for a result with accounts, an account fallback, the author's own account and every error form
+that names an account, a folder or a CLI's output names none of them; a completed review's
+summary is still published; and the watcher's own catch path, with each of those errors thrown
+by the review, publishes none of them (both fail on 1.21.0's comment). Two account tests assert
+the comment's silence. 1,160 tests passed in 42 files on Windows on the development host, and the package smoke
 passed (`rove-sentinel@1.21.1`).
 
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22

@@ -275,7 +275,9 @@ under the login Sentinel inherits, exactly as before. With accounts:
   known, as for a pull request found on GitHub) and `accountFallbacks`; each
   provider execution names its `account`. Folders never appear. The GitHub
   comment names no account at all (1.21.1): it is as public as its
-  repository, and the accounts a person reviews with are their own setup.
+  repository, and the accounts a person reviews with are their own setup. An
+  ERROR comment does not publish the error either, since an error can name an
+  account; the reason stays in the local report and the watcher log.
 - `status` lists each account by label, signed in or not, with its hold and
   last review; `doctor` and `install` probe every configured account, those
   of a provider the requirement leaves out included, list them under

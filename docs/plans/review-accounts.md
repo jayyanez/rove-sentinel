@@ -178,8 +178,12 @@ the allowance left can replace the rotation inside `rankAccounts`.
    not drop fails closed. Safety
    stops (a process-tree cleanup failure, the launch fence, a lane, an error
    that is not a provider's, the round's veto) never restart.
-7. **Evidence.** Every report, attestation, GitHub summary and comment, and
-   text result of a review that used accounts carries, by label only:
+7. **Evidence.** (From 1.21.1 the GitHub comment names no account and an
+   ERROR comment publishes no error text: a comment is as public as its
+   repository. What follows still holds for the local report, the
+   attestation and the text result.) Every report, attestation, GitHub
+   summary and comment, and text result of a review that used accounts
+   carries, by label only:
    `accounts` (per provider, the label used, and for the author's provider
    `authorOwn`: `true`, `false`, or `null` when unknown) and `accountFallbacks`
    (each switch: `provider`, `from`, `to`, `reason`, `resetAt`,

@@ -46,8 +46,8 @@ them in your per-user accounts file and sets the chosen one, as
 It never reads, copies or logs anything inside an account folder; it runs the
 CLI's own sign-in status with the folder set. A request queued for the watcher
 carries a digest of the author's folder, and reports, attestations and logs
-name accounts by label only. A GitHub comment names no account (1.21.1). A credential variable that overrides
-the folder (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`,
+name accounts by label only. A GitHub comment names no account and publishes
+no error text (1.21.1). A credential variable that overrides the folder (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`,
 `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`) refuses a review that would use that
 provider's accounts, so a label never names the wrong account. `install`
 writes a named accounts file's path into the local scheduled watcher, never

@@ -354,21 +354,6 @@ export function describeAccountHold(provider, label, record) {
     : `${provider} account "${label}" usage limit reached; retry after ${record.retryAfter}`;
 }
 
-/**
- * Text published on GitHub without the account labels Sentinel's own
- * messages carry (1.21.1). A pull request comment is as public as its
- * repository, and which accounts a person reviews with is their own setup:
- * labels stay in the local report, the attestation and the text result.
- * Covers every form Sentinel writes: `<provider> account "<label>"` (holds,
- * fallbacks, the author's own account) and the label list after "account
- * is held". Pure.
- */
-export function withoutAccountLabels(text) {
-  return String(text ?? '')
-    .replace(/\b(claude|codex) account "[^"\r\n]{1,64}"/g, '$1 account')
-    .replace(/\b(account is held) \([^)\r\n]*\)/g, '$1');
-}
-
 /** The lines a result or a report's reader shows about accounts (never a GitHub comment). */
 export function formatAccounts(result) {
   const lines = [];
