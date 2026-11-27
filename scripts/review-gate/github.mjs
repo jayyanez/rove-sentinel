@@ -189,8 +189,10 @@ export function findOwnedGateComment(comments, publisherLogin) {
 // accounts a person reviews with, a local path or a provider CLI's own output,
 // and a comment is as public as its repository. The reason stays on the
 // reviewing machine, in the outcome record the watcher writes for the head
-// (and in the report of a round that failed closed).
-export const GITHUB_ERROR_SUMMARY = "The local review could not complete and did not produce an attestation. The reason is recorded on the reviewing machine, in the watcher's outcome record for this head: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI's output).";
+// (and in the report of a round that failed closed). The record lasts until
+// the head is reviewed again or pruned, and the comment says so: a comment
+// GitHub refused to update can outlive it.
+export const GITHUB_ERROR_SUMMARY = "The local review could not complete and did not produce an attestation. The reason was recorded on the reviewing machine, in the watcher's outcome record for this head, which lasts until the head is reviewed again or the record is pruned: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI's output).";
 
 export function renderGateComment(result) {
   const advisoryFindings = (result.findings || [])
