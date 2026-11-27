@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -63,49 +63,6 @@ describe('a watcher whose events folder cannot be written', () => {
         recoverResources: async () => {}, recoverQueuedClaims: async () => {},
       });
       expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, message: 'GitHub refused the comment' });
-    } finally {
-      await rm(stateRoot, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('a watcher whose GitHub failure record cannot be written', () => {
-  it('still ends its poll on the GitHub error rather than on the record', async () => {
-    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-record-'));
-    const paths = await ensureState(stateRoot);
-    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
-    try {
-      await expect(runWatcher({
-        repoRoot: process.cwd(), stateRoot, once: true,
-        // A folder stands where the failure record is written, so that write fails.
-        syncPulls: async () => {
-          await mkdir(paths.githubFailure, { recursive: true });
-          throw new Error('GitHub refused the comment');
-        },
-        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
-      })).resolves.not.toThrow();
-    } finally {
-      await rm(stateRoot, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('a watcher whose old GitHub failure record cannot be removed', () => {
-  it('keeps a poll that succeeded a success', async () => {
-    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-clear-'));
-    const paths = await ensureState(stateRoot);
-    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
-    // A folder stands where the failure record is, so removing it fails.
-    await mkdir(paths.githubFailure, { recursive: true });
-    try {
-      await runWatcher({
-        repoRoot: process.cwd(), stateRoot, once: true,
-        syncPulls: async () => {},
-        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
-      });
-      const events = await Promise.all((await readdir(paths.events))
-        .map(async (name) => JSON.parse(await readFile(path.join(paths.events, name), 'utf8'))));
-      expect(events.filter((event: { type?: string }) => event.type === 'github-error')).toEqual([]);
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

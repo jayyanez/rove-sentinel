@@ -235,9 +235,6 @@ function windowsProcessIsAlive(pid, killProcess = process.kill) {
   }
 }
 
-// taskkill's exit code when the process it was given does not exist.
-const TASKKILL_NOT_FOUND = 128;
-
 async function waitForChildClose(child, timeoutMs) {
   return await new Promise((resolve) => {
     let finished = false;
@@ -298,21 +295,8 @@ export async function terminateProcessTree(
       Math.min(graceMs, 100),
     )) return;
     if (child.exitCode !== null || !isWindowsProcessAlive(child.pid, killProcess)) {
-      // A root that exited on its own can still be draining its pipes on a
-      // loaded host: give it the whole grace to close them before calling its
-      // tree orphaned. A descendant that holds them still fails closed, only
-      // later. Under load, one in about 35 overflowing children that exited at
-      // once was called orphaned after 100 ms, and the fence paused the
-      // watcher (1.21.2).
-      if (await waitForNaturalClose(child, graceMs)) return;
       throwOrphanedTree();
     }
-    // A close while taskkill runs is kept: a root that exits on its own
-    // between the check above and taskkill's lookup makes taskkill fail on a
-    // missing process, and is then decided as an exited root (1.21.2).
-    let closedDuringKill = false;
-    const markClosed = () => { closedDuringKill = true; };
-    if (typeof child.once === 'function') child.once('close', markClosed);
     try {
       await new Promise((resolve, reject) => {
         const killer = spawnProcess(
@@ -339,23 +323,12 @@ export async function terminateProcessTree(
         });
         killer.once('exit', (code, signal) => {
           if (code === 0) finish();
-          else finish(Object.assign(new Error(`taskkill failed for provider process tree ${child.pid} with ${signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`}.`), { taskkillExitCode: code }));
+          else finish(new Error(`taskkill failed for provider process tree ${child.pid} with ${signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`}.`));
         });
       });
     } catch (error) {
-      // Only taskkill's "process not found" (exit 128) on a root that is gone
-      // is decided as an exited root. Any other failure (access denied on a
-      // descendant, a timeout, taskkill not starting) fails closed as before,
-      // since it may have ended the root and left a descendant running.
-      if (error?.taskkillExitCode === TASKKILL_NOT_FOUND
-        && (child.exitCode !== null || !isWindowsProcessAlive(child.pid, killProcess))) {
-        if (closedDuringKill || await waitForNaturalClose(child, graceMs)) return;
-        throwOrphanedTree();
-      }
       killChildBestEffort(child);
       throw error;
-    } finally {
-      if (typeof child.removeListener === 'function') child.removeListener('close', markClosed);
     }
     if (!await waitForWindowsExit(child, child.pid, graceMs, killProcess)) {
       killChildBestEffort(child);

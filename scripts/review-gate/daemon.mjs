@@ -408,22 +408,17 @@ export async function runWatcher({
                 }),
               );
               githubBackoffMs = LIMITS.githubPollMs;
-              // A poll that succeeded stays a success when its old failure
-              // record cannot be removed (1.21.2).
-              await clearGithubFailure(context.paths).catch(() => {});
+              await clearGithubFailure(context.paths);
             } catch (error) {
-              // The GitHub failure record and its backoff come first in
-              // importance: an events folder that cannot be written must not
-              // replace this error with its own, or skip both (1.21.2).
+              // An events folder that cannot be written must not replace this
+              // error with its own, nor skip the failure record and backoff
+              // below (1.21.2).
               await recordEvent(context.paths, {
                 type: 'github-error',
                 message: error?.message || String(error),
               }).catch(() => {});
-              // The backoff first, and the failure record as best effort: a
-              // record that cannot be written must not leave GitHub polled at
-              // the watcher's own pace (1.21.2).
+              await recordGithubFailure(context.paths, error);
               githubBackoffMs = Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs);
-              await recordGithubFailure(context.paths, error).catch(() => {});
               progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${error.message}`);
             }
             nextGithubAt = Date.now() + githubBackoffMs;

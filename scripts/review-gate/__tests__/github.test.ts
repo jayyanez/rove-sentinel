@@ -11,6 +11,7 @@ import {
   GITHUB_ERROR_SUMMARY,
   githubText,
   listReadyPullRequests,
+  publicFinding,
   renderGateComment,
   syncPullRequests,
 } from '../github.mjs';
@@ -436,6 +437,29 @@ describe('shared review PR comment', () => {
       expect(body).not.toContain(githubText('rove-review-q', 100));
       expect(body).toContain(githubText('eslint: error', 100));
     }
+  });
+
+  it('withholds a deterministic finding\'s message that names a local path, and a file outside the repository', () => {
+    const lane = (title: string, file = 'src/a.ts') => publicFinding({ adjudicatedDisposition: 'deterministic', source: 'tsc', file, title, reason: 'r' });
+    // Every form a tool prints a local path in.
+    for (const title of [
+      String.raw`tsc: Type 'import("C:/Users/example/AppData/Local/Temp/co/src/a").A'`,
+      String.raw`rustc: couldn't read \\?\C:\example\Cargo.toml`,
+      'node: at file:///C:/Users/example/my%20project/src/a.js:3',
+      "tsc: import('/home/example/proj/src/a')",
+      'eslint: config at ~/project/eslint.config.js',
+      'cargo: target%2Fdebug',
+    ]) {
+      expect(lane(title)).toEqual({ file: 'src/a.ts', title: 'tsc reported a finding here', reason: 'Its message names a local path, so it is kept in the local report.' });
+    }
+    // A message with no local path, and a model's finding, are published as written.
+    for (const title of ['eslint: no-unused-vars: x is unused', 'markdownlint: MD013/line-length', 'eslint: see https://eslint.org/docs/rules/x', 'tsc: Cannot find module ./src/x']) {
+      expect(lane(title).title).toBe(title);
+    }
+    expect(publicFinding({ adjudicatedDisposition: 'verified', file: 'a.ts', title: 'Reads C:/x at start', reason: 'r' }).title).toBe('Reads C:/x at start');
+    // A file outside the repository is not named.
+    for (const file of ['C:/Users/example/.cargo/registry/x.rs', '/usr/lib/x.h', '../sibling/x.ts', '~/x.ts']) expect(lane('ok', file).file).toBe('(outside the repository)');
+    expect(lane('ok', 'src/lib/x.ts').file).toBe('src/lib/x.ts');
   });
 
   it('bounds technical-error retries for one unchanged identity', async () => {

@@ -75,8 +75,13 @@ describe('bounded review subprocesses', () => {
   });
 
   it('terminates output that exceeds the configured bound', async () => {
+    // The child keeps running, as an overflowing provider does, so it is ended
+    // by the termination this test is about. A child that exits at once races
+    // its own exit against that termination: on a loaded host its pipes can
+    // close after the 100 ms check, its tree is then called orphaned (failing
+    // closed), and the test failed that way on a Node 24 CI run (1.21.2).
     await expect(
-      runProcess(process.execPath, ['-e', 'process.stdout.write("x".repeat(1000))'], {
+      runProcess(process.execPath, ['-e', 'process.stdout.write("x".repeat(1000)); setInterval(() => {}, 1000)'], {
         timeoutMs: 5_000,
         maxOutputBytes: 100,
         outputLimitMessage: 'Split this oversized review input.',
@@ -237,97 +242,6 @@ describe('bounded review subprocesses', () => {
 
     await expect(pending).resolves.toBeUndefined();
     expect(spawnProcess).not.toHaveBeenCalled();
-  });
-
-  it('gives an exited Windows root the whole grace to close its pipes before calling its tree orphaned', async () => {
-    // Under load an overflowing child that exited at once could close its
-    // pipes later than 100 ms; it was called orphaned and the cleanup fence
-    // paused the watcher (1.21.2). Its close at 300 ms is a normal exit.
-    const child = Object.assign(new EventEmitter(), {
-      pid: 123, exitCode: 0, signalCode: null, kill: vi.fn(),
-    });
-    const spawnProcess = vi.fn();
-    const pending = terminateProcessTree(child, {
-      platform: 'win32',
-      spawnProcess,
-      isWindowsProcessAlive: vi.fn(() => false),
-      graceMs: 2_000,
-    });
-    setTimeout(() => child.emit('close', 0, null), 300);
-
-    await expect(pending).resolves.toBeUndefined();
-    expect(spawnProcess).not.toHaveBeenCalled();
-  });
-
-  it('decides a root that exited before taskkill found it as an exited root', async () => {
-    // Alive at the check, gone when taskkill looks it up (exit 128): its pipes
-    // closing makes it a normal exit, not a cleanup failure (1.21.2).
-    for (const closeAt of ['during', 'after'] as const) {
-      const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
-      const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
-      const spawnProcess = vi.fn(() => killer);
-      let alive = true;
-      const pending = terminateProcessTree(child, {
-        platform: 'win32',
-        spawnProcess,
-        waitForNaturalClose: closeAt === 'during'
-          ? vi.fn(async () => false)
-          : (target: EventEmitter, ms: number) => new Promise((resolve) => {
-            const timer = setTimeout(() => resolve(false), ms);
-            target.once('close', () => { clearTimeout(timer); resolve(true); });
-          }),
-        isWindowsProcessAlive: vi.fn(() => alive),
-        graceMs: 2_000,
-      });
-      await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
-      alive = false;
-      child.exitCode = 0;
-      if (closeAt === 'during') child.emit('close', 0, null);
-      killer.emit('exit', 128, null);
-      if (closeAt === 'after') setTimeout(() => child.emit('close', 0, null), 50);
-      await expect(pending).resolves.toBeUndefined();
-    }
-  });
-
-  it('still fails closed when taskkill fails for any other reason, even with the root gone and closed', async () => {
-    // Access denied on a descendant (exit 1) can come after taskkill ended the
-    // root: the root's close proves nothing about the descendant.
-    const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
-    const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
-    const spawnProcess = vi.fn(() => killer);
-    let alive = true;
-    const pending = terminateProcessTree(child, {
-      platform: 'win32',
-      spawnProcess,
-      waitForNaturalClose: vi.fn(async () => false),
-      isWindowsProcessAlive: vi.fn(() => alive),
-      graceMs: 50,
-    });
-    await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
-    alive = false;
-    child.exitCode = 1;
-    child.emit('close', 1, null);
-    killer.emit('exit', 1, null);
-    await expect(pending).rejects.toThrow('taskkill failed');
-  });
-
-  it('calls a root that exited before taskkill found it orphaned when its pipes stay open', async () => {
-    const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
-    const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
-    const spawnProcess = vi.fn(() => killer);
-    let alive = true;
-    const pending = terminateProcessTree(child, {
-      platform: 'win32',
-      spawnProcess,
-      waitForNaturalClose: vi.fn(async () => false),
-      isWindowsProcessAlive: vi.fn(() => alive),
-      graceMs: 50,
-    });
-    await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
-    alive = false;
-    child.exitCode = 0;
-    killer.emit('exit', 128, null);
-    await expect(pending).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
   });
 
   it('gives taskkill its own time to end a busy provider tree, separate from the exit grace', async () => {

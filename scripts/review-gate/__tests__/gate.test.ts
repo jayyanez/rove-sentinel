@@ -17,13 +17,11 @@ import {
   describeReviewerFailures,
   formatGateResult,
   providerTreeCleanupFailureCode,
-  localRoots,
   publicLaneNotes,
   reconcileCleanupFailure,
   runGate,
   shouldSkipCoordinator,
   settleReviewersWithRetry,
-  withoutLocalRoots,
 } from '../gate.mjs';
 import { githubText, renderGateComment } from '../github.mjs';
 import {
@@ -141,9 +139,9 @@ describe('what a pull request comment says about the lanes (1.21.2)', () => {
     expect(body).toContain(githubText('eslint: error', 100));
   });
 
-  it('names no local folder in a lane finding, in the report or the comment', async () => {
+  it('keeps a lane finding that names the review checkout local, and withholds its message in the comment', async () => {
     const repository = await makeRepository();
-    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-local-roots-'));
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-lane-finding-'));
     temporaryDirectories.push(stateRoot);
     const reviewer = vi.fn(async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed', candidates: [] }));
     let seenCheckout = '';
@@ -160,35 +158,18 @@ describe('what a pull request comment says about the lanes (1.21.2)', () => {
             candidate_id: 'deterministic-0', source: 'tsc', adjudicatedDisposition: 'deterministic', disposition: 'verified',
             priority: 'P2', file: 'src/lib/example.ts', line: 1,
             title: `tsc: Type 'import("${checkout.split(path.sep).join('/')}/src/lib/example").A' is not assignable`,
-            reason: `See ${checkout}${path.sep}src${path.sep}lib${path.sep}example.ts`, scenario: 's', proposed_test: 't',
+            reason: 'r', scenario: 's', proposed_test: 't',
           }],
         };
       },
     });
     expect(seenCheckout).not.toBe('');
-    const finding = result.findings.find((entry: { source?: string }) => entry.source === 'tsc');
-    expect(finding.title).toContain('<checkout>/src/lib/example');
-    expect(finding.reason).toContain('<checkout>');
     const leaf = path.basename(path.dirname(seenCheckout));
-    expect(JSON.stringify(result.findings)).not.toContain(leaf);
-    expect(renderGateComment(result)).not.toContain(githubText(leaf, 200));
-  });
-
-  it('names only a whole local folder by its token, never part of a longer name', () => {
-    const clean = (roots: ReturnType<typeof localRoots>, text: string) => withoutLocalRoots({ lanes: [], findings: [{ title: text }] }, roots).findings[0].title;
-    const win = localRoots({ checkout: String.raw`C:\Users\example\AppData\Local\Temp\rove-review-ab\checkout`, repoRoot: String.raw`D:\work\app`, platform: 'win32' });
-    expect(clean(win, 'import("c:/users/EXAMPLE/AppData/Local/Temp/rove-review-ab/checkout/src/x").A')).toBe('import("<checkout>/src/x").A');
-    expect(clean(win, String.raw`D:\work\app\node_modules, D:\work\app-shared\y`)).toBe(String.raw`<repository>\node_modules, D:\work\app-shared\y`);
-    // Forms a tool prints: a file URL, Windows' long-path prefix, and the
-    // folder ending a sentence.
-    expect(clean(win, 'at file:///C:/Users/example/AppData/Local/Temp/rove-review-ab/checkout/src/x.ts:3')).toBe('at file:///<checkout>/src/x.ts:3');
-    expect(clean(win, String.raw`couldn't read \\?\C:\Users\example\AppData\Local\Temp\rove-review-ab\checkout\Cargo.toml`)).toBe(String.raw`couldn't read \\?\<checkout>\Cargo.toml`);
-    expect(clean(win, String.raw`cannot read D:\work\app. Then D:\work\app.old stays`)).toBe(String.raw`cannot read <repository>. Then D:\work\app.old stays`);
-    expect(clean(win, 'XC:/Users/example/AppData/Local/Temp/rove-review-ab/checkout')).toBe('XC:/Users/example/AppData/Local/Temp/rove-review-ab/checkout');
-    const posix = localRoots({ checkout: '/srv/repo/co', repoRoot: '/srv/repo', platform: 'linux' });
-    expect(clean(posix, '/srv/repository/x /srv/repo-old/x /mnt/srv/repo/x (/srv/repo)')).toBe('/srv/repository/x /srv/repo-old/x /mnt/srv/repo/x (<repository>)');
-    // A folder at a drive's or filesystem's top is left as written.
-    expect(localRoots({ checkout: 'D:/repo', repoRoot: '/tmp', platform: 'linux' }).filter((entry) => entry.token !== '<temp>' && entry.token !== '<home>')).toEqual([]);
+    // The local report keeps the tool's message as it was.
+    expect(JSON.stringify(result.findings)).toContain(leaf);
+    const body = renderGateComment(result);
+    expect(body).not.toContain(githubText(leaf, 200));
+    expect(body).toContain(githubText('tsc reported a finding here', 200));
   });
 
   it('says in the comment only that cleanup failed, and keeps the folders local', async () => {

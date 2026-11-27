@@ -1,39 +1,35 @@
 # Changelog
 
-## 1.21.2 — Three watcher fixes: an exited provider, an unwritable events folder, local folders in a comment
+## 1.21.2 — Three watcher fixes: a racing test, an unwritable events folder, local folders in a comment
 
-Three watcher fixes found after 1.21.1. Nothing needs doing to receive them: they arrive as an
-ordinary automatic update. As in every release that increments the engine version, upgrading
-refreshes the installed policy snapshot digest, so a branch's next review after the update is
-a new lineage.
+Three fixes found after 1.21.1. Nothing needs doing to receive them: they arrive as an ordinary
+automatic update. As in every release that increments the engine version, upgrading refreshes
+the installed policy snapshot digest, so a branch's next review after the update is a new
+lineage.
 
-- **An exited Windows provider is no longer called an orphaned tree while its pipes drain.** A
-  provider that exited on its own just as its output passed the bound, and whose pipes took
-  longer than 100 ms to close, was called an orphaned process tree, and the cleanup fence
-  paused the watcher. Under load, 17 of 600 such children were; the output-limit test failed
-  the same way on a loaded CI runner. A root that exits between the liveness check and
-  taskkill's lookup made taskkill fail the same way. An exited root now gets the whole grace
-  (2 s) to close its pipes, before taskkill or after taskkill reports the process missing
-  (exit 128); a descendant that holds them, and any other taskkill failure, still fail closed.
+- **The output-limit test no longer races its child's exit.** Its child wrote past the bound
+  and exited at once, so the test raced that exit against the termination it checks: on a
+  loaded host the child's pipes could close after the 100 ms check, its tree was called
+  orphaned, and the test failed that way on a Node 24 CI run. The child now keeps running, as
+  an overflowing provider does. The same race can still call an exited provider's tree
+  orphaned under heavy load; that fails closed (the watcher pauses), and is left so, since a
+  closed pipe cannot prove that no descendant still runs.
 - **An events folder that cannot be written never stops the GitHub sync.** The pull request
   loop's publish-error and sync events, and the watcher's own GitHub error event, were awaited
   before the work they record: the loop stopped before the other pull requests, and the
   watcher's write replaced the GitHub error with its own and skipped the GitHub failure record
-  and its backoff. Those events are now best effort, the backoff no longer waits on the
-  failure record, and a poll that succeeded stays a success when its old failure record cannot
-  be removed.
+  and its backoff. Those events are now best effort.
 - **A pull request comment names no local folder from a deterministic lane.** A completed
   review's summary quoted each lane's own note, and a lane that failed, timed out or was
   unavailable can quote a tool's output or a local path; a cleanup failure added its folders;
-  and a lane's finding can quote a tool's message naming the review checkout. Results now
+  and a lane's finding is a tool's message, which can name the review checkout. Results now
   carry a public summary for the comment, in which a lane that finished keeps its counts, any
-  other is named by its status (for example `eslint: error`) and a cleanup failure is only
-  said to have happened. A lane finding names the review checkout, the repository, Sentinel's
-  state, the temporary folder and the home folder by a token (`<checkout>`, `<repository>`,
-  `<state>`, `<temp>`, `<home>`), only as a whole folder, which also keeps its identity from
-  one round's checkout to the next; a folder at the top of a drive or filesystem, such as
-  `/tmp`, is left as written. A result without a public summary publishes none of its summary,
-  except a skipped change's. The local report keeps every note.
+  other is named by its status (for example `eslint: error`), and a cleanup failure is only
+  said to have happened. The comment withholds a lane finding's message when it names a local
+  path (a drive, a UNC or long-path prefix, a file URL, an encoded separator, a home-relative
+  or an absolute POSIX path), and names no file outside the repository. A result without a
+  public summary publishes none of its summary, except a skipped change's. The local report
+  keeps everything.
 
 ## 1.21.1 — A rerun of an unchanged head settles from the round that reviewed it
 

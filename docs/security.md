@@ -49,10 +49,9 @@ carries a digest of the author's folder, and reports, attestations and logs
 name accounts by label only. A GitHub comment names no account, and an ERROR
 comment publishes no error text (1.21.1); a deterministic lane that did not
 finish is named there by its status, never by its note, and a lane finding
-names the review checkout and other local folders by a token, except a folder
-at the top of a drive or filesystem (1.21.2). A credential variable that overrides
-the folder (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`,
-`CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`) refuses a review that would use that
+whose message names a local path is withheld there (1.21.2). A credential
+variable that overrides the folder (`CLAUDE_CODE_OAUTH_TOKEN`,
+`CLAUDE_CODE_OAUTH_REFRESH_TOKEN`, `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`) refuses a review that would use that
 provider's accounts, so a label never names the wrong account. `install`
 writes a named accounts file's path into the local scheduled watcher, never
 into a report.
