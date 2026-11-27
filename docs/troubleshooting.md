@@ -193,6 +193,11 @@ On Windows, per-repository records live under
 `%LOCALAPPDATA%\Rove\shared-review-gate\<repository-hash>`. `status` reports the actual paths. Reports and context may contain
 source code; do not upload that directory wholesale to a public issue.
 
+When a pull request's gate comment says ERROR, the reason is in that folder's `events`
+subfolder: a JSON file of type `github-review-error` names the pull request, its head and the
+full error message, which the comment does not publish (1.21.1). A round that failed closed
+also keeps it in its report.
+
 Detached foreground logs are written under the repository's state folder, in
 `logs/` (before 1.19.0, in the checkout's `output/` directory); `--log PATH`
 names another file. A detached process launch is incomplete until its log ends

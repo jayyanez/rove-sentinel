@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -358,8 +358,7 @@ describe('shared review PR comment', () => {
       // again without the review running.
       const context = await makeContext();
       const publish = vi.fn(async () => ({ changed: true, commentId: 1 }));
-      const failed = Object.assign(new Error(leak), { reportId: '1795764409053-84b6efa9' });
-      const runGate = vi.fn(async () => { throw failed; });
+      const runGate = vi.fn(async () => { throw new Error(leak); });
       await syncPullRequests({
         context,
         runGate,
@@ -373,7 +372,10 @@ describe('shared review PR comment', () => {
       const body = renderGateComment(publish.mock.calls[0][3]);
       for (const secret of ['personalz7', 'sparey8', 'mainx9', 'MAINX9', 'auth.json']) expect(body).not.toContain(secret);
       expect(body).toContain('Shared review gate: ERROR');
-      expect(body).toContain(githubText('Local report: 1795764409053-84b6efa9', 200));
+      // The reason the comment withholds is recorded locally, in full.
+      const events = await Promise.all((await readdir(context.paths.events))
+        .map(async (name) => JSON.parse(await readFile(path.join(context.paths.events, name), 'utf8'))));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'github-review-error', pr: pr.number, message: leak }));
     }
   });
 

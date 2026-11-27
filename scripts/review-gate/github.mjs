@@ -187,9 +187,10 @@ export function findOwnedGateComment(comments, publisherLogin) {
 
 // An ERROR comment publishes no error text (1.21.1): an error can name the
 // accounts a person reviews with, a local path or a provider CLI's own output,
-// and a comment is as public as its repository. The local report and the
-// watcher log keep the reason.
-export const GITHUB_ERROR_SUMMARY = 'The local review could not complete and did not produce an attestation. The reason is in the local report and the watcher log: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI\'s output).';
+// and a comment is as public as its repository. The reason stays on the
+// reviewing machine: the watcher records it as an event, and a round that
+// failed closed in its report.
+export const GITHUB_ERROR_SUMMARY = 'The local review could not complete and did not produce an attestation. The reason is recorded on the reviewing machine, in the watcher\'s events: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI\'s output).';
 
 export function renderGateComment(result) {
   const advisoryFindings = (result.findings || [])
@@ -216,9 +217,7 @@ export function renderGateComment(result) {
     // the accounts a person reviews with are their own setup. The local
     // report, the attestation and the text result keep them by label.
     '',
-    githubText(result.status === 'error'
-      ? `${GITHUB_ERROR_SUMMARY}${typeof result.reportId === 'string' && /^[A-Za-z0-9-]{1,80}$/.test(result.reportId) ? ` Local report: ${result.reportId}.` : ''}`
-      : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
+    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;
@@ -451,10 +450,15 @@ export async function syncPullRequests({
         risk: 'unknown',
         summary: `The local review could not complete and did not produce an attestation: ${(error?.message || String(error)).slice(0, 1000)}`,
         findings: [],
-        // The report a fail-closed round wrote: the ERROR comment names it,
-        // so the reason can be found locally without publishing it.
-        ...(typeof error?.reportId === 'string' ? { reportId: error.reportId } : {}),
       };
+      // The ERROR comment publishes no error text (1.21.1), so the reason is
+      // recorded here, on the reviewing machine, whatever stopped the review.
+      await recordEvent(context.paths, {
+        type: 'github-review-error',
+        pr: pr.number,
+        headSha: pr.headRefOid,
+        message: (error?.message || String(error)).slice(0, 2000),
+      });
     }
     if (shouldStop()) throw new Error('GitHub review synchronization interrupted for watcher shutdown.');
     if (result.status === 'pass') {

@@ -45,15 +45,16 @@ branch's next review after the update is a new lineage.
   comment the watcher publishes on a pull request is as public as its repository, and which
   accounts a person reviews with is their own setup. It no longer lists the accounts, an
   account fallback or the author's own account. An ERROR comment says the review could not
-  complete, names the local report when one was written, and says the reason is there and
-  in the watcher log, instead of the error itself: an error can name accounts (every account
-  held, an account signed out, an accounts file refused), a local path, or a provider CLI's
-  own output. The summary of a review that completed is published as before, and can still
-  quote a deterministic lane's own message or a temporary-folder cleanup failure. The local report, the attestation and the text
-  result keep everything, accounts by label. A comment published before 1.21.1 is rewritten
-  only when the watcher next reviews its pull request (an open, ready pull request it polls),
-  and GitHub keeps the earlier text in the comment's edit history; deleting the comment
-  removes it.
+  complete and that the reason is recorded on the reviewing machine, in the watcher's events
+  (a round that failed closed also keeps it in its report), instead of the error itself: an
+  error can name accounts (every account held, an account signed out, an accounts file
+  refused), a local path, or a provider CLI's own output. The summary of a review that
+  completed is published as before, and can still quote a deterministic lane's own message or
+  a temporary-folder cleanup failure. The local report, the attestation and the text result
+  keep everything, accounts by label. A comment published before 1.21.1 is rewritten only when
+  the watcher next synchronizes its pull request (an open, ready pull request it polls), and
+  GitHub keeps the earlier text in the comment's edit history; deleting the comment removes
+  it.
 
 ## 1.21.0 — Deeper context, cross-file integration review, and faster verification
 
