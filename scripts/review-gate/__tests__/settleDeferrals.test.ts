@@ -226,7 +226,7 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(forced).toMatchObject({ round: 'follow-up', followUpBaseSha: repository.head });
   });
 
-  it('enforces a lane hit still present, keeps one its lane could not recheck, and drops one its lane no longer reports', async () => {
+  it('enforces a lane hit still present, drops one its lane no longer reports, and reviews afresh when a lane with hits cannot finish', async () => {
     const repository = await makeRepository();
     const branch = 'claude/settle-lanes';
     const named = { value: [{ title: 'Bounded defect' }] as Named[] };
@@ -242,38 +242,33 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(titles(first)).toEqual(['Bounded defect', 'rule: a lane hit']);
     reviewer.mockClear();
 
-    // Still there: enforced again, as the round enforced it.
+    // Still there: enforced again, as a fresh round enforces it.
     const still = await review(repository.head);
+    expect(reviewer).not.toHaveBeenCalled();
     expect(still).toMatchObject({ status: 'fail', settledFrom: { reportId: first.reportId } });
     expect(titles(still)).toEqual(['Bounded defect', 'rule: a lane hit']);
     expect(still.findings.find((finding: { title: string }) => finding.title === 'rule: a lane hit')).toMatchObject({ blockingReason: 'first-review' });
 
-    // The lane could not run: its earlier hit is kept under an id of its own,
-    // and the report says so.
-    lanes.value = { lanes: [{ lane: 'lint', status: 'unavailable', note: 'lint is not installed on this host' }], findings: [] };
-    const unavailable = await review(repository.head);
-    expect(titles(unavailable)).toEqual(['Bounded defect', 'rule: a lane hit']);
-    expect(unavailable.findings.find((finding: { title: string }) => finding.title === 'rule: a lane hit').candidate_id).toBe('kept-deterministic-0');
-    expect(unavailable.summary).toContain('Earlier hits of lint are kept');
-
-    // A lane that timed out after part of its work: what it reported is
-    // enforced beside the earlier hit, which it did not report again, and the
-    // ids stay distinct; a hit it reported again is not doubled.
+    // The lane that had hits stops part-way: it cannot say which remain, so
+    // the head is reviewed afresh, which enforces what it did report.
     const partialHit = { ...laneHit, title: 'rule: another lane hit' };
     lanes.value = { lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [partialHit] };
-    const partial = await review(repository.head);
-    expect(titles(partial)).toEqual(['Bounded defect', 'rule: a lane hit', 'rule: another lane hit']);
-    const ids = partial.findings.map((finding: { candidate_id: string }) => finding.candidate_id);
-    expect(new Set(ids).size).toBe(ids.length);
-    lanes.value = { lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [laneHit] };
-    const again = await review(repository.head);
-    expect(titles(again)).toEqual(['Bounded defect', 'rule: a lane hit', 'rule: another lane hit']);
+    const progress = vi.fn();
+    const partial = await review(repository.head, { progress });
+    expect(progress).toHaveBeenCalledWith(expect.stringContaining('lint could not recheck'));
+    expect(reviewer).toHaveBeenCalled();
+    expect(partial).not.toHaveProperty('settledFrom');
+    expect(titles(partial)).toEqual(['Bounded defect', 'rule: another lane hit']);
+    reviewer.mockClear();
 
-    // The lane ran and no longer reports it: only the model's finding is left.
+    // The lane runs to completion and no longer reports it: the hit is gone,
+    // and the fresh hits' ids are the only lane ids.
     lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
     const gone = await review(repository.head);
     expect(reviewer).not.toHaveBeenCalled();
+    expect(gone).toMatchObject({ settledFrom: { reportId: partial.reportId } });
     expect(titles(gone)).toEqual(['Bounded defect']);
+    expect(gone.findings.every((finding: { adjudicatedDisposition?: string }) => finding.adjudicatedDisposition !== 'deterministic')).toBe(true);
   });
 
   it('keeps a late-discovery round the head spent when its finding is deferred', async () => {
@@ -325,6 +320,30 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(reviewer).toHaveBeenCalled();
     expect(rerun).not.toHaveProperty('settledFrom');
     expect(rerun).toMatchObject({ status: 'fail' });
+  });
+
+  it('keeps the intent the reviewers read through a settlement that states none', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-intent';
+    const named = { value: [{ title: 'Bounded defect' }, { title: 'Escalated defect', priority: 'P1' }] as Named[] };
+    const { reviewer, review, defer } = harness(repository, branch, named);
+    const intent = { prIntent: 'The pull request body the reviewers read' };
+    await review(repository.head, intent);
+    const second = await review(await commit(repository.root, 43), intent);
+    expect(second).toMatchObject({ status: 'fail', prIntentDigest: expect.any(String) });
+    await defer(second.identity.headSha, second.reportId);
+    reviewer.mockClear();
+    // The printed rerun command states no intent: it settles, and the
+    // settlement keeps the digest of the intent that was read.
+    const quiet = await review(second.identity.headSha);
+    expect(reviewer).not.toHaveBeenCalled();
+    expect(quiet).toMatchObject({ status: 'fail', settledFrom: { reportId: second.reportId }, prIntentDigest: second.prIntentDigest });
+    // The same intent settles too; another one is reviewed with it.
+    await expect(review(second.identity.headSha, intent)).resolves.toMatchObject({ settledFrom: { reportId: second.reportId } });
+    expect(reviewer).not.toHaveBeenCalled();
+    const other = await review(second.identity.headSha, { prIntent: 'A different pull request body' });
+    expect(reviewer).toHaveBeenCalled();
+    expect(other).not.toHaveProperty('settledFrom');
   });
 
   it('reviews again a round with a finding that waits for native evidence, and says so when deferring', async () => {
@@ -424,13 +443,12 @@ describe('the findings a settled round carries', () => {
     adjudicatedDisposition: 'verified', blockingReason: 'persisting', deferrable: true, reason: 'r', ...extra,
   });
 
-  it('applies a deferral recorded since the round, never to a P0/P1, and replaces only rechecked lanes\' hits', () => {
+  it('applies a deferral recorded since the round, never to a P0/P1, and drops the lanes\' hits', () => {
     const findings = [
       blocking('P2', 'Deferred'),
       blocking('P2', 'Kept'),
       blocking('P1', 'Never softened', { blockingReason: 'always', deferrable: false }),
-      { ...blocking('P2', 'Rechecked lane hit'), adjudicatedDisposition: 'deterministic', source: 'lint' },
-      { ...blocking('P2', 'Unrechecked lane hit'), adjudicatedDisposition: 'deterministic', source: 'shellcheck' },
+      { ...blocking('P2', 'Lane hit'), adjudicatedDisposition: 'deterministic', source: 'lint' },
       { candidate_id: 'p3', title: 'Advisory', file: 'src/a.ts', priority: 'P3', disposition: 'advisory', requiresDisposition: true, adjudicatedDisposition: 'verified' },
       { candidate_id: 'x', title: 'Dismissed', file: 'src/a.ts', priority: 'P2', disposition: 'dismissed', reason: 'no' },
     ];
@@ -440,8 +458,8 @@ describe('the findings a settled round carries', () => {
       [findingKey({ file: 'src/a.ts', title: 'Advisory' }), deferral],
       [findingKey({ file: 'src/a.ts', title: 'Dismissed' }), deferral],
     ]);
-    const settled = settledFindings(findings, deferrals, { rechecked: new Set(['lint']) });
-    expect(settled.map((finding) => finding.title)).toEqual(['Deferred', 'Kept', 'Never softened', 'Unrechecked lane hit', 'Advisory', 'Dismissed']);
+    const settled = settledFindings(findings, deferrals);
+    expect(settled.map((finding) => finding.title)).toEqual(['Deferred', 'Kept', 'Never softened', 'Advisory', 'Dismissed']);
     expect(settled[0]).toMatchObject({
       disposition: 'advisory', enforcement: 'advisory', requiresDisposition: false, adjudicatedDisposition: 'verified',
       findingKey: findingKey({ file: 'src/a.ts', title: 'Deferred' }), deferral: { headSha: deferral.headSha, reason: deferral.reason },
@@ -450,15 +468,7 @@ describe('the findings a settled round carries', () => {
     expect(settled[0]).not.toHaveProperty('deferrable');
     expect(settled[1]).toBe(findings[1]);
     expect(settled[2]).toBe(findings[2]);
-    expect(settled[3]).toEqual({ ...findings[4], candidate_id: 'kept-c-Unrechecked lane hit' });
-    expect(settled[4]).toMatchObject({ disposition: 'advisory', requiresDisposition: false, deferral: expect.any(Object) });
-    expect(settled[5]).toBe(findings[6]);
-    // Without the lane rechecked, every earlier hit is kept; one a lane
-    // reported again is replaced by the fresh hit.
-    expect(settledFindings(findings, new Map()).map((finding) => finding.title)).toContain('Rechecked lane hit');
-    const replaced = new Set([findingKey({ file: 'src/a.ts', title: 'Unrechecked lane hit' })]);
-    expect(settledFindings(findings, new Map(), { replaced }).map((finding) => finding.title)).not.toContain('Unrechecked lane hit');
-    // A kept id is not prefixed twice along a chain of settling runs.
-    expect(settledFindings(settled, new Map())[3].candidate_id).toBe('kept-c-Unrechecked lane hit');
+    expect(settled[3]).toMatchObject({ disposition: 'advisory', requiresDisposition: false, deferral: expect.any(Object) });
+    expect(settled[4]).toBe(findings[5]);
   });
 });

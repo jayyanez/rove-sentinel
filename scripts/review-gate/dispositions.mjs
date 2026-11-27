@@ -356,7 +356,7 @@ export async function deferFindings({
     next: blockedAny
       ? reviewedAgain
         ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied; its latest round waits for native evidence, so the head is reviewed again.`
-        : `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied: an unchanged head settles from its latest round without another review, unless the rerun states another --intent (gate --force reviews it afresh).`
+        : `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied. An unchanged head usually settles from its latest round without another review; gate --dry-run says whether it can, and gate --force reviews it afresh.`
       : 'The deferrals apply immediately: the attested head can be pushed, and the PR comment will list them.',
   };
 }

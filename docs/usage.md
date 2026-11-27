@@ -75,9 +75,11 @@ again, and the head passes once nothing undeferred blocks. Rerunning an
 unchanged head without a deferral gives the same model verdicts; only the
 lanes' hits can change. The head is reviewed again when its round waits for
 native evidence, a deferral the round applied is no longer recorded, a recorded
-deferral follows a renamed file, or the rerun states another `--intent` than
-the round read (a head that passed is reused whatever intent a later run
-states). Use `gate --force` only when you want a fresh review of the same
+deferral follows a renamed file, a lane with hits in the round cannot run to
+completion, the round's report or its follow-up base's report has been pruned,
+or the rerun states another `--intent` than the round read (a head that passed
+is reused whatever intent a later run states). `gate --dry-run` says whether a
+rerun can settle; the lanes and the records are checked again when it runs. Use `gate --force` only when you want a fresh review of the same
 commit.
 
 ## GitHub pull requests

@@ -22,8 +22,8 @@ branch's next review after the update is a new lineage.
   selected or probed, so a settling run neither needs a provider nor advances account rotation.
   The round's verdicts stand, a deferral recorded since applies as it would in any round (never
   to P0/P1), and the deterministic lanes run again and are enforced as a fresh round enforces
-  them; a lane that cannot recheck keeps the earlier hits it does not report again, under
-  candidate ids of their own. The settling run writes its own report
+  them; when a lane that had hits in the round cannot run to completion, the head is reviewed
+  afresh instead. The settling run writes its own report
   (`settledFrom` names the round that reviewed, through any chain of settling runs), replaces
   the head's lineage record without counting the head twice or refunding a late-discovery round
   it spent, and attests when nothing blocks; the attestation carries the settled round's

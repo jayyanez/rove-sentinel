@@ -1185,13 +1185,15 @@ const REVIEW_EVIDENCE_FIELDS = ['providerFallback', 'accounts', 'accountFallback
 /** The report fields of a settling run, before its outcome (1.21.1). */
 function settleReportBase({
   source, identity, branch, author, risk, files, excludedFiles, metadataOnlyFiles, stats, reviewPolicy, round,
-  followUpBaseSha, priorBlocking, deferrals, lateDiscoveriesUsed, repairRoundsUsed, prIntentDigest,
+  followUpBaseSha, priorBlocking, deferrals, lateDiscoveriesUsed, repairRoundsUsed,
 }) {
   return {
     ...reportBase({
       identity, branch, author, risk: risk.level, riskReasons: risk.reasons, files, excludedFiles, metadataOnlyFiles, stats, plan: source.plan ?? null,
     }),
-    ...(prIntentDigest ? { prIntentDigest } : {}),
+    // The intent the reviewers read (a rerun settles only when it states none
+    // or the same), so a later rerun is compared with it.
+    ...(source.prIntentDigest ? { prIntentDigest: source.prIntentDigest } : {}),
     convergence: {
       round,
       followUpBaseSha,
@@ -1214,9 +1216,11 @@ function settleReportBase({
  * Settle an unchanged head from the round that reviewed it (1.21.1). No
  * provider is selected or launched: that round's verdicts stand, the
  * decisions recorded since apply (settledFindings, from the one snapshot of
- * them eligibility was checked against), and the deterministic lanes run
- * again and are enforced as that round enforced them; a lane that cannot
- * recheck keeps its earlier hits. The result is a completed round of its
+ * them eligibility was checked against, checked again after the lanes), and
+ * the deterministic lanes run again and are enforced as a fresh round
+ * enforces them. It returns null, and the head is reviewed afresh, when a
+ * lane with hits in the round cannot run to completion or an applied
+ * deferral was removed meanwhile. The result is a completed round of its
  * own: a report, the lineage record (whose budgets the same head neither
  * grows nor refunds), and an attestation when nothing blocks.
  */
@@ -1258,12 +1262,18 @@ async function settleFromReport(settle) {
       });
     }
     const lanes = lanesSettled.value || { lanes: [], findings: [] };
-    // Every hit the lanes report now is enforced, as a fresh round enforces
-    // it, partial lanes' included. Only a lane that ran to completion
-    // replaces its earlier hits; one that is unavailable, timed out or
-    // failed keeps those it did not report again.
-    const rechecked = new Set(lanes.lanes.filter((lane) => lane.status === 'ok').map((lane) => lane.lane));
-    const replaced = new Set(lanes.findings.map((finding) => findingKey(finding)));
+    // The fresh hits replace the round's only when every lane that had hits
+    // in it ran to completion. A lane that is unavailable, timed out, failed
+    // or was skipped cannot say which of its hits remain: the head is then
+    // reviewed afresh, as a round with partial lanes always was.
+    const completed = new Set(lanes.lanes.filter((lane) => lane.status === 'ok').map((lane) => lane.lane));
+    const unrechecked = [...new Set((source.findings || [])
+      .filter((finding) => finding?.adjudicatedDisposition === 'deterministic' && !completed.has(finding.source))
+      .map((finding) => String(finding.source || 'a lane')))];
+    if (unrechecked.length) {
+      progress(`${unrechecked.join(', ')} could not recheck the round's hits; ${headSha.slice(0, 12)} is reviewed afresh.`);
+      return null;
+    }
     // The lanes' hits are classified exactly as the settled round classified
     // them: the same round, increment, prior blockers and budgets.
     const renamedTo = renameMapFor(patch, followUpPatch);
@@ -1273,7 +1283,7 @@ async function settleFromReport(settle) {
       ))
       : []);
     const enforcedFindings = [
-      ...settledFindings(source.findings, deferrals, { rechecked, replaced }),
+      ...settledFindings(source.findings, deferrals),
       ...applyConvergencePolicy(lanes.findings, {
         round,
         incrementFiles: incrementFiles ? new Set(incrementFiles) : null,
@@ -1299,16 +1309,12 @@ async function settleFromReport(settle) {
     const status = verified.length ? 'fail' : 'pass';
     const pending = undisposedAdvisories(enforcedFindings, recorded);
     const laneNotes = lanes.lanes.filter((lane) => lane.status !== 'skipped').map((lane) => `${lane.lane}: ${lane.note}`);
-    const kept = [...new Set(enforcedFindings
-      .filter((finding) => finding.adjudicatedDisposition === 'deterministic' && String(finding.candidate_id).startsWith('kept-'))
-      .map((finding) => finding.source))];
     const summary = [
       `Settled from report ${settledFrom.reportId}, the round that reviewed this exact head, base, policy and intent${settledFrom.reviewedAt ? ` (${settledFrom.reviewedAt})` : ''}: no reviewer ran, its verdicts stand and the deferrals recorded since apply.`,
       advisories.length
         ? `${advisories.length} lower-severity finding(s) remain visible as non-blocking advisories under the bounded-convergence policy${pending.length ? `; ${pending.length} of them need a fix or a recorded deferral before this head can be pushed` : ''}.`
         : '',
       laneNotes.length ? `Deterministic lanes — ${laneNotes.join('; ')}.` : '',
-      kept.length ? `Earlier hits of ${kept.join(', ')} are kept: the lane could not recheck them.` : '',
     ].filter(Boolean).join(' ');
     // A late-discovery round the head spent stays spent, even when the
     // deferral now makes that finding an advisory.
@@ -3245,7 +3251,7 @@ export function formatGateResult(result) {
   const head = result.identity?.headSha?.slice(0, 12) || 'unknown';
   if (result.status === 'planned') {
     if (result.settlesFrom) {
-      return `PLAN ${head}: ${result.risk} risk; ${result.round || 'full'} round; settles from report ${result.settlesFrom} of this exact head with the recorded deferrals; no reviewer runs (gate --force reviews it afresh).`;
+      return `PLAN ${head}: ${result.risk} risk; ${result.round || 'full'} round; settles from report ${result.settlesFrom} of this exact head with the recorded deferrals, without a reviewer, unless a lane that had hits cannot run to completion or an applied deferral is removed first (gate --force reviews it afresh).`;
     }
     return `PLAN ${head}: ${result.risk} risk; ${result.round || 'full'} round; ${result.plan.reviewers.join(' + ') || 'no'} reviewers; up to ${result.plan.maxShards ?? 0} shard(s); coordinator ${result.plan.coordinator || 'none'}.`;
   }

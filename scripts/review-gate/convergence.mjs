@@ -164,21 +164,14 @@ export function carriedFinding(finding, index, { deferral: recorded = null } = {
  * The findings of a rerun that settles an unchanged head (1.21.1) from the
  * round that reviewed it: every model finding keeps that round's verdict and
  * enforcement, and a decision the author recorded since applies exactly as
- * applyConvergencePolicy applies one (P0/P1 never soften). A deterministic
- * hit is not taken over when its lane ran again to completion (`rechecked`
- * names those lanes) or a lane reported it again (`replaced` holds those
- * keys): the fresh hits replace it. Any other earlier hit is kept, enforced
- * as the round enforced it, under a candidate id of its own (`kept-`), so no
- * fresh hit's id names it. Pure.
+ * applyConvergencePolicy applies one (P0/P1 never soften). Deterministic hits
+ * are never taken over: a settlement runs the lanes again, and settles only
+ * when every lane that had hits in the round ran to completion, so the fresh
+ * hits replace them all. Pure.
  */
-export function settledFindings(findings, deferrals = new Map(), { rechecked = new Set(), replaced = new Set() } = {}) {
+export function settledFindings(findings, deferrals = new Map()) {
   return (findings || [])
-    .filter((finding) => finding && typeof finding === 'object')
-    .filter((finding) => finding.adjudicatedDisposition !== 'deterministic'
-      || !(rechecked.has(finding.source) || replaced.has(finding.findingKey || findingKey(finding))))
-    .map((finding) => (finding.adjudicatedDisposition === 'deterministic' && !String(finding.candidate_id).startsWith('kept-')
-      ? { ...finding, candidate_id: `kept-${finding.candidate_id}` }
-      : finding))
+    .filter((finding) => finding && typeof finding === 'object' && finding.adjudicatedDisposition !== 'deterministic')
     .map((finding) => {
       if (ALWAYS_BLOCKING.has(finding.priority)) return finding;
       const key = finding.findingKey || findingKey(finding);

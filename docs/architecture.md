@@ -194,8 +194,9 @@ renamed file, no finding of it waiting for native evidence, and no other
 intent stated than the round read. This is decided before any provider is selected or probed, and no
 reviewer runs. The round's verdicts stand, a deferral recorded since applies as
 it would in any round (never to P0/P1), and the deterministic lanes run again
-and are enforced as a fresh round enforces them; a lane that cannot recheck
-keeps its earlier hits it does not report again. The settling run writes its own report (`settledFrom` names
+and are enforced as a fresh round enforces them. When a lane that had hits in
+the round cannot run to completion, or an applied deferral was removed while
+the lanes ran, the head is reviewed afresh instead. The settling run writes its own report (`settledFrom` names
 the round that reviewed), replaces the head's lineage record without counting
 the head twice or refunding a late-discovery round it spent, and attests when
 nothing blocks. Reviewing the same
