@@ -195,6 +195,16 @@ export function findOwnedGateComment(comments, publisherLogin) {
 // GitHub refused to update can outlive it.
 export const GITHUB_ERROR_SUMMARY = "The local review could not complete and did not produce an attestation. The reason was recorded on the reviewing machine, in the watcher's outcome record for this head, which lasts until the head is reviewed again or the record is pruned: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI's output).";
 
+// The summary a comment publishes (1.21.2). A review writes a public summary
+// beside its own; a skipped change's summary is Sentinel's fixed text. Any
+// other result without one publishes nothing of its summary, rather than
+// lane notes or a cleanup detail it may carry.
+function publishedSummary(result) {
+  if (typeof result.publicSummary === 'string' && result.publicSummary) return result.publicSummary;
+  if (result.mode === 'skipped' && typeof result.summary === 'string' && result.summary) return result.summary;
+  return 'The summary is kept in the local report.';
+}
+
 export function renderGateComment(result) {
   const advisoryFindings = (result.findings || [])
     .filter((finding) => finding.disposition === 'advisory');
@@ -224,7 +234,7 @@ export function renderGateComment(result) {
     // did not finish is named by its status, never by its note, which can
     // quote a tool's output or a local path. A result stored before 1.21.2
     // has none and publishes its summary, as it did.
-    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.publicSummary || result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
+    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : publishedSummary(result), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;

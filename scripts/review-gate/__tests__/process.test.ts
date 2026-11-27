@@ -259,6 +259,55 @@ describe('bounded review subprocesses', () => {
     expect(spawnProcess).not.toHaveBeenCalled();
   });
 
+  it('decides a root that exited before taskkill found it as an exited root', async () => {
+    // Alive at the check, gone when taskkill looks it up (exit 128): its pipes
+    // closing makes it a normal exit, not a cleanup failure (1.21.2).
+    for (const closeAt of ['during', 'after'] as const) {
+      const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
+      const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
+      const spawnProcess = vi.fn(() => killer);
+      let alive = true;
+      const pending = terminateProcessTree(child, {
+        platform: 'win32',
+        spawnProcess,
+        waitForNaturalClose: closeAt === 'during'
+          ? vi.fn(async () => false)
+          : (target: EventEmitter, ms: number) => new Promise((resolve) => {
+            const timer = setTimeout(() => resolve(false), ms);
+            target.once('close', () => { clearTimeout(timer); resolve(true); });
+          }),
+        isWindowsProcessAlive: vi.fn(() => alive),
+        graceMs: 2_000,
+      });
+      await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
+      alive = false;
+      child.exitCode = 0;
+      if (closeAt === 'during') child.emit('close', 0, null);
+      killer.emit('exit', 128, null);
+      if (closeAt === 'after') setTimeout(() => child.emit('close', 0, null), 50);
+      await expect(pending).resolves.toBeUndefined();
+    }
+  });
+
+  it('calls a root that exited before taskkill found it orphaned when its pipes stay open', async () => {
+    const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
+    const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
+    const spawnProcess = vi.fn(() => killer);
+    let alive = true;
+    const pending = terminateProcessTree(child, {
+      platform: 'win32',
+      spawnProcess,
+      waitForNaturalClose: vi.fn(async () => false),
+      isWindowsProcessAlive: vi.fn(() => alive),
+      graceMs: 50,
+    });
+    await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
+    alive = false;
+    child.exitCode = 0;
+    killer.emit('exit', 128, null);
+    await expect(pending).rejects.toMatchObject({ code: 'ORPHANED_PROCESS_TREE' });
+  });
+
   it('gives taskkill its own time to end a busy provider tree, separate from the exit grace', async () => {
     // A timed-out Codex tree took taskkill longer than the 2-second grace on a
     // loaded host, and the cleanup fence then closed the whole gate (1.11.1).

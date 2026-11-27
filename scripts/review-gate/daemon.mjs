@@ -417,8 +417,11 @@ export async function runWatcher({
                 type: 'github-error',
                 message: error?.message || String(error),
               }).catch(() => {});
-              await recordGithubFailure(context.paths, error);
+              // The backoff first, and the failure record as best effort: a
+              // record that cannot be written must not leave GitHub polled at
+              // the watcher's own pace (1.21.2).
               githubBackoffMs = Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs);
+              await recordGithubFailure(context.paths, error).catch(() => {});
               progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${error.message}`);
             }
             nextGithubAt = Date.now() + githubBackoffMs;

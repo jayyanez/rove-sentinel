@@ -1,4 +1,6 @@
+import { realpathSync } from 'node:fs';
 import { access } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { acquireReviewLease } from './maintenance.mjs';
 
@@ -1006,9 +1008,10 @@ export async function reconcileCleanupFailure({
     completedResult.cleanupErrors = messages;
     completedResult.summary = `${completedResult.summary} Temporary resource cleanup also failed: ${detail}`;
     // The detail names local folders; a pull request comment says only that
-    // it happened (1.21.2).
+    // it happened (1.21.2). The detail stays in the gate's output and the
+    // watcher's outcome record (the report was written before cleanup).
     if (typeof completedResult.publicSummary === 'string') {
-      completedResult.publicSummary = `${completedResult.publicSummary} Temporary resource cleanup also failed; the detail is in the local report.`;
+      completedResult.publicSummary = `${completedResult.publicSummary} Temporary resource cleanup also failed; the detail stays on the reviewing machine.`;
     }
     if (cleanupCode) {
       const cleanupError = new Error(`Review result was preserved but process-tree cleanup could not be verified: ${detail}`);
@@ -1148,6 +1151,60 @@ export function handedLanesFor(inherited, identity) {
   return Object.entries(identity).every(([key, value]) => inherited.identity[key] === value) ? inherited : null;
 }
 
+/**
+ * The local folders a deterministic lane's tool can print (1.21.2): the
+ * review checkout, the repository, Sentinel's state, the temporary folder and
+ * the home folder, each also in its long form (Windows can name one folder
+ * by a short and a long path). Longest first, so a folder inside another is
+ * named by its own token.
+ */
+export function localRoots({ checkout, repoRoot, stateRoot, platform = process.platform } = {}) {
+  const named = [[checkout, '<checkout>'], [repoRoot, '<repository>'], [stateRoot, '<state>'], [os.tmpdir(), '<temp>'], [os.homedir(), '<home>']];
+  const roots = [];
+  for (const [root, token] of named) {
+    if (typeof root !== 'string' || !root) continue;
+    const forms = new Set([root]);
+    try { forms.add(realpathSync.native(root)); } catch {}
+    for (const form of forms) {
+      const trimmed = form.replace(/[\\/]+$/, '');
+      // A drive or filesystem root alone would name every path.
+      if (trimmed.replace(/^[A-Za-z]:/, '').split(/[\\/]/).filter(Boolean).length < 2) continue;
+      roots.push({ root: trimmed, token });
+    }
+  }
+  roots.sort((a, b) => b.root.length - a.root.length);
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return roots.map(({ root, token }) => ({
+    token,
+    // Either separator, as a tool may print the path either way.
+    pattern: new RegExp(root.split(/[\\/]+/).map(escape).join('[\\\\/]+'), platform === 'win32' ? 'gi' : 'g'),
+  }));
+}
+
+/**
+ * A lane result whose findings name no local folder (1.21.2): a tool's
+ * message can quote the review checkout under the user's temporary folder,
+ * and a finding is published in the pull request comment. The tokens also
+ * keep a finding's identity the same from one round's checkout to the next.
+ * Pure.
+ */
+export function withoutLocalRoots(lanes, roots) {
+  if (!lanes || !Array.isArray(lanes.findings) || !roots.length) return lanes;
+  const clean = (value) => (typeof value === 'string'
+    ? roots.reduce((text, { pattern, token }) => text.replace(pattern, token), value)
+    : value);
+  return {
+    ...lanes,
+    findings: lanes.findings.map((finding) => ({
+      ...finding,
+      title: clean(finding.title),
+      reason: clean(finding.reason),
+      scenario: clean(finding.scenario),
+      proposed_test: clean(finding.proposed_test),
+    })),
+  };
+}
+
 /** Each lane that ran, as the local report names it: its own note. */
 export function laneNotesOf(lanes) {
   return lanes.filter((lane) => lane.status !== 'skipped').map((lane) => `${lane.lane}: ${lane.note}`);
@@ -1285,7 +1342,8 @@ async function settleFromReport(settle) {
       patch,
       baseSha,
       stateRoot: context.stateRoot,
-    })).then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
+    })).then((value) => withoutLocalRoots(value, localRoots({ checkout: worktree.checkout, repoRoot: context.repoRoot, stateRoot: context.stateRoot })))
+      .then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
     if (lanesSettled.status === 'rejected') {
       const laneCode = processTreeCleanupFailureCode(lanesSettled.reason) || null;
       throw await buildFailClosedError({
@@ -2259,7 +2317,7 @@ async function runGateWithLease({
         patch,
         baseSha,
         stateRoot: context.stateRoot,
-      }))).then(
+      }).then((value) => withoutLocalRoots(value, localRoots({ checkout: worktree.checkout, repoRoot: context.repoRoot, stateRoot: context.stateRoot }))))).then(
       (value) => ({ status: 'fulfilled', value }),
       (reason) => ({ status: 'rejected', reason }),
     );

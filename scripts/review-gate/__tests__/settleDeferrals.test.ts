@@ -115,7 +115,7 @@ describe('a rerun of an unchanged head after a deferral', () => {
     const repository = await makeRepository();
     const branch = 'claude/settle';
     const named = { value: [{ title: 'Bounded defect' }] as Named[] };
-    const { reviewer, coordinator, deterministicLanes, review, defer } = harness(repository, branch, named);
+    const { reviewer, coordinator, deterministicLanes, lanes, review, defer } = harness(repository, branch, named);
 
     await expect(review(repository.head)).resolves.toMatchObject({ status: 'fail', round: 'full' });
     const second = await review(await commit(repository.root, 43));
@@ -137,8 +137,15 @@ describe('a rerun of an unchanged head after a deferral', () => {
     coordinator.mockClear();
     deterministicLanes.mockClear();
     const progress = vi.fn();
+    // A lane that cannot load names a local folder in its note: the settled
+    // round keeps it locally and names the lane by its status for the
+    // comment (1.21.2).
+    lanes.value = { lanes: [{ lane: 'eslint', status: 'unavailable', note: 'eslint could not be loaded: C:/Users/example/AppData/Local/Temp/rove-review-s', findings: [] }], findings: [] };
     // No provider is available at all: settling needs none, and selects none.
     const settled = await review(secondHead, { progress, availableProviders: [] });
+    expect(settled.summary).toContain('rove-review-s');
+    expect(settled.publicSummary).toContain('eslint: unavailable');
+    expect(settled.publicSummary).not.toContain('rove-review-s');
     expect(reviewer).not.toHaveBeenCalled();
     expect(coordinator).not.toHaveBeenCalled();
     // The lanes are deterministic but run again: a tool may have changed.

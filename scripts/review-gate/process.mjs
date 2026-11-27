@@ -304,6 +304,12 @@ export async function terminateProcessTree(
       if (await waitForNaturalClose(child, graceMs)) return;
       throwOrphanedTree();
     }
+    // A close while taskkill runs is kept: a root that exits on its own
+    // between the check above and taskkill's lookup makes taskkill fail on a
+    // missing process, and is then decided as an exited root (1.21.2).
+    let closedDuringKill = false;
+    const markClosed = () => { closedDuringKill = true; };
+    if (typeof child.once === 'function') child.once('close', markClosed);
     try {
       await new Promise((resolve, reject) => {
         const killer = spawnProcess(
@@ -334,8 +340,14 @@ export async function terminateProcessTree(
         });
       });
     } catch (error) {
+      if (child.exitCode !== null || !isWindowsProcessAlive(child.pid, killProcess)) {
+        if (closedDuringKill || await waitForNaturalClose(child, graceMs)) return;
+        throwOrphanedTree();
+      }
       killChildBestEffort(child);
       throw error;
+    } finally {
+      if (typeof child.removeListener === 'function') child.removeListener('close', markClosed);
     }
     if (!await waitForWindowsExit(child, child.pid, graceMs, killProcess)) {
       killChildBestEffort(child);

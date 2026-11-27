@@ -138,6 +138,62 @@ describe('what a pull request comment says about the lanes (1.21.2)', () => {
     expect(body).not.toContain('AppData');
     expect(body).toContain(githubText('eslint: error', 100));
   });
+
+  it('names no local folder in a lane finding, in the report or the comment', async () => {
+    const repository = await makeRepository();
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-local-roots-'));
+    temporaryDirectories.push(stateRoot);
+    const reviewer = vi.fn(async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed', candidates: [] }));
+    let seenCheckout = '';
+    const result = await runGate({
+      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
+      author: 'human', risk: 'high', availableProviders: ['claude'], reviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      // A type checker names the review checkout in its message.
+      deterministicLanes: async ({ checkout }: { checkout: string }) => {
+        seenCheckout = checkout;
+        return {
+          lanes: [{ lane: 'tsc', status: 'ok', note: '1 hit(s) in 1 file(s); 1 on added lines', findings: [] }],
+          findings: [{
+            candidate_id: 'deterministic-0', source: 'tsc', adjudicatedDisposition: 'deterministic', disposition: 'verified',
+            priority: 'P2', file: 'src/lib/example.ts', line: 1,
+            title: `tsc: Type 'import("${checkout.split(path.sep).join('/')}/src/lib/example").A' is not assignable`,
+            reason: `See ${checkout}${path.sep}src${path.sep}lib${path.sep}example.ts`, scenario: 's', proposed_test: 't',
+          }],
+        };
+      },
+    });
+    expect(seenCheckout).not.toBe('');
+    const finding = result.findings.find((entry: { source?: string }) => entry.source === 'tsc');
+    expect(finding.title).toContain('<checkout>/src/lib/example');
+    expect(finding.reason).toContain('<checkout>');
+    const leaf = path.basename(path.dirname(seenCheckout));
+    expect(JSON.stringify(result.findings)).not.toContain(leaf);
+    expect(renderGateComment(result)).not.toContain(githubText(leaf, 200));
+  });
+
+  it('says in the comment only that cleanup failed, and keeps the folders local', async () => {
+    const result = { status: 'fail', reportId: 'report-1', summary: 'Verified defect.', publicSummary: 'Verified defect.' };
+    await reconcileCleanupFailure({
+      cleanupErrors: [new Error("EBUSY: resource busy or locked, rmdir 'C:/Users/example/AppData/Local/Temp/rove-review-q'")],
+      operationError: null,
+      completedResult: result,
+      revokePass: vi.fn(async () => {}),
+    });
+    expect(result.summary).toContain('rove-review-q');
+    expect(result.publicSummary).not.toContain('rove-review-q');
+    expect(result.publicSummary).toContain('Temporary resource cleanup also failed; the detail stays on the reviewing machine.');
+  });
+
+  it('publishes no summary that was not written for the comment, except a skipped change\'s', () => {
+    const base = { risk: 'high', identity: { headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) } };
+    const leaky = 'eslint: eslint exited with code 2 at C:/Users/example/AppData/Local/Temp/rove-review-q';
+    const withoutPublic = renderGateComment({ ...base, status: 'fail', summary: leaky });
+    expect(withoutPublic).not.toContain(githubText('rove-review-q', 100));
+    expect(withoutPublic).toContain(githubText('The summary is kept in the local report.', 200));
+    const skipped = renderGateComment({ ...base, status: 'pass', mode: 'skipped', summary: 'Prose-only change; no model review.' });
+    expect(skipped).toContain(githubText('Prose-only change; no model review.', 200));
+  });
 });
 
 describe('recall evidence in a completed review (1.13.0)', () => {
