@@ -2,7 +2,7 @@
 
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
 
-Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (14 new tests)
+Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (16 new tests)
 cover: a follow-up head that failed on a persisting P2, deferred, and rerun with no provider
 available settling with no reviewer or adjudicator call while the injected reviewer would have
 named a new defect, the deferral applied, the deterministic lanes run once, the round,
@@ -14,7 +14,9 @@ naming the round that reviewed, `--dry-run` naming the round it would settle fro
 `--intent` or `--force` reviewing afresh with the same classification; a lane hit still present
 enforced again, a lane with hits that stops part-way sending the head to a fresh review that
 enforces what that run reported without running the lanes again, through a restart after a
-provider's usage limit too, with the lanes' own time in the report, and a hit its lane no longer reports dropped; the intent the
+provider's usage limit too, with the lanes' own time in the report, and run again by a restart
+under another installed policy than they ran under (a lane result is handed only to a run of
+its exact identity), and a hit its lane no longer reports dropped; the intent the
 reviewers read kept through a settlement that states none, the same intent settling and another
 one reviewed; a deferred late-discovery blocker keeping its spent
 round in the report and the lineage record, through a settlement and a forced fresh rerun; a

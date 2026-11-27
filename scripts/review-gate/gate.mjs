@@ -1132,6 +1132,17 @@ async function filesAtHead(repoRoot, headSha, files) {
   return present;
 }
 
+/**
+ * The lane result a restart inherits, only when it ran under this run's
+ * exact identity (repository, base, head, policy digest and versions): a
+ * restart reloads the installed policy, which an install may have replaced
+ * meanwhile, and lanes run under another policy are not this round's. Pure.
+ */
+export function handedLanesFor(inherited, identity) {
+  if (!inherited || typeof inherited !== 'object' || !inherited.identity || !identity) return null;
+  return Object.entries(identity).every(([key, value]) => inherited.identity[key] === value) ? inherited : null;
+}
+
 /** The round a settling run names: the one that ran reviewers (1.21.1). */
 function settledFromOf(source) {
   return source.settledFrom?.reportId
@@ -1277,7 +1288,9 @@ async function settleFromReport(settle) {
     // What a fresh review takes over when this settlement cannot stand: the
     // lanes' result and the time they took.
     const laneStage = clock.snapshot().find((stage) => stage.name === 'deterministic-lanes');
-    const fallbackLanes = { value: lanes, startedAt: laneStage?.startedAt ?? null, ms: laneStage?.ms ?? 0 };
+    // The identity they ran under travels with them: a restart that reloads
+    // another installed policy runs the lanes again (handedLanesFor).
+    const fallbackLanes = { value: lanes, startedAt: laneStage?.startedAt ?? null, ms: laneStage?.ms ?? 0, identity: { ...identity } };
     if (unrechecked.length) {
       progress(`${unrechecked.join(', ')} could not recheck the round's hits; ${headSha.slice(0, 12)} is reviewed afresh.`);
       return { fallbackLanes };
@@ -1811,7 +1824,10 @@ async function runGateWithLease({
   const settleFrom = settleSource && settleSourceMismatch(settleSource, {
     identity, branch, author, risk: risk.level, round, followUpBaseSha, deferrals, prIntentDigest, pendingRenames,
   }) === null ? settleSource : null;
-  let settledLanes = inheritedLanes;
+  let settledLanes = handedLanesFor(inheritedLanes, identity);
+  if (inheritedLanes && !settledLanes) {
+    progress('The installed review policy changed since the lanes ran; they run again.');
+  }
   if (settleFrom) {
     const settle = {
       context, source: settleFrom, sourceRecord: ownRecord, identity, lineage, branch, author, headSha, baseSha,
@@ -2192,9 +2208,9 @@ async function runGateWithLease({
     // Deterministic lanes (v1.8.0) run alongside everything else. They can
     // only reject through the process-tree fence, which must reach the same
     // fail-closed path as a provider cleanup failure.
-    // A settlement that fell through already ran them on this exact head and
-    // policy: its result is the round's, and so is the time they took
-    // (1.21.1).
+    // A settlement that fell through already ran them under this round's
+    // exact identity (handedLanesFor checked it): its result is the round's,
+    // and so is the time they took (1.21.1).
     if (settledLanes) {
       const startedAt = Date.parse(settledLanes.startedAt);
       clock.record('deterministic-lanes', Number.isFinite(startedAt) ? startedAt : Date.now(), settledLanes.ms ?? 0);

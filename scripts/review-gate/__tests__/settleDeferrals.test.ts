@@ -9,9 +9,11 @@ import { reviewPolicySnapshot } from '../context.mjs';
 import { convergenceLineage, findingKey, settledFindings } from '../convergence.mjs';
 import { deferFindings, undisposedRefusal } from '../dispositions.mjs';
 import {
-  deferralsFollowRenames, formatGateResult, runGate, settleAllowed, settleSourceMismatch,
+  deferralsFollowRenames, formatGateResult, handedLanesFor, runGate, settleAllowed, settleSourceMismatch,
 } from '../gate.mjs';
-import { ensureState, readAttestation, readLineageReviews, readReport, removeDisposition } from '../storage.mjs';
+import {
+  atomicWriteJson, ensureState, readAttestation, readLineageReviews, readReport, removeDisposition,
+} from '../storage.mjs';
 import { ProviderUsageLimitError } from '../usageLimits.mjs';
 
 // A rerun of an unchanged head after a deferral settles from the round that
@@ -316,6 +318,55 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(laneStage.ms).toBeGreaterThanOrEqual(30);
   });
 
+  it('runs the lanes again on a restart under another installed policy than they ran under', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-policy';
+    const named = { value: [{ title: 'Bounded defect' }] as Named[] };
+    // The installed policy, read again by every restart (no policy option).
+    const paths = await ensureState(repository.stateRoot);
+    await atomicWriteJson(paths.policy, repository.policy);
+    const installed = { availableProviders: ['claude', 'codex'], policy: undefined };
+    const { reviewer, deterministicLanes, lanes, review } = harness(repository, branch, named);
+    const laneHit = {
+      candidate_id: 'deterministic-0', title: 'rule: a lane hit', priority: 'P2', file: 'src/lib/example.ts', line: 1,
+      disposition: 'verified', reason: 'r', scenario: 's', proposed_test: 't', source: 'lint', adjudicatedDisposition: 'deterministic',
+    };
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '1 hit' }], findings: [laneHit] };
+    const first = await review(repository.head, installed);
+    expect(first.status).toBe('fail');
+
+    // The settlement falls through on a partial lane; while the fresh review
+    // runs, an install replaces the policy, and Codex reports its usage
+    // limit. The restart reviews under the new policy: the lanes that ran
+    // under the old one are not its own, so they run again.
+    const partialHit = { ...laneHit, title: 'rule: another lane hit' };
+    deterministicLanes.mockClear();
+    deterministicLanes.mockImplementationOnce(async () => ({
+      lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [partialHit],
+    }));
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
+    const replaced = reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n\nA lesson an install added.\n' });
+    let installedAgain = false;
+    reviewer.mockImplementation(async ({ provider, roleIndex }) => {
+      if (provider === 'codex') {
+        if (!installedAgain) {
+          installedAgain = true;
+          await atomicWriteJson(paths.policy, replaced);
+        }
+        throw new ProviderUsageLimitError('codex', { resetAt: Date.now() + 3_600_000, message: "You've hit your usage limit." });
+      }
+      return { provider, roleIndex, summary: 'Reviewed.', candidates: [] };
+    });
+    const progress = vi.fn();
+    const restarted = await review(repository.head, { ...installed, progress });
+    expect(installedAgain).toBe(true);
+    expect(restarted.identity.policyDigest).toBe(replaced.policyDigest);
+    expect(restarted).toMatchObject({ providerFallback: { dropped: ['codex'], restarted: true } });
+    expect(progress).toHaveBeenCalledWith(expect.stringContaining('policy changed since the lanes ran'));
+    expect(deterministicLanes).toHaveBeenCalledTimes(2);
+    expect(restarted.findings.some((finding: { title: string }) => finding.title === 'rule: another lane hit')).toBe(false);
+  });
+
   it('keeps a late-discovery round the head spent when its finding is deferred', async () => {
     const repository = await makeRepository();
     const branch = 'claude/settle-late';
@@ -462,6 +513,17 @@ describe('which report can settle a rerun', () => {
     expect(settleAllowed({ risk: 'high', ownRecord: { status: 'pass', reportId: 'r1' } })).toBe(false);
     expect(settleAllowed({ risk: 'high', ownRecord: { status: 'fail', reportId: null } })).toBe(false);
     expect(settleAllowed({ risk: 'high', ownRecord: undefined })).toBe(false);
+  });
+
+  it('hands a lane result only to a run of the exact identity it ran under', () => {
+    const identity = { repository: 'r', baseSha: 'b', headSha: 'h', policyDigest: 'p', charterVersion: 'c', gateVersion: 'g' };
+    const inherited = { value: { lanes: [], findings: [] }, startedAt: null, ms: 0, identity };
+    expect(handedLanesFor(inherited, { ...identity })).toBe(inherited);
+    for (const key of Object.keys(identity)) {
+      expect(handedLanesFor(inherited, { ...identity, [key]: 'other' })).toBeNull();
+    }
+    expect(handedLanesFor({ ...inherited, identity: undefined }, identity)).toBeNull();
+    expect(handedLanesFor(null, identity)).toBeNull();
   });
 
   it('reviews a head whose recorded deferral still has a renamed path to follow', () => {
