@@ -485,12 +485,16 @@ export async function syncPullRequests({
       const message = error?.message || String(error);
       publishErrors.push(`PR #${pr.number}: ${message}`);
       outcomes.push({ pr: pr.number, status: result.status, published: false, publishError: message });
+      // Events here are a record, never a reason to stop (1.21.2): the
+      // publish error is still thrown below for the whole sync, and the
+      // other pull requests are reached when the events folder cannot be
+      // written.
       await recordEvent(context.paths, {
         type: 'github-publish-error',
         pr: pr.number,
         headSha: pr.headRefOid,
         message,
-      });
+      }).catch(() => {});
       continue;
     }
     outcomes.push({ pr: pr.number, status: result.status, published: published.changed });
@@ -501,7 +505,7 @@ export async function syncPullRequests({
         headSha: pr.headRefOid,
         status: result.status,
         published: true,
-      });
+      }).catch(() => {});
     }
   }
   if (publishErrors.length) {

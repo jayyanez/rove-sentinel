@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -39,6 +39,30 @@ describe('a watcher whose GitHub polls keep failing', () => {
       expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: first.since, message: 'a later reason' });
       await poll(async () => {});
       expect(await readJson(paths.githubFailure)).toBeNull();
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a watcher whose events folder cannot be written', () => {
+  it('still records the GitHub failure, and with its own reason', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-events-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true,
+        // The events folder breaks while the poll runs (a file now stands
+        // where it was), so the watcher's own event write fails.
+        syncPulls: async () => {
+          await rm(paths.events, { recursive: true, force: true });
+          await writeFile(paths.events, 'not a folder');
+          throw new Error('GitHub refused the comment');
+        },
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, message: 'GitHub refused the comment' });
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

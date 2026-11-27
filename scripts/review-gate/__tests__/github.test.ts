@@ -380,6 +380,34 @@ describe('shared review PR comment', () => {
     }
   });
 
+  it('reaches every pull request and reports the publish error when the events folder cannot be written', async () => {
+    const context = await makeContext();
+    // A file stands where the events folder should be: every event write fails.
+    await rm(context.paths.events, { recursive: true, force: true });
+    await writeFile(context.paths.events, 'not a folder');
+    const first = pullRequest();
+    const second = { ...pullRequest(), number: first.number + 1, headRefOid: 'd'.repeat(40) };
+    const identityOf = (pr: ReturnType<typeof pullRequest>) => attestationIdentity({
+      repository: context.repository, baseSha: pr.baseRefOid, headSha: pr.headRefOid, policyDigest: context.policy.policyDigest,
+    });
+    const publish = vi.fn(async (_root: string, _slug: string, number: number) => {
+      if (number === first.number) return { changed: true, commentId: 1 };
+      throw new Error('GitHub refused the comment');
+    });
+    const runGate = vi.fn(async (options: { head: string }) => ({
+      status: 'fail', identity: identityOf(options.head === first.headRefOid ? first : second), risk: 'high', summary: 'Verified failure.', findings: [],
+    }));
+    await expect(syncPullRequests({
+      context,
+      runGate,
+      listPullRequests: async () => [first, second],
+      ensureCommit: vi.fn(async () => {}),
+      resolveMergeBase: vi.fn(async (_repo, base) => base),
+      publish,
+    })).rejects.toThrow(/could not publish 1 comment\(s\): PR #\d+: GitHub refused the comment/);
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
   it('bounds technical-error retries for one unchanged identity', async () => {
     const context = await makeContext();
     const pr = pullRequest();
