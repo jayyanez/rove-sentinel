@@ -17,11 +17,13 @@ import {
   describeReviewerFailures,
   formatGateResult,
   providerTreeCleanupFailureCode,
+  publicLaneNotes,
   reconcileCleanupFailure,
   runGate,
   shouldSkipCoordinator,
   settleReviewersWithRetry,
 } from '../gate.mjs';
+import { githubText, renderGateComment } from '../github.mjs';
 import {
   attestationIdentity,
   attestationFileName,
@@ -93,6 +95,48 @@ describe('single-provider pipeline provenance', () => {
     expect(await runGate(options)).toMatchObject({ cached: true, providerSelection: [provider] });
     const strict = reviewPolicySnapshot({ charter: repository.policy.charter, lessons: repository.policy.lessons, config: { providers: 'both' } });
     await expect(runGate({ ...options, policy: strict })).rejects.toThrow(/both/);
+  });
+});
+
+describe('what a pull request comment says about the lanes (1.21.2)', () => {
+  const LOCAL = 'C:/Users/example/AppData/Local/Temp/rove-review-x/checkout';
+  const lanes = [
+    { lane: 'markdownlint', status: 'ok', note: '0 hit(s) in 1 file(s); 0 on added lines', findings: [] },
+    { lane: 'eslint', status: 'error', note: `eslint exited with code 2: cannot read ${LOCAL}/eslint.config.js`, findings: [] },
+    { lane: 'tsc', status: 'timeout', note: 'tsc exceeded 300 seconds', findings: [] },
+    { lane: 'oxlint', status: 'unavailable', note: 'oxlint is not installed on this host', findings: [] },
+    { lane: 'clippy', status: 'skipped', note: 'no Rust file changed', findings: [] },
+  ];
+
+  it('names a lane that finished by its counts, and any other only by its status', () => {
+    expect(publicLaneNotes(lanes)).toEqual([
+      'markdownlint: 0 hit(s) in 1 file(s); 0 on added lines',
+      'eslint: error',
+      'tsc: timeout',
+      'oxlint: unavailable',
+    ]);
+  });
+
+  it("keeps a lane's own note in the local summary and leaves it out of the comment", async () => {
+    const repository = await makeRepository();
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-public-summary-'));
+    temporaryDirectories.push(stateRoot);
+    const reviewer = vi.fn(async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed', candidates: [] }));
+    const result = await runGate({
+      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
+      author: 'human', risk: 'high', availableProviders: ['claude'], reviewer,
+      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
+      deterministicLanes: async () => ({ lanes, findings: [] }),
+    });
+    expect(result.summary).toContain(LOCAL);
+    expect(result.publicSummary).toContain('eslint: error');
+    expect(result.publicSummary).not.toContain('rove-review-x');
+    const body = renderGateComment(result);
+    // The comment escapes Markdown punctuation, so look for the folder's
+    // words as githubText writes them.
+    expect(body).not.toContain(githubText('rove-review-x', 100));
+    expect(body).not.toContain('AppData');
+    expect(body).toContain(githubText('eslint: error', 100));
   });
 });
 

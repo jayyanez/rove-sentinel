@@ -96,6 +96,7 @@ function compactOutcomeResult(result) {
     identity: result.identity,
     risk: result.risk,
     summary: truncate(result.summary, LIMITS.githubSummaryChars),
+    ...(typeof result.publicSummary === 'string' ? { publicSummary: truncate(result.publicSummary, LIMITS.githubSummaryChars) } : {}),
     actionableCount: result.actionableCount ?? actionable.length,
     advisoryCount: result.advisoryCount ?? advisories.length,
     convergence: result.convergence,
@@ -219,7 +220,11 @@ export function renderGateComment(result) {
     // the accounts a person reviews with are their own setup. The local
     // report, the attestation and the text result keep them by label.
     '',
-    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
+    // A completed review publishes its public summary (1.21.2): a lane that
+    // did not finish is named by its status, never by its note, which can
+    // quote a tool's output or a local path. A result stored before 1.21.2
+    // has none and publishes its summary, as it did.
+    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.publicSummary || result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;
