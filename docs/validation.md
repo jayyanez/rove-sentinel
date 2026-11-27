@@ -33,8 +33,9 @@ ones). The settling tests fail on 1.21.0's sources (the reviewer runs again on t
 unchanged head). `scripts/review-gate/__tests__/github.test.ts` adds three: an ERROR comment
 for a result with accounts, an account fallback, the author's own account and every error form
 that names an account, a folder or a CLI's output names none of them; a completed review's
-summary is still published; and the watcher's own catch path, with each of those errors thrown
-by the review, publishes none of them (both fail on 1.21.0's comment). Two account tests assert
+summary is still published; and the watcher's own catch path, reviewing once per error with
+each of those errors thrown by the review, publishes none of them and names the local report
+(both fail when the summary is published). Two account tests assert
 the comment's silence. 1,160 tests passed in 42 files on Windows on the development host, and the package smoke
 passed (`rove-sentinel@1.21.1`).
 

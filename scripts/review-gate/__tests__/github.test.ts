@@ -352,24 +352,28 @@ describe('shared review PR comment', () => {
   });
 
   it("publishes no error text when the watcher's review throws", async () => {
-    const context = await makeContext();
     const pr = pullRequest();
-    const publish = vi.fn(async () => ({ changed: true, commentId: 1 }));
     for (const leak of LEAKS) {
-      publish.mockClear();
+      // A fresh state per error: a stored outcome would otherwise be published
+      // again without the review running.
+      const context = await makeContext();
+      const publish = vi.fn(async () => ({ changed: true, commentId: 1 }));
+      const failed = Object.assign(new Error(leak), { reportId: '1795764409053-84b6efa9' });
+      const runGate = vi.fn(async () => { throw failed; });
       await syncPullRequests({
         context,
-        runGate: vi.fn(async () => { throw new Error(leak); }),
+        runGate,
         listPullRequests: async () => [pr],
         ensureCommit: vi.fn(async () => {}),
         resolveMergeBase: vi.fn(async (_repo, base) => base),
         publish,
-        now: () => Date.now() + 10_000_000_000,
       });
+      expect(runGate).toHaveBeenCalledTimes(1);
       expect(publish).toHaveBeenCalledTimes(1);
       const body = renderGateComment(publish.mock.calls[0][3]);
       for (const secret of ['personalz7', 'sparey8', 'mainx9', 'MAINX9', 'auth.json']) expect(body).not.toContain(secret);
       expect(body).toContain('Shared review gate: ERROR');
+      expect(body).toContain(githubText('Local report: 1795764409053-84b6efa9', 200));
     }
   });
 

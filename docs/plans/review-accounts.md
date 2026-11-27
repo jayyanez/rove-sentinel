@@ -233,9 +233,9 @@ after a usage limit.
 - Folders stay on the machine: in the user's accounts file and in a reviewer
   process's environment. Requests carry digests, the account state is keyed by
   label, and reports, attestations, comments, progress and error messages name
-  labels only. The policy digest does not change: the accounts file is not
-  policy, and a review under another account of the same provider is the same
-  review.
+  labels only. (From 1.21.1 the GitHub comment names no account at all.) The
+  policy digest does not change: the accounts file is not policy, and a review
+  under another account of the same provider is the same review.
 
 ## Acceptance
 
@@ -249,7 +249,8 @@ after a usage limit.
 3. The author's account: excluded while another is usable; the default folder
    when the variable is unset; matched across a trailing separator and, on
    Windows, letter case; used as the last resort and recorded as such in the
-   progress, the report, the attestation, the text result and the comment;
+   progress, the report, the attestation, the text result and, before 1.21.1,
+   the comment;
    `null` when the requester is unknown; a malformed identity refused.
 4. Ranking: no hold before a failure hold, a usage limit never; least recently
    used first; excluded and signed-out accounts left out.

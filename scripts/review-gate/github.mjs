@@ -216,7 +216,9 @@ export function renderGateComment(result) {
     // the accounts a person reviews with are their own setup. The local
     // report, the attestation and the text result keep them by label.
     '',
-    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
+    githubText(result.status === 'error'
+      ? `${GITHUB_ERROR_SUMMARY}${typeof result.reportId === 'string' && /^[A-Za-z0-9-]{1,80}$/.test(result.reportId) ? ` Local report: ${result.reportId}.` : ''}`
+      : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;
@@ -449,6 +451,9 @@ export async function syncPullRequests({
         risk: 'unknown',
         summary: `The local review could not complete and did not produce an attestation: ${(error?.message || String(error)).slice(0, 1000)}`,
         findings: [],
+        // The report a fail-closed round wrote: the ERROR comment names it,
+        // so the reason can be found locally without publishing it.
+        ...(typeof error?.reportId === 'string' ? { reportId: error.reportId } : {}),
       };
     }
     if (shouldStop()) throw new Error('GitHub review synchronization interrupted for watcher shutdown.');
