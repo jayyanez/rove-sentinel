@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { parseAccounts } from '../accounts.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { convergenceLineage, findingKey, settledFindings } from '../convergence.mjs';
 import { deferFindings, undisposedRefusal } from '../dispositions.mjs';
@@ -365,6 +366,61 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(progress).toHaveBeenCalledWith(expect.stringContaining('policy changed since the lanes ran'));
     expect(deterministicLanes).toHaveBeenCalledTimes(2);
     expect(restarted.findings.some((finding: { title: string }) => finding.title === 'rule: another lane hit')).toBe(false);
+  });
+
+  it('keeps the lanes a restart ran again under a new policy through the restarts after it', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-policy-twice';
+    const named = { value: [{ title: 'Bounded defect' }] as Named[] };
+    const paths = await ensureState(repository.stateRoot);
+    await atomicWriteJson(paths.policy, repository.policy);
+    const home = (name: string) => path.join(os.tmpdir(), 'sentinel-accounts', name);
+    const accounts = parseAccounts({ schemaVersion: 1, accounts: { codex: [{ label: 'main', home: home('main') }, { label: 'spare', home: home('spare') }] } });
+    const installed = { availableProviders: ['claude', 'codex'], policy: undefined, accounts };
+    const { reviewer, deterministicLanes, lanes, review } = harness(repository, branch, named);
+    const laneHit = {
+      candidate_id: 'deterministic-0', title: 'rule: a lane hit', priority: 'P2', file: 'src/lib/example.ts', line: 1,
+      disposition: 'verified', reason: 'r', scenario: 's', proposed_test: 't', source: 'lint', adjudicatedDisposition: 'deterministic',
+    };
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '1 hit' }], findings: [laneHit] };
+    const first = await review(repository.head, installed);
+    expect(first.status).toBe('fail');
+
+    // The settlement falls through on a partial lane; the first Codex account
+    // reports its usage limit after an install replaced the policy. The
+    // account restart runs the lanes again under the new policy, and they stop
+    // part-way with a hit of their own; the second Codex account reports its
+    // limit too, and the review restarts with Claude. That last restart runs
+    // under the same new policy: it enforces the second run's result, never a
+    // third run that would report nothing.
+    const oldPolicyHit = { ...laneHit, title: 'rule: a hit under the old policy' };
+    const newPolicyHit = { ...laneHit, title: 'rule: a hit under the new policy' };
+    deterministicLanes.mockClear();
+    deterministicLanes
+      .mockImplementationOnce(async () => ({ lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [oldPolicyHit] }))
+      .mockImplementationOnce(async () => ({ lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [newPolicyHit] }));
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
+    const replaced = reviewPolicySnapshot({ charter: '# Charter\n', lessons: '# Lessons\n\nA lesson an install added.\n' });
+    let installedAgain = false;
+    reviewer.mockImplementation(async ({ provider, roleIndex }) => {
+      if (provider === 'codex') {
+        if (!installedAgain) {
+          installedAgain = true;
+          await atomicWriteJson(paths.policy, replaced);
+        }
+        throw new ProviderUsageLimitError('codex', { resetAt: Date.now() + 3_600_000, message: "You've hit your usage limit." });
+      }
+      return { provider, roleIndex, summary: 'Reviewed.', candidates: [] };
+    });
+    const restarted = await review(repository.head, installed);
+    expect(installedAgain).toBe(true);
+    expect(restarted.identity.policyDigest).toBe(replaced.policyDigest);
+    expect(restarted.accountFallbacks?.length ?? 0).toBeGreaterThan(0);
+    expect(restarted).toMatchObject({ providerFallback: { dropped: ['codex'], restarted: true } });
+    expect(deterministicLanes).toHaveBeenCalledTimes(2);
+    expect(restarted.findings).toContainEqual(expect.objectContaining({ title: 'rule: a hit under the new policy', disposition: 'verified' }));
+    expect(restarted.findings.some((finding: { title: string }) => finding.title === 'rule: a hit under the old policy')).toBe(false);
+    expect(restarted.status).toBe('fail');
   });
 
   it('keeps a late-discovery round the head spent when its finding is deferred', async () => {

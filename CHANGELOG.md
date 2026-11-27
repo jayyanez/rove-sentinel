@@ -32,7 +32,9 @@ branch's next review after the update is a new lineage.
   deferral that settles gives the round's model verdicts again instead of a new sample; only the
   deterministic lanes' hits can change. One that cannot settle is reviewed afresh, as before, and
   that review, and any restart of it after a provider or account failure, enforces the lane
-  result the settling attempt already has. `gate --force` still reviews the head afresh, and a
+  result the settling attempt already has, while the installed policy is the one those lanes ran
+  under. A restart under a policy installed meanwhile runs the lanes again, and the restarts
+  after it enforce that newer result. `gate --force` still reviews the head afresh, and a
   restart after a provider failure never settles. `gate --dry-run` says when a rerun would
   settle and from which round; `defer` says when its rerun is reviewed again because the round
   waits for native evidence, and otherwise points to `gate --dry-run`.

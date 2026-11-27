@@ -1232,7 +1232,8 @@ function settleReportBase({
  * enforces them. It returns `{ result }`, or `{ fallbackLanes }` when a lane
  * with hits in the round cannot run to completion or an applied deferral was
  * removed meanwhile: the head is then reviewed afresh, and that review, and
- * any restart of it after a provider or account failure, enforces the lane
+ * any restart of it after a provider or account failure under the same
+ * installed policy, enforces the lane
  * result this run already has, with the time the lanes took, instead of
  * running the lanes again (a partial lane need not report the same hits
  * twice). The result is a completed round of its
@@ -1484,8 +1485,10 @@ async function runGateWithProviderFallback(paths, options) {
   const switches = [];
   // Set by the first round that fails: the commits and branch it resolved.
   let target = null;
-  // Set by the first round that fails after a settlement fell through: the
-  // lane result every restart enforces (1.21.1).
+  // Set by the first round that fails after a settlement fell through, and
+  // replaced by a later round that ran the lanes again under a newly
+  // installed policy: the lane result a restart of the same identity
+  // enforces (1.21.1).
   let inheritedLanes = null;
   for (let round = 0; ; round += 1) {
     try {
@@ -1507,7 +1510,10 @@ async function runGateWithProviderFallback(paths, options) {
       // Without the target it reviewed, no restart could be the same review.
       if (!error.reviewTarget?.head) throw error;
       target ??= error.reviewTarget;
-      inheritedLanes ??= error.settledLanes ?? null;
+      // The newest result wins: a round that ran the lanes again under a
+      // newly installed policy hands over its own (handedLanesFor still
+      // checks each restart's identity).
+      inheritedLanes = error.settledLanes ?? inheritedLanes;
       const chosen = error.accountSelection ?? {};
       // The round that just failed chose the account an earlier switch went to.
       for (const entry of switches) if (entry.to === undefined && chosen[entry.provider]) entry.to = chosen[entry.provider];
@@ -1825,6 +1831,10 @@ async function runGateWithLease({
     identity, branch, author, risk: risk.level, round, followUpBaseSha, deferrals, prIntentDigest, pendingRenames,
   }) === null ? settleSource : null;
   let settledLanes = handedLanesFor(inheritedLanes, identity);
+  // Set when this round had to run the lanes again because the result it
+  // inherited ran under another policy: its own result, under its own
+  // identity, is what a further restart enforces instead.
+  let rerunLanes = null;
   if (inheritedLanes && !settledLanes) {
     progress('The installed review policy changed since the lanes ran; they run again.');
   }
@@ -2705,6 +2715,10 @@ async function runGateWithLease({
     reviewerErrors.push(...describeReviewerFailures(settledHypotheses, hypothesisProviders.map((provider) => `${provider} hypothesis`)));
     const reviews = settledReviewers.filter((result) => result.status === 'fulfilled').map((result) => result.value);
     const lanesSettled = await lanesPromise;
+    if (inheritedLanes && !settledLanes && lanesSettled.status === 'fulfilled') {
+      const laneStage = clock.snapshot().find((stage) => stage.name === 'deterministic-lanes');
+      rerunLanes = { value: lanesSettled.value, startedAt: laneStage?.startedAt ?? null, ms: laneStage?.ms ?? 0, identity: { ...identity } };
+    }
     if (lanesSettled.status === 'rejected') {
       const { cleanup: adjudicationCleanup } = await haltAdjudication();
       // Whichever wave produced a cleanup classification, it must reach the
@@ -3241,9 +3255,10 @@ async function runGateWithLease({
       // The exact commits and branch this round reviewed: every restart
       // reviews them again, never what HEAD or the base names by then.
       error.reviewTarget = { base: baseSha, head: headSha, branch };
-      // The lane result a settlement handed over: the restart enforces it
+      // The lane result a settlement handed over, or the one this round ran
+      // in its place under a newly installed policy: the restart enforces it
       // rather than running the lanes again (1.21.1).
-      error.settledLanes = settledLanes;
+      error.settledLanes = settledLanes ?? rerunLanes;
       // Labels only: the account each provider used, and the others usable.
       error.accountSelection = Object.fromEntries(Object.entries(accountSelection).map(([provider, account]) => [provider, account.label]));
       error.accountAlternatives = accountAlternatives;
