@@ -230,7 +230,7 @@ describe('a rerun of an unchanged head after a deferral', () => {
     const repository = await makeRepository();
     const branch = 'claude/settle-lanes';
     const named = { value: [{ title: 'Bounded defect' }] as Named[] };
-    const { reviewer, lanes, review } = harness(repository, branch, named);
+    const { reviewer, deterministicLanes, lanes, review } = harness(repository, branch, named);
     const laneHit = {
       candidate_id: 'deterministic-0', title: 'rule: a lane hit', priority: 'P2', file: 'src/lib/example.ts', line: 1,
       disposition: 'verified', reason: 'r', scenario: 's', proposed_test: 't', source: 'lint', adjudicatedDisposition: 'deterministic',
@@ -250,12 +250,18 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(still.findings.find((finding: { title: string }) => finding.title === 'rule: a lane hit')).toMatchObject({ blockingReason: 'first-review' });
 
     // The lane that had hits stops part-way: it cannot say which remain, so
-    // the head is reviewed afresh, which enforces what it did report.
+    // the head is reviewed afresh, which enforces what that run reported
+    // without running the lanes again (a second run would report nothing).
     const partialHit = { ...laneHit, title: 'rule: another lane hit' };
-    lanes.value = { lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [partialHit] };
+    deterministicLanes.mockClear();
+    deterministicLanes.mockImplementationOnce(async () => ({
+      lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [partialHit],
+    }));
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
     const progress = vi.fn();
     const partial = await review(repository.head, { progress });
     expect(progress).toHaveBeenCalledWith(expect.stringContaining('lint could not recheck'));
+    expect(deterministicLanes).toHaveBeenCalledTimes(1);
     expect(reviewer).toHaveBeenCalled();
     expect(partial).not.toHaveProperty('settledFrom');
     expect(titles(partial)).toEqual(['Bounded defect', 'rule: another lane hit']);
@@ -263,7 +269,6 @@ describe('a rerun of an unchanged head after a deferral', () => {
 
     // The lane runs to completion and no longer reports it: the hit is gone,
     // and the fresh hits' ids are the only lane ids.
-    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
     const gone = await review(repository.head);
     expect(reviewer).not.toHaveBeenCalled();
     expect(gone).toMatchObject({ settledFrom: { reportId: partial.reportId } });

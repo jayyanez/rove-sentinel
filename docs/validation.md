@@ -13,7 +13,7 @@ blocking giving the same FAIL without a review, settling again from the settled 
 naming the round that reviewed, `--dry-run` naming the round it would settle from, and a new
 `--intent` or `--force` reviewing afresh with the same classification; a lane hit still present
 enforced again, a lane with hits that stops part-way sending the head to a fresh review that
-enforces what it did report, and a hit its lane no longer reports dropped; the intent the
+enforces what that run reported without running the lanes again, and a hit its lane no longer reports dropped; the intent the
 reviewers read kept through a settlement that states none, the same intent settling and another
 one reviewed; a deferred late-discovery blocker keeping its spent
 round in the report and the lineage record, through a settlement and a forced fresh rerun; a
