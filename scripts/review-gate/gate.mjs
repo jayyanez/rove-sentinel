@@ -90,6 +90,7 @@ import {
   convergenceLineage,
   findingKey,
   lateDiscoveriesConsumed,
+  settledFindings,
   undisposedAdvisories,
 } from './convergence.mjs';
 import {
@@ -1093,6 +1094,226 @@ export function priorBlockingFromReviews(reviews, deferrals) {
   return byKey;
 }
 
+const SETTLE_DISPOSITIONS = new Set(['verified', 'dismissed', 'advisory']);
+
+/**
+ * Why a stored report cannot settle this rerun of its head, or null when it
+ * can (1.21.1): a FAIL of this exact identity, branch, author and risk,
+ * classified as this rerun classifies it (the same round and follow-up
+ * base), whose findings are well formed. A round with a finding that waits
+ * for native evidence is reviewed again, as before: the evidence a rerun
+ * brings is weighed by a fresh adjudication. So is a round that applied a
+ * deferral no longer recorded: without its record the finding would block
+ * again. Pure.
+ */
+export function settleSourceMismatch(report, {
+  identity, branch, author, risk, round, followUpBaseSha, deferrals = new Map(),
+}) {
+  if (!report || typeof report !== 'object') return 'no report';
+  if (report.status !== 'fail') return `its status is ${report.status}`;
+  for (const [key, expected] of Object.entries(identity || {})) {
+    if (report.identity?.[key] !== expected) return `its ${key} differs`;
+  }
+  if ((report.branch ?? null) !== (branch ?? null)) return 'its branch differs';
+  if (report.author !== author) return 'its author differs';
+  if (report.risk !== risk) return 'its risk differs';
+  if ((report.round ?? report.convergence?.round) !== round) return 'its round differs';
+  if ((report.followUpBaseSha ?? null) !== (followUpBaseSha ?? null)) return 'its follow-up base differs';
+  if (!Array.isArray(report.findings) || !report.findings.length) return 'it carries no findings';
+  if (report.findings.some((finding) => finding?.disposition === 'needs_native_evidence')) return 'a finding waits for native evidence';
+  const malformed = report.findings.some((finding) => !finding || typeof finding !== 'object'
+    || typeof finding.title !== 'string' || typeof finding.file !== 'string'
+    || !/^P[0-3]$/.test(String(finding.priority)) || !SETTLE_DISPOSITIONS.has(finding.disposition));
+  if (malformed) return 'a finding is malformed';
+  const unrecorded = report.findings.some((finding) => finding.deferral && !deferrals.has(finding.findingKey || findingKey(finding)));
+  return unrecorded ? 'a deferral it applied is no longer recorded' : null;
+}
+
+// Which provider and account reviewed is the settled round's, never this
+// rerun's selection: no provider runs here.
+const REVIEW_EVIDENCE_FIELDS = new Set(['providerFallback', 'accounts', 'accountFallbacks']);
+
+/**
+ * Settle an unchanged head from the round that reviewed it (1.21.1). No
+ * provider is launched: that round's verdicts stand, the decisions recorded
+ * since apply (settledFindings), and the deterministic lanes run again and
+ * are enforced as that round enforced them. The result is a completed round
+ * of its own: a report, the lineage record (whose budgets the same head
+ * cannot grow), and an attestation when nothing blocks.
+ */
+async function settleFromReport({
+  context, source, identity, lineage, headSha, baseSha, files, patch, followUpPatch, incrementFiles,
+  reviewPolicy, deterministicLanes, progress, baseReport, convergence, round, priorBlocking,
+  lateDiscoveriesUsed, repairRoundsUsed, risk,
+}) {
+  progress(`Settling ${headSha.slice(0, 12)} from report ${source.id}: this exact head, base and policy were reviewed there, so no reviewer runs; the deferrals recorded since apply and the deterministic lanes run again (gate --force reviews the head afresh).`);
+  const clock = createStageClock();
+  const worktree = await createDetachedWorktree(context.repoRoot, headSha);
+  let operationError;
+  let completedResult;
+  try {
+    const lanesSettled = await clock.time('deterministic-lanes', () => deterministicLanes({
+      config: reviewPolicy.config,
+      checkout: worktree.checkout,
+      repoRoot: context.repoRoot,
+      files,
+      patch,
+      baseSha,
+      stateRoot: context.stateRoot,
+    })).then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
+    if (lanesSettled.status === 'rejected') {
+      const laneCode = processTreeCleanupFailureCode(lanesSettled.reason) || null;
+      throw await buildFailClosedError({
+        paths: context.paths,
+        baseReport,
+        summary: laneCode
+          ? 'A deterministic lane process tree could not be verifiably cleaned up; the gate failed closed.'
+          : 'A deterministic lane failed unexpectedly; the gate failed closed.',
+        errors: [lanesSettled.reason?.message || String(lanesSettled.reason)],
+        code: laneCode,
+      });
+    }
+    const lanes = lanesSettled.value || { lanes: [], findings: [] };
+    const deferrals = await readDispositions(context.paths, lineage);
+    // The lanes' hits are classified exactly as the settled round classified
+    // them: the same round, increment, prior blockers and budgets.
+    const renamedTo = renameMapFor(patch, followUpPatch);
+    const priorBlockingKeys = new Set(round === 'follow-up'
+      ? [...priorBlocking.values()].map((finding) => findingKey(
+        renamedTo.has(finding.file) ? { ...finding, file: renamedTo.get(finding.file) } : finding,
+      ))
+      : []);
+    const enforcedFindings = [
+      ...settledFindings(source.findings, deferrals),
+      ...applyConvergencePolicy(lanes.findings, {
+        round,
+        incrementFiles: incrementFiles ? new Set(incrementFiles) : null,
+        priorBlockingKeys,
+        deferrals,
+        lateDiscoveriesUsed,
+        repairRoundsUsed,
+        p3Mode: reviewPolicy.config.p3Mode ?? 'require-disposition',
+      }),
+    ];
+    const verified = blockingFindings(enforcedFindings);
+    const advisories = advisoryFindings(enforcedFindings);
+    const dismissed = enforcedFindings.filter((finding) => finding.disposition === 'dismissed');
+    const status = verified.length ? 'fail' : 'pass';
+    const pending = undisposedAdvisories(enforcedFindings, deferrals);
+    const laneNotes = lanes.lanes.filter((lane) => lane.status !== 'skipped').map((lane) => `${lane.lane}: ${lane.note}`);
+    const summary = [
+      `Settled from report ${source.id}, the round that reviewed this exact head, base and policy${source.createdAt ? ` (${source.createdAt})` : ''}: no reviewer ran, its verdicts stand and the deferrals recorded since apply.`,
+      advisories.length
+        ? `${advisories.length} lower-severity finding(s) remain visible as non-blocking advisories under the bounded-convergence policy${pending.length ? `; ${pending.length} of them need a fix or a recorded deferral before this head can be pushed` : ''}.`
+        : '',
+      laneNotes.length ? `Deterministic lanes — ${laneNotes.join('; ')}.` : '',
+    ].filter(Boolean).join(' ');
+    const resultConvergence = {
+      ...convergence,
+      lateDiscoveriesUsed: lateDiscoveriesUsed + lateDiscoveriesConsumed(enforcedFindings),
+      blockingReasons: verified.map((finding) => finding.blockingReason),
+      undisposedAdvisories: pending.length,
+    };
+    const settledFrom = { reportId: source.id, reviewedAt: source.createdAt ?? null };
+    const providerExecutions = (Array.isArray(source.providerExecutions) ? source.providerExecutions : [])
+      .filter((record) => record && typeof record === 'object')
+      .map((record) => ({ ...record, reused: true }));
+    const shards = (Array.isArray(source.shards) ? source.shards : [])
+      .filter((shard) => shard && typeof shard === 'object')
+      .map((shard) => ({ ...shard, reused: true, reviewedAt: shard.reviewedAt ?? source.createdAt ?? null }));
+    const reviewEvidence = {
+      providerSelection: Array.isArray(source.providerSelection) ? source.providerSelection : baseReport.providerSelection,
+      providerSelectionVerified: source.providerSelectionVerified ?? baseReport.providerSelectionVerified,
+      modelDiversity: source.modelDiversity ?? baseReport.modelDiversity,
+      ...Object.fromEntries([...REVIEW_EVIDENCE_FIELDS].filter((field) => source[field]).map((field) => [field, source[field]])),
+    };
+    const report = await writeReport(context.paths, {
+      ...Object.fromEntries(Object.entries(baseReport).filter(([field]) => !REVIEW_EVIDENCE_FIELDS.has(field))),
+      ...reviewEvidence,
+      plan: source.plan ?? baseReport.plan,
+      providerExecutions,
+      settledFrom,
+      convergence: resultConvergence,
+      status,
+      summary,
+      round,
+      followUpBaseSha: convergence.followUpBaseSha,
+      shards,
+      deterministicLanes: lanes.lanes,
+      stages: clock.snapshot(),
+      reviewerSummaries: Array.isArray(source.reviewerSummaries) ? source.reviewerSummaries : [],
+      errors: Array.isArray(source.errors) ? source.errors : [],
+      findings: enforcedFindings,
+      lowConfidenceCandidates: source.lowConfidenceCandidates ?? null,
+      actionableCount: verified.length,
+      advisoryCount: advisories.length,
+      nativeEvidence: null,
+    });
+    // The same head's record is replaced, never added: its reviewed-head
+    // count and late discoveries are what the settled round left them.
+    await recordLineageReview(context.paths, lineage, {
+      headSha,
+      reportId: report.id,
+      status,
+      blockingFindings: verified.map((finding) => ({
+        key: finding.findingKey || findingKey(finding),
+        title: finding.title,
+        file: finding.file,
+        priority: finding.priority,
+        line: finding.line ?? null,
+        scenario: finding.scenario ?? '',
+      })),
+      lateDiscoveries: resultConvergence.lateDiscoveriesUsed,
+      reviewedHeads: repairRoundsUsed + 1,
+    });
+    if (status !== 'pass') {
+      completedResult = { ...report, reportId: report.id };
+      return completedResult;
+    }
+    const reviewers = [...new Set(providerExecutions.map((record) => record.provider).filter((provider) => PROVIDERS.includes(provider)))];
+    completedResult = await writeAttestation(context.paths, identity, {
+      risk: risk.level,
+      mode: advisories.length ? 'reviewed-with-advisories' : 'reviewed',
+      round,
+      summary,
+      providers: reviewers.length ? reviewers : [...new Set(source.plan?.reviewers ?? [])],
+      providerExecutions,
+      ...reviewEvidence,
+      reportId: report.id,
+      settledFrom,
+      modelSettings: modelSettings(reviewPolicy.config),
+      lineage,
+      followUpBaseSha: convergence.followUpBaseSha,
+      shards,
+      findings: advisories,
+      dismissedFindings: dismissed,
+      actionableCount: 0,
+      advisoryCount: advisories.length,
+      convergence: resultConvergence,
+      stages: report.stages,
+      deterministicLanes: lanes.lanes,
+      nativeEvidence: null,
+    });
+    return completedResult;
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    const cleanupErrors = [];
+    try {
+      await worktree.cleanup();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    await reconcileCleanupFailure({
+      cleanupErrors,
+      operationError,
+      completedResult,
+      revokePass: () => removeAttestation(context.paths, identity),
+    });
+  }
+}
+
 export async function runGate(options = {}) {
   const context = await createGateContext(options.repoRoot || process.cwd(), { stateRoot: options.stateRoot });
   const release = await acquireReviewLease(context.paths);
@@ -1691,11 +1912,26 @@ async function runGateWithLease({
     ...(providerFallbackEvidence ? { providerFallback: providerFallbackEvidence } : {}),
     ...accountEvidence,
   };
+  // A rerun of a head this lineage already reviewed to a FAIL settles from
+  // that round (1.21.1): the commit, base and policy are the same, so a new
+  // review would only draw another sample of the same code — a sample no
+  // head without a deferral ever gets, and one that found other blockers in
+  // unchanged code instead of confirming the decision just recorded. The
+  // round's verdicts stand, the deferrals recorded since apply, and the
+  // deterministic lanes run again. `--force` reviews afresh, and a restart
+  // after a provider failure never settles.
+  const settleSource = !force && !providerFallback && !accountFallback && ownRecord?.status === 'fail'
+    ? await readReport(context.paths, ownRecord.reportId).catch(() => null)
+    : null;
+  const settleFrom = settleSource && settleSourceMismatch(settleSource, {
+    identity, branch, author, risk: risk.level, round, followUpBaseSha, deferrals,
+  }) === null ? settleSource : null;
 
   if (dryRun) {
     return {
       status: 'planned',
       ...baseReport,
+      ...(settleFrom ? { settlesFrom: settleFrom.id } : {}),
       ...(typeof prIntent === 'string' && prIntent.trim() ? { prIntent: prIntent.trim() } : {}),
     };
   }
@@ -1716,6 +1952,14 @@ async function runGateWithLease({
       reportId: report.id,
       providerSelection: selectedProviders,
       modelSettings: modelSettings(reviewPolicy.config),
+    });
+  }
+
+  if (settleFrom) {
+    return await settleFromReport({
+      context, source: settleFrom, identity, lineage, headSha, baseSha, files, patch, followUpPatch, incrementFiles,
+      reviewPolicy, deterministicLanes, progress, baseReport, convergence, round, priorBlocking,
+      lateDiscoveriesUsed, repairRoundsUsed, risk,
     });
   }
 
@@ -2870,6 +3114,9 @@ function fallbackEvidence({ dropped, reason, resetAt, retryAfter, message }) {
 export function formatGateResult(result) {
   const head = result.identity?.headSha?.slice(0, 12) || 'unknown';
   if (result.status === 'planned') {
+    if (result.settlesFrom) {
+      return `PLAN ${head}: ${result.risk} risk; ${result.round || 'full'} round; settles from report ${result.settlesFrom} of this exact head with the recorded deferrals; no reviewer runs (gate --force reviews it afresh).`;
+    }
     return `PLAN ${head}: ${result.risk} risk; ${result.round || 'full'} round; ${result.plan.reviewers.join(' + ') || 'no'} reviewers; up to ${result.plan.maxShards ?? 0} shard(s); coordinator ${result.plan.coordinator || 'none'}.`;
   }
   const dismissed = (result.dismissedFindings || (result.findings || []).filter((finding) => finding.disposition === 'dismissed'));

@@ -68,6 +68,13 @@ Use the actual IDs and any base/head arguments printed by your report. A changed
 head or incompatible report must be reviewed again; a deferral cannot manufacture
 a review of a different commit.
 
+After deferring a blocking finding, rerun the gate on the same head. An
+unchanged head settles from the report the deferral named, without another
+model review: that round's verdicts stand, your deferrals apply, and the head
+passes once nothing undeferred blocks. Rerunning an unchanged head without a
+deferral gives the same verdict. Use `gate --force` only when you want a fresh
+review of the same commit.
+
 ## GitHub pull requests
 
 The installed watcher polls ready, non-draft PRs on github.com. By default it

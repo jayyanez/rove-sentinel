@@ -346,7 +346,7 @@ export async function deferFindings({
     reportId: report.id,
     deferred: deferred.map(({ key, title, file, priority, reason: why }) => ({ key, title, file, priority, reason: why })),
     next: blockedAny
-      ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied (a deferred blocking finding needs a fresh verdict).`
+      ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied: an unchanged head settles from report ${report.id} without another review (gate --force reviews it afresh).`
       : 'The deferrals apply immediately: the attested head can be pushed, and the PR comment will list them.',
   };
 }

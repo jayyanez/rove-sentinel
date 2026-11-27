@@ -1,7 +1,7 @@
 import { GATE_VERSION, LIMITS, PROVIDER_PROFILE } from './constants.mjs';
 import { CODEX_MODEL_CLIENTS } from './modelSettings.mjs';
 
-// What this engine version accepts and where it stops (1.21.0), from the
+// What this engine version accepts and where it stops (1.21.1), from the
 // limits it enforces, so an agent in a consuming project can ask the
 // installed engine (`rove-sentinel limits`) instead of carrying a rule it
 // learned from an earlier version. Every release reviews this file: the
@@ -78,6 +78,11 @@ export function sentinelLimits() {
         id: 'rerun',
         limit: `${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours`,
         text: `A round that failed closed keeps its completed shard reviews for ${Math.round(LIMITS.shardCheckpointMaxAgeMs / 3_600_000)} hours for the exact head; a rerun reviews only the rest.`,
+      },
+      {
+        id: 'settle',
+        limit: 'no reviewer',
+        text: 'A rerun of a head whose round ended in a FAIL, after a deferral or with nothing changed, settles from that round: no reviewer runs, its verdicts stand, the deferrals recorded since apply and the deterministic lanes run again. gate --force reviews the head afresh.',
       },
       {
         id: 'provider-fallback',

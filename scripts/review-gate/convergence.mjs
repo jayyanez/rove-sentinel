@@ -1,6 +1,8 @@
 import { LIMITS } from './constants.mjs';
 
 const ALWAYS_BLOCKING = new Set(['P0', 'P1']);
+// What only a blocking finding carries; a deferred one sheds them.
+const BLOCKING_FIELDS = new Set(['enforcement', 'blockingReason', 'deferrable']);
 
 // Titles fold case and whitespace only: operators and punctuation carry
 // meaning ("!= null" vs "== null" are distinct defects), so they stay.
@@ -156,6 +158,37 @@ export function carriedFinding(finding, index, { deferral: recorded = null } = {
       ? { requiresDisposition: false, advisoryReason: `Deferred by the author at ${String(deferral.headSha || '').slice(0, 12)}: ${deferral.reason}`, deferral: { headSha: deferral.headSha, reason: deferral.reason, at: deferral.at } }
       : { blockingReason: alwaysBlocking ? 'always' : 'persisting', deferrable: !alwaysBlocking }),
   };
+}
+
+/**
+ * The findings of a rerun that settles an unchanged head (1.21.1) from the
+ * round that reviewed it: every model finding keeps that round's verdict and
+ * enforcement, and a decision the author recorded since applies exactly as
+ * applyConvergencePolicy applies one (P0/P1 never soften). Deterministic hits
+ * are not taken over: the lanes run again and are enforced afresh. Pure.
+ */
+export function settledFindings(findings, deferrals = new Map()) {
+  return (findings || [])
+    .filter((finding) => finding && typeof finding === 'object' && finding.adjudicatedDisposition !== 'deterministic')
+    .map((finding) => {
+      if (ALWAYS_BLOCKING.has(finding.priority)) return finding;
+      const key = finding.findingKey || findingKey(finding);
+      const deferral = deferrals.get(key);
+      if (!deferral) return finding;
+      const open = finding.disposition === 'verified'
+        || (finding.disposition === 'advisory' && (finding.requiresDisposition === true || Boolean(finding.deferral)));
+      if (!open) return finding;
+      return {
+        ...Object.fromEntries(Object.entries(finding).filter(([name]) => !BLOCKING_FIELDS.has(name))),
+        disposition: 'advisory',
+        enforcement: 'advisory',
+        adjudicatedDisposition: finding.adjudicatedDisposition || 'verified',
+        findingKey: key,
+        advisoryReason: `Deferred by the author at ${String(deferral.headSha || '').slice(0, 12)}: ${deferral.reason}`,
+        requiresDisposition: false,
+        deferral: { headSha: deferral.headSha, reason: deferral.reason, at: deferral.at },
+      };
+    });
 }
 
 /**

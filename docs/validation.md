@@ -1,5 +1,24 @@
 # Standalone validation record
 
+## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
+
+Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (7 new tests)
+cover: a follow-up head that failed on a persisting P2, deferred, and rerun settling with no
+reviewer or adjudicator call while the injected reviewer would have named a new defect, the
+deferral applied, the deterministic lanes run once, the round, follow-up base, repair-round and
+late-discovery counts unchanged, the head's lineage record replaced (one record, the same
+reviewed-head count), an attestation the pre-push disposition check accepts, and the next head
+counting the settled head once; a rerun with a P1 left blocking giving the same FAIL without a
+review, settling again from the settled report, `--dry-run` naming the report it would settle
+from, and `--force` reviewing afresh with the same classification; a lane hit not taken over
+from the settled round but run again; which reports can settle (status, each identity field,
+branch, author, risk, round, follow-up base, native evidence, malformed findings, a deferral
+no longer recorded); and how a
+recorded deferral applies to settled findings (never to P0/P1, not to a dismissal, a lane's
+hits dropped). The three integration tests fail on 1.21.0's sources (the reviewer runs again on
+the unchanged head). 1,147 tests passed in 42 files on Windows on the development host, and the package smoke
+passed (`rove-sentinel@1.21.1`).
+
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
 
 Deterministic tests in `scripts/review-gate/__tests__/reviewIntelligence.test.ts` (40 new tests)
