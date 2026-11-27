@@ -3,7 +3,7 @@ import { ensureCommitAvailable, inferAuthor, mergeBase, repoSlugFromRemote } fro
 import { applyRecordedDeferrals } from './dispositions.mjs';
 import { processTreeCleanupFailureCode, providerCleanupFailureRecord, runProcess, safetyPauseReason } from './process.mjs';
 import { formatProviderFallback } from './usageLimits.mjs';
-import { formatAccounts } from './accounts.mjs';
+import { withoutAccountLabels } from './accounts.mjs';
 import {
   attestationIdentity,
   readAttestation,
@@ -206,10 +206,12 @@ export function renderGateComment(result) {
     `- Risk: ${result.risk || 'unknown'}`,
     `- Gate: ${identity.gateVersion || 'unknown'} / charter ${identity.charterVersion || 'unknown'}`,
     ...(result.providerSelection?.length ? [`- Selected providers: ${result.providerSelection.join(', ')}${result.providerSelection.length === 1 ? ' (single-provider review; no cross-model diversity)' : ''}`] : []),
-    ...(result.providerFallback?.dropped?.length ? [`- ${githubText(formatProviderFallback(result.providerFallback), 300)}`] : []),
-    ...formatAccounts(result).map((line) => `- ${githubText(line, 300)}`),
+    ...(result.providerFallback?.dropped?.length ? [`- ${githubText(withoutAccountLabels(formatProviderFallback(result.providerFallback)), 300)}`] : []),
+    // No account line (1.21.1): a comment is as public as its repository, and
+    // the accounts a person reviews with are their own setup. The local
+    // report, the attestation and the text result keep them by label.
     '',
-    githubText(result.summary || 'No summary was produced.', LIMITS.githubSummaryChars),
+    githubText(withoutAccountLabels(result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;

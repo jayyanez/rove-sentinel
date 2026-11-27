@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { withoutAccountLabels } from '../accounts.mjs';
 import { COMMENT_MARKER } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
 import {
@@ -84,6 +85,40 @@ describe('shared review PR comment', () => {
     expect(body).toContain('`aaaaaaaaaaaa`');
     expect(body).toContain('Race');
     expect(body).not.toContain('Noise');
+  });
+
+  it('never names a review account: a comment is as public as its repository', () => {
+    const body = renderGateComment({
+      status: 'error',
+      risk: 'high',
+      summary: 'The review failed closed. codex account "mainx9" usage limit reached; retry after 2026-11-28T00:00:00Z; every configured codex account is held (mainx9, sparey8).',
+      identity: { headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) },
+      providerSelection: ['claude', 'codex'],
+      providerFallback: { dropped: ['codex'], reason: 'usage-limit', retryAfter: '2026-11-28T00:00:00Z', restarted: true },
+      accounts: {
+        claude: { label: 'personalz7', authorOwn: true },
+        codex: { label: 'sparey8', authorOwn: false },
+      },
+      accountFallbacks: [{ provider: 'codex', from: 'mainx9', to: 'sparey8', reason: 'usage-limit', retryAfter: '2026-11-28T00:00:00Z' }],
+    });
+    for (const label of ['personalz7', 'sparey8', 'mainx9']) expect(body).not.toContain(label);
+    expect(body).not.toMatch(/Accounts|Account fallback|Author.{0,2}s account/);
+    // What happened stays readable, without whose accounts it happened to.
+    expect(body).toContain('usage limit reached');
+    expect(body).toContain('account is held');
+    expect(body).toContain('Provider fallback');
+  });
+
+  it('removes every account label form Sentinel writes, and nothing else', () => {
+    expect(withoutAccountLabels('claude account "team.1" failed a recent review and is held back'))
+      .toBe('claude account failed a recent review and is held back');
+    expect(withoutAccountLabels('every configured codex account is held (main, spare)'))
+      .toBe('every configured codex account is held');
+    expect(withoutAccountLabels('No other claude account is usable; this review uses the author\'s own claude account "me".'))
+      .toBe('No other claude account is usable; this review uses the author\'s own claude account.');
+    expect(withoutAccountLabels('A finding about "quoted" text (with parentheses).'))
+      .toBe('A finding about "quoted" text (with parentheses).');
+    expect(withoutAccountLabels(undefined)).toBe('');
   });
 
   it('labels provider failures as errors rather than native uncertainty', () => {

@@ -41,6 +41,12 @@ branch's next review after the update is a new lineage.
 - **A rerun of the same head keeps the late-discovery round it spent.** A fresh rerun of a head
   (`--force`, or one that cannot settle) no longer gives back a late-discovery round when its
   finding is now deferred, as its reviewed-head count was already kept.
+- **The pull request comment names no review account.** The comment the watcher publishes
+  on a pull request is as public as its repository, and which accounts a person reviews with
+  is their own setup. It no longer lists the accounts, an account fallback or the author's own
+  account, and the account labels in a summary Sentinel wrote (an account's hold or usage
+  limit) are left out. The local report, the attestation and the text result keep them by
+  label, as before.
 
 ## 1.21.0 — Deeper context, cross-file integration review, and faster verification
 
