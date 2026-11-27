@@ -45,7 +45,7 @@ branch's next review after the update is a new lineage.
   comment the watcher publishes on a pull request is as public as its repository, and which
   accounts a person reviews with is their own setup. It no longer lists the accounts, an
   account fallback or the author's own account. An ERROR comment says the review could not
-  complete and that the reason is recorded on the reviewing machine, in the watcher's events
+  complete and that the reason is recorded on the reviewing machine, in the watcher's records
   (a round that failed closed also keeps it in its report), instead of the error itself: an
   error can name accounts (every account held, an account signed out, an accounts file
   refused), a local path, or a provider CLI's own output. The summary of a review that

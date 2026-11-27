@@ -188,9 +188,9 @@ export function findOwnedGateComment(comments, publisherLogin) {
 // An ERROR comment publishes no error text (1.21.1): an error can name the
 // accounts a person reviews with, a local path or a provider CLI's own output,
 // and a comment is as public as its repository. The reason stays on the
-// reviewing machine: the watcher records it as an event, and a round that
-// failed closed in its report.
-export const GITHUB_ERROR_SUMMARY = 'The local review could not complete and did not produce an attestation. The reason is recorded on the reviewing machine, in the watcher\'s events: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI\'s output).';
+// reviewing machine: the watcher keeps it in the pull request's outcome
+// record and an event, and a round that failed closed in its report.
+export const GITHUB_ERROR_SUMMARY = 'The local review could not complete and did not produce an attestation. The reason is recorded on the reviewing machine, in the watcher\'s records: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI\'s output).';
 
 export function renderGateComment(result) {
   const advisoryFindings = (result.findings || [])
@@ -453,12 +453,15 @@ export async function syncPullRequests({
       };
       // The ERROR comment publishes no error text (1.21.1), so the reason is
       // recorded here, on the reviewing machine, whatever stopped the review.
+      // Best effort: the outcome record below keeps the reason too, and an
+      // event that cannot be written must not stop the outcome, the comment
+      // or the other pull requests.
       await recordEvent(context.paths, {
         type: 'github-review-error',
         pr: pr.number,
         headSha: pr.headRefOid,
         message: (error?.message || String(error)).slice(0, 2000),
-      });
+      }).catch(() => {});
     }
     if (shouldStop()) throw new Error('GitHub review synchronization interrupted for watcher shutdown.');
     if (result.status === 'pass') {
@@ -491,12 +494,15 @@ export async function syncPullRequests({
       const message = error?.message || String(error);
       publishErrors.push(`PR #${pr.number}: ${message}`);
       outcomes.push({ pr: pr.number, status: result.status, published: false, publishError: message });
+      // Best effort, as every event in this loop (1.21.1): the publish error
+      // is still reported through publishErrors, and an event that cannot be
+      // written must not stop the other pull requests.
       await recordEvent(context.paths, {
         type: 'github-publish-error',
         pr: pr.number,
         headSha: pr.headRefOid,
         message,
-      });
+      }).catch(() => {});
       continue;
     }
     outcomes.push({ pr: pr.number, status: result.status, published: published.changed });
@@ -507,7 +513,7 @@ export async function syncPullRequests({
         headSha: pr.headRefOid,
         status: result.status,
         published: true,
-      });
+      }).catch(() => {});
     }
   }
   if (publishErrors.length) {
