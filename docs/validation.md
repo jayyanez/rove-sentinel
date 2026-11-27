@@ -30,9 +30,8 @@ recorded deferrals still have a renamed path to follow (the fresh round's rule, 
 existing file ignoring its former paths); and how a recorded deferral applies to
 settled findings (never to P0/P1, not to a dismissal, every lane hit dropped for the fresh
 ones). The settling tests fail on 1.21.0's sources (the reviewer runs again on the
-unchanged head). 1,153 tests passed in 42 files on Windows on the development host at the head before the last
-repair, and the package smoke passed (`rove-sentinel@1.21.1`); the last repair's test file
-(14 tests) passed alone, the host being loaded.
+unchanged head). 1,156 tests passed in 42 files on Windows on the development host, and the package smoke
+passed (`rove-sentinel@1.21.1`).
 
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
 
