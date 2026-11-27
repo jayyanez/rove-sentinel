@@ -2,22 +2,19 @@
 
 ## 1.21.2 three watcher fixes — 2026-11-27
 
-Deterministic tests, each failing without its fix: `process.test.ts`'s output-limit test now
-gives its child a life of its own, so it no longer races the child's exit (a live load run of
-600 children that overflow and exit at once, 160 at a time on Windows with Node 24, called 17
-orphaned; with the child kept running, 0 of 400 at 8 and 32 at a time; at 160 at a time
-taskkill itself fails for lack of system resources, far above the provider bound of 8);
-`github.test.ts` reaches every pull request and reports the publish error with the events
-folder replaced by a file, republishes a stored failing outcome with its public summary, and
-withholds a deterministic finding's message for every form of local path a tool prints while
-publishing the others and a model's finding as written, and names no file outside the
-repository; `daemon.test.ts` keeps the GitHub failure record when the events folder breaks
-during the poll; `gate.test.ts` names lanes by status in the public summary, keeps a failing
-lane's local folder out of a real `runGate` round's comment, withholds a lane finding naming
-the review checkout from that comment while the report keeps it, keeps a cleanup failure's
-folders local, and publishes no summary not written for the comment except a skipped
-change's; `settleDeferrals.test.ts` gives a settled round the same public summary. 1,169 tests
-passed in 42 files on Windows on the development host, and the package smoke passed
+`process.test.ts`'s output-limit test gives its child up to 30 seconds of its own, so it no
+longer races the child's exit. It failed only under load before: a live run of 600 children
+that overflow and exit at once, 160 at a time on Windows with Node 24, called 17 orphaned;
+with the child kept running, 0 of 400 at 8 and 32 at a time (at 160 at a time taskkill itself
+fails for lack of system resources, far above the provider bound of 8). Deterministic tests,
+each failing without its fix: `github.test.ts` reaches every pull request and reports the
+publish error with the events folder replaced by a file, and republishes a stored failing
+outcome with its public summary; `daemon.test.ts` keeps the GitHub failure record when the
+events folder breaks during the poll; `gate.test.ts` names lanes by status in the public
+summary, keeps a failing lane's local folder out of a real `runGate` round's comment, keeps a
+cleanup failure's folders local, and publishes no summary not written for the comment except a
+skipped change's; `settleDeferrals.test.ts` gives a settled round the same public summary.
+1,167 tests passed in 42 files on Windows on the development host, and the package smoke passed
 (`rove-sentinel@1.21.2`).
 
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27

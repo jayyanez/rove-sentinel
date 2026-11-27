@@ -75,13 +75,13 @@ describe('bounded review subprocesses', () => {
   });
 
   it('terminates output that exceeds the configured bound', async () => {
-    // The child keeps running, as an overflowing provider does, so it is ended
-    // by the termination this test is about. A child that exits at once races
+    // The child keeps running (for at most 30 s), as an overflowing provider
+    // does, so it is ended by the termination this test is about. A child that exits at once races
     // its own exit against that termination: on a loaded host its pipes can
     // close after the 100 ms check, its tree is then called orphaned (failing
     // closed), and the test failed that way on a Node 24 CI run (1.21.2).
     await expect(
-      runProcess(process.execPath, ['-e', 'process.stdout.write("x".repeat(1000)); setInterval(() => {}, 1000)'], {
+      runProcess(process.execPath, ['-e', 'process.stdout.write("x".repeat(1000)); setTimeout(() => {}, 30_000)'], {
         timeoutMs: 5_000,
         maxOutputBytes: 100,
         outputLimitMessage: 'Split this oversized review input.',

@@ -139,39 +139,6 @@ describe('what a pull request comment says about the lanes (1.21.2)', () => {
     expect(body).toContain(githubText('eslint: error', 100));
   });
 
-  it('keeps a lane finding that names the review checkout local, and withholds its message in the comment', async () => {
-    const repository = await makeRepository();
-    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-lane-finding-'));
-    temporaryDirectories.push(stateRoot);
-    const reviewer = vi.fn(async ({ provider, roleIndex }) => ({ provider, roleIndex, summary: 'Reviewed', candidates: [] }));
-    let seenCheckout = '';
-    const result = await runGate({
-      repoRoot: repository.root, stateRoot, base: repository.base, head: repository.head, policy: repository.policy,
-      author: 'human', risk: 'high', availableProviders: ['claude'], reviewer,
-      scout: async () => ({ summary: 'No hypotheses', hypotheses: [] }),
-      // A type checker names the review checkout in its message.
-      deterministicLanes: async ({ checkout }: { checkout: string }) => {
-        seenCheckout = checkout;
-        return {
-          lanes: [{ lane: 'tsc', status: 'ok', note: '1 hit(s) in 1 file(s); 1 on added lines', findings: [] }],
-          findings: [{
-            candidate_id: 'deterministic-0', source: 'tsc', adjudicatedDisposition: 'deterministic', disposition: 'verified',
-            priority: 'P2', file: 'src/lib/example.ts', line: 1,
-            title: `tsc: Type 'import("${checkout.split(path.sep).join('/')}/src/lib/example").A' is not assignable`,
-            reason: 'r', scenario: 's', proposed_test: 't',
-          }],
-        };
-      },
-    });
-    expect(seenCheckout).not.toBe('');
-    const leaf = path.basename(path.dirname(seenCheckout));
-    // The local report keeps the tool's message as it was.
-    expect(JSON.stringify(result.findings)).toContain(leaf);
-    const body = renderGateComment(result);
-    expect(body).not.toContain(githubText(leaf, 200));
-    expect(body).toContain(githubText('tsc reported a finding here', 200));
-  });
-
   it('says in the comment only that cleanup failed, and keeps the folders local', async () => {
     const result = { status: 'fail', reportId: 'report-1', summary: 'Verified defect.', publicSummary: 'Verified defect.' };
     await reconcileCleanupFailure({

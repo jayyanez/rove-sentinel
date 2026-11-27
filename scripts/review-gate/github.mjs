@@ -195,33 +195,6 @@ export function findOwnedGateComment(comments, publisherLogin) {
 // GitHub refused to update can outlive it.
 export const GITHUB_ERROR_SUMMARY = "The local review could not complete and did not produce an attestation. The reason was recorded on the reviewing machine, in the watcher's outcome record for this head, which lasts until the head is reviewed again or the record is pruned: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI's output).";
 
-// A path a tool printed, in any form a public comment must not carry
-// (1.21.2): a drive, a UNC or long-path prefix, a file URL, an encoded
-// separator, a home-relative path or an absolute POSIX path. Detecting is
-// enough, and errs toward withholding: the comment then leaves out the whole
-// message.
-const LOCAL_PATH = /(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\|file:|%2[Ff]|%5[Cc]|(?:^|[\s"'`(=<[,])~[\\/]|(?:^|[\s"'`(=<[,])\/(?!\/)[^\s/]+\//;
-
-// A finding as a public comment shows it (1.21.2). A deterministic lane's
-// finding is a tool's message: when it names a local path it is withheld,
-// and the local report keeps it. A file outside the repository (absolute, or
-// above it) is not named either.
-export function publicFinding(finding) {
-  const raw = typeof finding.file === 'string' ? finding.file : '';
-  const file = !raw || (!/^(?:[A-Za-z]:|[\\/]|~)/.test(raw) && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(raw))
-    ? raw
-    : '(outside the repository)';
-  if (finding.adjudicatedDisposition !== 'deterministic'
-    || ![finding.title, finding.reason].some((text) => typeof text === 'string' && LOCAL_PATH.test(text))) {
-    return { file, title: finding.title, reason: finding.reason };
-  }
-  return {
-    file,
-    title: `${finding.source || 'A deterministic lane'} reported a finding here`,
-    reason: 'Its message names a local path, so it is kept in the local report.',
-  };
-}
-
 // The summary a comment publishes (1.21.2). A review writes a public summary
 // beside its own; a skipped change's summary is Sentinel's fixed text. Any
 // other result without one publishes nothing of its summary, rather than
@@ -280,7 +253,7 @@ export function renderGateComment(result) {
         ? ` [${githubText(finding.blockingReason, 32)}]`
         : '';
       lines.push(
-        `- **${githubText(finding.priority, 8)}** \`${githubCodeText(publicFinding(finding).file, 500)}${finding.line ? `:${finding.line}` : ''}\` — ${githubText(publicFinding(finding).title, 300)}. ${githubText(publicFinding(finding).reason, LIMITS.githubFindingChars)}${why}`,
+        `- **${githubText(finding.priority, 8)}** \`${githubCodeText(finding.file, 500)}${finding.line ? `:${finding.line}` : ''}\` — ${githubText(finding.title, 300)}. ${githubText(finding.reason, LIMITS.githubFindingChars)}${why}`,
       );
     }
     if (actionableCount > actionable.length) {
@@ -300,7 +273,7 @@ export function renderGateComment(result) {
     lines.push('', '### Advisory follow-up (non-blocking)', '');
     for (const finding of advisories) {
       lines.push(
-        `- **${githubText(finding.priority, 8)}** \`${githubCodeText(publicFinding(finding).file, 500)}${finding.line ? `:${finding.line}` : ''}\` — ${githubText(publicFinding(finding).title, 300)}. ${githubText(publicFinding(finding).reason, LIMITS.githubFindingChars)} ${githubText(finding.advisoryReason || '', LIMITS.githubFindingChars)}`.trimEnd(),
+        `- **${githubText(finding.priority, 8)}** \`${githubCodeText(finding.file, 500)}${finding.line ? `:${finding.line}` : ''}\` — ${githubText(finding.title, 300)}. ${githubText(finding.reason, LIMITS.githubFindingChars)} ${githubText(finding.advisoryReason || '', LIMITS.githubFindingChars)}`.trimEnd(),
       );
     }
     const deferredTotal = Math.max(Number(result.deferredCount) || 0, deferred.length);
@@ -319,7 +292,7 @@ export function renderGateComment(result) {
     lines.push('', '### Deferred by the author (verified, not fixed)', '');
     for (const finding of shownDeferred) {
       lines.push(
-        `- **${githubText(finding.priority, 8)}** \`${githubCodeText(publicFinding(finding).file, 500)}${finding.line ? `:${finding.line}` : ''}\` — ${githubText(publicFinding(finding).title, 300)}. ${githubText(publicFinding(finding).reason, LIMITS.githubFindingChars)} Reason: ${githubText(finding.deferral.reason || '', LIMITS.githubFindingChars)}`,
+        `- **${githubText(finding.priority, 8)}** \`${githubCodeText(finding.file, 500)}${finding.line ? `:${finding.line}` : ''}\` — ${githubText(finding.title, 300)}. ${githubText(finding.reason, LIMITS.githubFindingChars)} Reason: ${githubText(finding.deferral.reason || '', LIMITS.githubFindingChars)}`,
       );
     }
     if (deferredCount > shownDeferred.length) {
