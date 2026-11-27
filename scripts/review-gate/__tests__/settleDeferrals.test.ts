@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reviewPolicySnapshot } from '../context.mjs';
 import { convergenceLineage, findingKey, settledFindings } from '../convergence.mjs';
 import { deferFindings, undisposedRefusal } from '../dispositions.mjs';
-import { formatGateResult, runGate, settleSourceMismatch } from '../gate.mjs';
+import {
+  deferralsFollowRenames, formatGateResult, runGate, settleAllowed, settleSourceMismatch,
+} from '../gate.mjs';
 import { ensureState, readAttestation, readLineageReviews, readReport } from '../storage.mjs';
 
 // A rerun of an unchanged head after a deferral settles from the round that
@@ -23,6 +25,7 @@ if (process.platform === 'win32') {
 }
 
 const temporaryDirectories: string[] = [];
+const REASON = 'Tracked as a follow-up issue; out of scope here.';
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -45,6 +48,7 @@ async function makeRepository() {
   git(root, 'commit', '-m', 'base');
   const base = git(root, 'rev-parse', 'HEAD');
   await writeFile(path.join(root, 'src', 'lib', 'example.ts'), 'export const answer = 42;\n');
+  await writeFile(path.join(root, 'src', 'lib', 'other.ts'), 'export const other = 1;\n');
   git(root, 'add', '.');
   git(root, 'commit', '-m', 'change');
   const head = git(root, 'rev-parse', 'HEAD');
@@ -61,16 +65,18 @@ async function commit(root: string, value: number) {
   return git(root, 'rev-parse', 'HEAD');
 }
 
-// One reviewer that names whatever titles the test sets, and a coordinator
-// that verifies every candidate at the priority the reviewer gave.
-function providers(titles: { value: Array<{ title: string; priority?: string }> }) {
+type Named = { title: string; priority?: string; file?: string; disposition?: string };
+
+// One reviewer that names whatever the test sets, and a coordinator that
+// gives each candidate the disposition the test set (verified by default).
+function providers(named: { value: Named[] }) {
   const reviewer = vi.fn(async ({ provider, roleIndex }) => ({
     provider,
     roleIndex,
     summary: 'Reviewed.',
-    candidates: titles.value.map(({ title, priority = 'P2' }, index) => ({
+    candidates: named.value.map(({ title, priority = 'P2', file = 'src/lib/example.ts' }, index) => ({
       id: `${provider}-${roleIndex}-${index}`, provider, roleIndex, title, priority, confidence: 95,
-      category: 'correctness', file: 'src/lib/example.ts', line: 1,
+      category: 'correctness', file, line: 1,
       scenario: 'The changed value is rejected.', evidence: 'The branch returns the wrong value.', proposed_test: 'Exercise it.',
     })),
   }));
@@ -78,23 +84,34 @@ function providers(titles: { value: Array<{ title: string; priority?: string }> 
     summary: 'Verified.',
     findings: candidates.map((candidate) => ({
       candidate_id: candidate.id, title: candidate.title, priority: candidate.priority, file: candidate.file, line: candidate.line,
-      disposition: 'verified', reason: candidate.evidence, scenario: candidate.scenario, proposed_test: candidate.proposed_test,
+      disposition: named.value.find((entry) => entry.title === candidate.title)?.disposition ?? 'verified',
+      reason: candidate.evidence, scenario: candidate.scenario, proposed_test: candidate.proposed_test,
     })),
   }));
   return { reviewer, coordinator };
+}
+
+function harness(repository: Awaited<ReturnType<typeof makeRepository>>, branch: string, named: { value: Named[] }) {
+  const { reviewer, coordinator } = providers(named);
+  const lanes = { value: { lanes: [] as object[], findings: [] as object[] } };
+  const deterministicLanes = vi.fn(async () => lanes.value);
+  const review = (head: string, extra: Record<string, unknown> = {}) => runGate({
+    repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head, branch, author: 'claude',
+    policy: repository.policy, availableProviders: ['codex'], reviewer, coordinator, deterministicLanes, ...extra,
+  });
+  const defer = (head: string, reportId: string) => deferFindings({
+    repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head, branch,
+    reportId, findingIds: ['all'], reason: REASON, policy: repository.policy,
+  });
+  return { reviewer, coordinator, deterministicLanes, lanes, review, defer };
 }
 
 describe('a rerun of an unchanged head after a deferral', () => {
   it('settles from the round that reviewed it: no reviewer runs, the deferral applies, and the budgets do not grow', async () => {
     const repository = await makeRepository();
     const branch = 'claude/settle';
-    const titles = { value: [{ title: 'Bounded defect' }] };
-    const { reviewer, coordinator } = providers(titles);
-    const deterministicLanes = vi.fn(async () => ({ lanes: [], findings: [] }));
-    const review = (head: string, extra: Record<string, unknown> = {}) => runGate({
-      repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head, branch, author: 'claude',
-      policy: repository.policy, availableProviders: ['codex'], reviewer, coordinator, deterministicLanes, ...extra,
-    });
+    const named = { value: [{ title: 'Bounded defect' }] as Named[] };
+    const { reviewer, coordinator, deterministicLanes, review, defer } = harness(repository, branch, named);
 
     await expect(review(repository.head)).resolves.toMatchObject({ status: 'fail', round: 'full' });
     const second = await review(await commit(repository.root, 43));
@@ -107,19 +124,17 @@ describe('a rerun of an unchanged head after a deferral', () => {
     const lineage = convergenceLineage(second.identity, branch);
     const recordBefore = (await readLineageReviews(paths, lineage)).find((record) => record.headSha === secondHead);
 
-    const deferral = await deferFindings({
-      repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head: secondHead, branch,
-      reportId: second.reportId, findingIds: ['all'], reason: 'Tracked as a follow-up issue; out of scope here.', policy: repository.policy,
-    });
-    expect(deferral.next).toContain(`settles from report ${second.reportId}`);
+    const deferral = await defer(secondHead, second.reportId);
+    expect(deferral.next).toContain('settles from its latest round without another review');
 
     // A different sample of the same code would name another defect.
-    titles.value = [{ title: 'A defect nobody named before' }];
+    named.value = [{ title: 'A defect nobody named before' }];
     reviewer.mockClear();
     coordinator.mockClear();
     deterministicLanes.mockClear();
     const progress = vi.fn();
-    const settled = await review(secondHead, { progress });
+    // No provider is available at all: settling needs none, and selects none.
+    const settled = await review(secondHead, { progress, availableProviders: [] });
     expect(reviewer).not.toHaveBeenCalled();
     expect(coordinator).not.toHaveBeenCalled();
     // The lanes are deterministic but run again: a tool may have changed.
@@ -159,7 +174,7 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(report).toMatchObject({ settledFrom: { reportId: second.reportId }, shards: [expect.objectContaining({ reused: true })] });
 
     // The next head counts the settled head once.
-    titles.value = [];
+    named.value = [];
     reviewer.mockClear();
     const third = await review(await commit(repository.root, 44));
     expect(reviewer).toHaveBeenCalled();
@@ -167,25 +182,17 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(third.convergence.repairRoundsUsed).toBe(second.convergence.repairRoundsUsed + 1);
   });
 
-  it('gives an unchanged head the same verdict without a review, and reviews it afresh only under --force', async () => {
+  it('gives an unchanged head the same verdict without a review, and reviews it afresh under --force or a new intent', async () => {
     const repository = await makeRepository();
     const branch = 'claude/settle-force';
-    const titles = { value: [{ title: 'Bounded defect' }, { title: 'Escalated defect', priority: 'P1' }] };
-    const { reviewer, coordinator } = providers(titles);
-    const deterministicLanes = vi.fn(async () => ({ lanes: [], findings: [] }));
-    const review = (head: string, extra: Record<string, unknown> = {}) => runGate({
-      repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head, branch, author: 'claude',
-      policy: repository.policy, availableProviders: ['codex'], reviewer, coordinator, deterministicLanes, ...extra,
-    });
+    const named = { value: [{ title: 'Bounded defect' }, { title: 'Escalated defect', priority: 'P1' }] as Named[] };
+    const { reviewer, review, defer } = harness(repository, branch, named);
     await review(repository.head);
     const second = await review(await commit(repository.root, 43));
     const secondHead = second.identity.headSha;
     expect(second.status).toBe('fail');
     // The P2 is deferred; the P1 cannot be.
-    await deferFindings({
-      repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head: secondHead, branch,
-      reportId: second.reportId, findingIds: ['all'], reason: 'Tracked as a follow-up issue; out of scope here.', policy: repository.policy,
-    });
+    await defer(secondHead, second.reportId);
     const dryRun = await review(secondHead, { dryRun: true });
     expect(dryRun).toMatchObject({ status: 'planned', settlesFrom: second.reportId });
     expect(formatGateResult(dryRun)).toContain(`settles from report ${second.reportId}`);
@@ -198,46 +205,96 @@ describe('a rerun of an unchanged head after a deferral', () => {
       .toEqual([expect.objectContaining({ title: 'Escalated defect', priority: 'P1', blockingReason: 'always' })]);
     expect(again.findings).toContainEqual(expect.objectContaining({ title: 'Bounded defect', disposition: 'advisory', requiresDisposition: false }));
 
-    // A settled FAIL settles the next rerun too: still no reviewer.
+    // A settled FAIL settles the next rerun too, and still names the round
+    // that reviewed, not the run that settled.
     const twice = await review(secondHead);
     expect(reviewer).not.toHaveBeenCalled();
-    expect(twice).toMatchObject({ status: 'fail', settledFrom: { reportId: again.reportId } });
+    expect(twice).toMatchObject({ status: 'fail', settledFrom: { reportId: second.reportId } });
 
-    // --force is a fresh review, as before.
+    // A stated intent the round never read is reviewed.
+    const intended = await review(secondHead, { prIntent: 'A pull request body the round never read' });
+    expect(reviewer).toHaveBeenCalled();
+    expect(intended).not.toHaveProperty('settledFrom');
+    expect(intended).toMatchObject({ round: 'follow-up', prIntentDigest: expect.any(String) });
+
+    // --force is a fresh review, as before, with the same classification.
+    reviewer.mockClear();
     const forced = await review(secondHead, { force: true });
     expect(reviewer).toHaveBeenCalled();
     expect(forced).not.toHaveProperty('settledFrom');
     expect(forced).toMatchObject({ round: 'follow-up', followUpBaseSha: repository.head });
   });
 
-  it('runs the deterministic lanes again and enforces their hits as the settled round did', async () => {
+  it('enforces a lane hit still present, keeps one its lane could not recheck, and drops one its lane no longer reports', async () => {
     const repository = await makeRepository();
     const branch = 'claude/settle-lanes';
-    const titles = { value: [{ title: 'Bounded defect' }] };
-    const { reviewer, coordinator } = providers(titles);
+    const named = { value: [{ title: 'Bounded defect' }] as Named[] };
+    const { reviewer, lanes, review } = harness(repository, branch, named);
     const laneHit = {
       candidate_id: 'deterministic-0', title: 'rule: a lane hit', priority: 'P2', file: 'src/lib/example.ts', line: 1,
       disposition: 'verified', reason: 'r', scenario: 's', proposed_test: 't', source: 'lint', adjudicatedDisposition: 'deterministic',
     };
-    let hits = [laneHit];
-    const deterministicLanes = vi.fn(async () => ({ lanes: [{ lane: 'lint', status: 'ran', note: 'ok' }], findings: hits }));
-    const review = (head: string) => runGate({
-      repoRoot: repository.root, stateRoot: repository.stateRoot, base: repository.base, head, branch, author: 'claude',
-      policy: repository.policy, availableProviders: ['codex'], reviewer, coordinator, deterministicLanes,
-    });
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '1 hit' }], findings: [laneHit] };
     const first = await review(repository.head);
-    expect(first.findings.map((finding: { title: string }) => finding.title).sort()).toEqual(['Bounded defect', 'rule: a lane hit']);
-    // Only the model finding is deferred; the lane's hit is gone at the rerun
-    // (its tool changed), so nothing of the earlier hit is taken over.
-    const modelFinding = first.findings.find((finding: { title: string }) => finding.title === 'Bounded defect');
-    expect(modelFinding.deferrable).toBe(false);
-    hits = [];
+    const titles = (result: { findings: Array<{ title: string; disposition: string }> }) => result.findings
+      .filter((finding) => finding.disposition === 'verified').map((finding) => finding.title).sort();
+    expect(titles(first)).toEqual(['Bounded defect', 'rule: a lane hit']);
     reviewer.mockClear();
-    const rerun = await review(repository.head);
+
+    // Still there: enforced again, as the round enforced it.
+    const still = await review(repository.head);
+    expect(still).toMatchObject({ status: 'fail', settledFrom: { reportId: first.reportId } });
+    expect(titles(still)).toEqual(['Bounded defect', 'rule: a lane hit']);
+    expect(still.findings.find((finding: { title: string }) => finding.title === 'rule: a lane hit')).toMatchObject({ blockingReason: 'first-review' });
+
+    // The lane could not run: its earlier hit is kept, and the report says so.
+    lanes.value = { lanes: [{ lane: 'lint', status: 'unavailable', note: 'lint is not installed on this host' }], findings: [] };
+    const unavailable = await review(repository.head);
+    expect(titles(unavailable)).toEqual(['Bounded defect', 'rule: a lane hit']);
+    expect(unavailable.summary).toContain('The earlier hits of lint are kept');
+
+    // The lane ran and no longer reports it: only the model's finding is left.
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
+    const gone = await review(repository.head);
     expect(reviewer).not.toHaveBeenCalled();
-    expect(rerun).toMatchObject({ status: 'fail', settledFrom: { reportId: first.reportId } });
-    expect(rerun.findings.map((finding: { title: string }) => finding.title)).toEqual(['Bounded defect']);
-    expect(rerun.findings[0]).toMatchObject({ blockingReason: 'first-review' });
+    expect(titles(gone)).toEqual(['Bounded defect']);
+  });
+
+  it('keeps a late-discovery round the head spent when its finding is deferred', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-late';
+    const named = { value: [] as Named[] };
+    const { review, defer } = harness(repository, branch, named);
+    await expect(review(repository.head)).resolves.toMatchObject({ status: 'pass', round: 'full' });
+    // A P2 in a file the repair never touched spends a late-discovery round.
+    named.value = [{ title: 'Late one', file: 'src/lib/other.ts' }];
+    const late = await review(await commit(repository.root, 50));
+    expect(late).toMatchObject({ status: 'fail', convergence: { lateDiscoveriesUsed: 1 } });
+    expect(late.findings[0]).toMatchObject({ blockingReason: 'late-discovery-quota', deferrable: true });
+    await defer(late.identity.headSha, late.reportId);
+    const settled = await review(late.identity.headSha);
+    expect(settled).toMatchObject({ status: 'pass', settledFrom: { reportId: late.reportId }, convergence: { lateDiscoveriesUsed: 1 } });
+    const paths = await ensureState(repository.stateRoot);
+    const record = (await readLineageReviews(paths, convergenceLineage(late.identity, branch)))
+      .find((entry) => entry.headSha === late.identity.headSha);
+    expect(record).toMatchObject({ lateDiscoveries: 1 });
+  });
+
+  it('reviews again a round with a finding that waits for native evidence, and says so when deferring', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-native';
+    const named = { value: [{ title: 'Bounded defect' }, { title: 'Needs a device', disposition: 'needs_native_evidence' }] as Named[] };
+    const { reviewer, review, defer } = harness(repository, branch, named);
+    await review(repository.head);
+    const second = await review(await commit(repository.root, 43));
+    expect(second.status).toBe('fail');
+    expect(second.findings).toContainEqual(expect.objectContaining({ disposition: 'needs_native_evidence' }));
+    const deferral = await defer(second.identity.headSha, second.reportId);
+    expect(deferral.next).toContain('waits for native evidence, so the head is reviewed again');
+    reviewer.mockClear();
+    const rerun = await review(second.identity.headSha);
+    expect(reviewer).toHaveBeenCalled();
+    expect(rerun).not.toHaveProperty('settledFrom');
   });
 });
 
@@ -249,17 +306,22 @@ describe('which report can settle a rerun', () => {
     findings: [{ title: 'T', file: 'a.ts', priority: 'P2', disposition: 'verified' }],
   };
 
-  it('accepts only a FAIL of the exact identity, branch, author, risk and classification', () => {
+  it('accepts only a FAIL of the exact identity, branch, author, risk, intent and classification', () => {
     expect(settleSourceMismatch(report, expected)).toBeNull();
     expect(settleSourceMismatch({ ...report, status: 'pass' }, expected)).toMatch(/status/);
     expect(settleSourceMismatch({ ...report, status: 'error' }, expected)).toMatch(/status/);
-    expect(settleSourceMismatch({ ...report, identity: { ...identity, policyDigest: 'q' } }, expected)).toMatch(/policyDigest/);
-    expect(settleSourceMismatch({ ...report, identity: { ...identity, gateVersion: 'older' } }, expected)).toMatch(/gateVersion/);
+    for (const key of Object.keys(identity)) {
+      expect(settleSourceMismatch({ ...report, identity: { ...identity, [key]: 'other' } }, expected)).toBe(`its ${key} differs`);
+    }
     expect(settleSourceMismatch({ ...report, branch: 'claude/y' }, expected)).toMatch(/branch/);
     expect(settleSourceMismatch({ ...report, author: 'human' }, expected)).toMatch(/author/);
     expect(settleSourceMismatch({ ...report, risk: 'medium' }, expected)).toMatch(/risk/);
     expect(settleSourceMismatch({ ...report, round: 'full' }, expected)).toMatch(/round/);
     expect(settleSourceMismatch({ ...report, followUpBaseSha: 'g' }, expected)).toMatch(/follow-up base/);
+    expect(settleSourceMismatch(report, { ...expected, prIntentDigest: 'abc' })).toMatch(/intent/);
+    expect(settleSourceMismatch({ ...report, prIntentDigest: 'abc' }, expected)).toMatch(/intent/);
+    expect(settleSourceMismatch({ ...report, prIntentDigest: 'abc' }, { ...expected, prIntentDigest: 'abc' })).toBeNull();
+    expect(settleSourceMismatch(report, { ...expected, pendingRenames: true })).toMatch(/renamed/);
     expect(settleSourceMismatch(null, expected)).toBe('no report');
   });
 
@@ -276,6 +338,29 @@ describe('which report can settle a rerun', () => {
     expect(settleSourceMismatch(withDeferral, expected)).toMatch(/no longer recorded/);
     expect(settleSourceMismatch(withDeferral, { ...expected, deferrals: new Map([[findingKey(deferred), {}]]) })).toBeNull();
   });
+
+  it('never settles under --force, on a provider or account restart, for a skipped change, or from a head that did not fail', () => {
+    const ownRecord = { status: 'fail', reportId: 'r1' };
+    expect(settleAllowed({ risk: 'high', ownRecord })).toBe(true);
+    expect(settleAllowed({ risk: 'high', ownRecord, force: true })).toBe(false);
+    expect(settleAllowed({ risk: 'high', ownRecord, providerFallback: { dropped: ['codex'] } })).toBe(false);
+    expect(settleAllowed({ risk: 'high', ownRecord, accountFallback: { excluded: {}, switches: [] } })).toBe(false);
+    expect(settleAllowed({ risk: 'skip', ownRecord })).toBe(false);
+    expect(settleAllowed({ risk: 'high', ownRecord: { status: 'pass', reportId: 'r1' } })).toBe(false);
+    expect(settleAllowed({ risk: 'high', ownRecord: { status: 'fail', reportId: null } })).toBe(false);
+    expect(settleAllowed({ risk: 'high', ownRecord: undefined })).toBe(false);
+  });
+
+  it('reviews a head whose recorded deferral still has a renamed path to follow', () => {
+    const renamedTo = new Map([['src/old.ts', 'src/new.ts']]);
+    expect(deferralsFollowRenames(new Map([['k', { file: 'src/old.ts' }]]), renamedTo)).toBe(true);
+    // Already moved to the path the head gives it.
+    expect(deferralsFollowRenames(new Map([['k', { file: 'src/new.ts', previousFiles: ['src/old.ts'] }]]), renamedTo)).toBe(false);
+    // A record keyed to a path between two renames follows through its history.
+    expect(deferralsFollowRenames(new Map([['k', { file: 'src/mid.ts', previousFiles: ['src/old.ts'] }]]), renamedTo)).toBe(true);
+    expect(deferralsFollowRenames(new Map([['k', { file: 'src/other.ts' }]]), renamedTo)).toBe(false);
+    expect(deferralsFollowRenames(new Map([['k', { file: 'src/old.ts' }]]), new Map())).toBe(false);
+  });
 });
 
 describe('the findings a settled round carries', () => {
@@ -285,12 +370,13 @@ describe('the findings a settled round carries', () => {
     adjudicatedDisposition: 'verified', blockingReason: 'persisting', deferrable: true, reason: 'r', ...extra,
   });
 
-  it('applies a deferral recorded since the round, never to a P0/P1, and drops the lanes\' hits', () => {
+  it('applies a deferral recorded since the round, never to a P0/P1, and replaces only rechecked lanes\' hits', () => {
     const findings = [
       blocking('P2', 'Deferred'),
       blocking('P2', 'Kept'),
       blocking('P1', 'Never softened', { blockingReason: 'always', deferrable: false }),
-      { ...blocking('P2', 'Lane hit'), adjudicatedDisposition: 'deterministic' },
+      { ...blocking('P2', 'Rechecked lane hit'), adjudicatedDisposition: 'deterministic', source: 'lint' },
+      { ...blocking('P2', 'Unrechecked lane hit'), adjudicatedDisposition: 'deterministic', source: 'shellcheck' },
       { candidate_id: 'p3', title: 'Advisory', file: 'src/a.ts', priority: 'P3', disposition: 'advisory', requiresDisposition: true, adjudicatedDisposition: 'verified' },
       { candidate_id: 'x', title: 'Dismissed', file: 'src/a.ts', priority: 'P2', disposition: 'dismissed', reason: 'no' },
     ];
@@ -300,8 +386,8 @@ describe('the findings a settled round carries', () => {
       [findingKey({ file: 'src/a.ts', title: 'Advisory' }), deferral],
       [findingKey({ file: 'src/a.ts', title: 'Dismissed' }), deferral],
     ]);
-    const settled = settledFindings(findings, deferrals);
-    expect(settled.map((finding) => finding.title)).toEqual(['Deferred', 'Kept', 'Never softened', 'Advisory', 'Dismissed']);
+    const settled = settledFindings(findings, deferrals, { rechecked: new Set(['lint']) });
+    expect(settled.map((finding) => finding.title)).toEqual(['Deferred', 'Kept', 'Never softened', 'Unrechecked lane hit', 'Advisory', 'Dismissed']);
     expect(settled[0]).toMatchObject({
       disposition: 'advisory', enforcement: 'advisory', requiresDisposition: false, adjudicatedDisposition: 'verified',
       findingKey: findingKey({ file: 'src/a.ts', title: 'Deferred' }), deferral: { headSha: deferral.headSha, reason: deferral.reason },
@@ -310,7 +396,10 @@ describe('the findings a settled round carries', () => {
     expect(settled[0]).not.toHaveProperty('deferrable');
     expect(settled[1]).toBe(findings[1]);
     expect(settled[2]).toBe(findings[2]);
-    expect(settled[3]).toMatchObject({ disposition: 'advisory', requiresDisposition: false, deferral: expect.any(Object) });
-    expect(settled[4]).toBe(findings[5]);
+    expect(settled[3]).toBe(findings[4]);
+    expect(settled[4]).toMatchObject({ disposition: 'advisory', requiresDisposition: false, deferral: expect.any(Object) });
+    expect(settled[5]).toBe(findings[6]);
+    // Without the lane rechecked, every earlier hit is kept.
+    expect(settledFindings(findings, new Map()).map((finding) => finding.title)).toContain('Rechecked lane hit');
   });
 });

@@ -82,7 +82,7 @@ export function sentinelLimits() {
       {
         id: 'settle',
         limit: 'no reviewer',
-        text: 'A rerun of a head whose round ended in a FAIL, after a deferral or with nothing changed, settles from that round: no reviewer runs, its verdicts stand, the deferrals recorded since apply and the deterministic lanes run again. gate --force reviews the head afresh.',
+        text: 'A rerun of a head whose round ended in a FAIL, after a deferral or with nothing changed, settles from that round while its report is kept: no provider is selected or runs, its verdicts stand, the deferrals recorded since apply and the deterministic lanes run again. A round with a finding waiting for native evidence, a changed --intent or a deferral that follows a renamed file is reviewed again, and gate --force reviews the head afresh.',
       },
       {
         id: 'provider-fallback',

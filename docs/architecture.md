@@ -187,14 +187,17 @@ identity and lineage; P0/P1 are not deferrable.
 
 A rerun of a head whose round ended in a FAIL settles from that round (1.21.1)
 when nothing but recorded decisions changed: the same repository, base, head,
-policy, branch, author, risk and round classification, its report still kept,
-every deferral it applied still recorded, and no finding of it waiting for
-native evidence. No reviewer runs. The
-round's verdicts stand, a deferral recorded since applies as it would in any
-round (never to P0/P1), and the deterministic lanes run again and are enforced
-as that round enforced them. The settling run writes its own report
-(`settledFrom` names the round), replaces the head's lineage record without
-counting the head twice, and attests when nothing blocks. Reviewing the same
+policy, branch, author, risk, stated intent and round classification, its
+report still kept, every deferral it applied still recorded, no recorded
+deferral following a renamed file, and no finding of it waiting for native
+evidence. This is decided before any provider is selected or probed, and no
+reviewer runs. The round's verdicts stand, a deferral recorded since applies as
+it would in any round (never to P0/P1), and the deterministic lanes run again
+and are enforced as that round enforced them; a lane that cannot recheck keeps
+its earlier hits. The settling run writes its own report (`settledFrom` names
+the round that reviewed), replaces the head's lineage record without counting
+the head twice or refunding a late-discovery round it spent, and attests when
+nothing blocks. Reviewing the same
 code again would only draw another sample of it, one that no head without a
 deferral gets: in 100 rounds across two consumer projects, 15 of 18 same-head
 reruns after a FAIL blocked again, each time on findings the round before had

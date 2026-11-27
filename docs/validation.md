@@ -2,22 +2,28 @@
 
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
 
-Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (7 new tests)
-cover: a follow-up head that failed on a persisting P2, deferred, and rerun settling with no
-reviewer or adjudicator call while the injected reviewer would have named a new defect, the
-deferral applied, the deterministic lanes run once, the round, follow-up base, repair-round and
-late-discovery counts unchanged, the head's lineage record replaced (one record, the same
-reviewed-head count), an attestation the pre-push disposition check accepts, and the next head
-counting the settled head once; a rerun with a P1 left blocking giving the same FAIL without a
-review, settling again from the settled report, `--dry-run` naming the report it would settle
-from, and `--force` reviewing afresh with the same classification; a lane hit not taken over
-from the settled round but run again; which reports can settle (status, each identity field,
-branch, author, risk, round, follow-up base, native evidence, malformed findings, a deferral
-no longer recorded); and how a
-recorded deferral applies to settled findings (never to P0/P1, not to a dismissal, a lane's
-hits dropped). The three integration tests fail on 1.21.0's sources (the reviewer runs again on
-the unchanged head). 1,147 tests passed in 42 files on Windows on the development host, and the package smoke
-passed (`rove-sentinel@1.21.1`).
+Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (11 new tests)
+cover: a follow-up head that failed on a persisting P2, deferred, and rerun with no provider
+available settling with no reviewer or adjudicator call while the injected reviewer would have
+named a new defect, the deferral applied, the deterministic lanes run once, the round,
+follow-up base, repair-round and late-discovery counts unchanged, the head's lineage record
+replaced (one record, the same reviewed-head count), an attestation the pre-push disposition
+check accepts, and the next head counting the settled head once; a rerun with a P1 left
+blocking giving the same FAIL without a review, settling again from the settled report while
+naming the round that reviewed, `--dry-run` naming the report it would settle from, and a new
+`--intent` or `--force` reviewing afresh with the same classification; a lane hit still present
+enforced again, one whose lane could not run kept and named in the summary, and one its lane no
+longer reports dropped; a deferred late-discovery blocker keeping its spent round in the report
+and the lineage record; a round with a finding waiting for native evidence reviewed again, and
+`defer` saying so; which reports can settle (status, each of the six identity fields, branch,
+author, risk, stated intent, round, follow-up base, native evidence, malformed findings, a
+deferral no longer recorded, a deferral following a renamed file); when a run may settle at all
+(`--force`, provider and account restarts, a skipped change, the head's own record); which
+recorded deferrals still have a renamed path to follow; and how a recorded deferral applies to
+settled findings (never to P0/P1, not to a dismissal, a rechecked lane's hits replaced and the
+others kept). The settling tests fail on 1.21.0's sources (the reviewer runs again on the
+unchanged head). 1,151 tests passed in 42 files on Windows on the development host, and the
+package smoke passed (`rove-sentinel@1.21.1`).
 
 ## 1.21.0 deeper context, cross-file integration review, and faster verification — 2026-11-22
 

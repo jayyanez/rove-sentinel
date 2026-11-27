@@ -69,11 +69,13 @@ head or incompatible report must be reviewed again; a deferral cannot manufactur
 a review of a different commit.
 
 After deferring a blocking finding, rerun the gate on the same head. An
-unchanged head settles from the report the deferral named, without another
-model review: that round's verdicts stand, your deferrals apply, and the head
-passes once nothing undeferred blocks. Rerunning an unchanged head without a
-deferral gives the same verdict. Use `gate --force` only when you want a fresh
-review of the same commit.
+unchanged head settles from its latest round, without another model review:
+that round's verdicts stand, your deferrals apply, the deterministic lanes run
+again, and the head passes once nothing undeferred blocks. Rerunning an
+unchanged head without a deferral gives the same model verdicts; only the
+lanes' hits can change. A round with a finding that waits for native evidence,
+a changed `--intent`, or a deferral that follows a renamed file is reviewed
+again. Use `gate --force` only when you want a fresh review of the same commit.
 
 ## GitHub pull requests
 

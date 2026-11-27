@@ -340,13 +340,18 @@ export async function deferFindings({
     }
   }
   const blockedAny = selected.some((finding) => finding.disposition === 'verified');
+  // A report waiting for native evidence is reviewed again; any other FAIL
+  // of an unchanged head settles from its latest round (1.21.1).
+  const reviewedAgain = (report.findings || []).some((finding) => finding?.disposition === 'needs_native_evidence');
   return {
     headSha,
     branch,
     reportId: report.id,
     deferred: deferred.map(({ key, title, file, priority, reason: why }) => ({ key, title, file, priority, reason: why })),
     next: blockedAny
-      ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied: an unchanged head settles from report ${report.id} without another review (gate --force reviews it afresh).`
+      ? reviewedAgain
+        ? `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied; a finding of this report waits for native evidence, so the head is reviewed again.`
+        : `Rerun npx --no-install rove-sentinel gate --base ${base} --head ${head} so the head is attested with the deferrals applied: an unchanged head settles from its latest round without another review (gate --force reviews it afresh).`
       : 'The deferrals apply immediately: the attested head can be pushed, and the PR comment will list them.',
   };
 }
