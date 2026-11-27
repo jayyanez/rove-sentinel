@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.21.2 — Three watcher fixes: an exited provider, an unwritable events folder, a lane's note
+
+Three watcher fixes found after 1.21.1. Nothing needs doing to receive them: they arrive as an
+ordinary automatic update. As in every release that increments the engine version, upgrading
+refreshes the installed policy snapshot digest, so a branch's next review after the update
+is a new lineage.
+
+- **An exited Windows provider is no longer called an orphaned tree while its pipes drain.**
+  A provider that exited on its own just as its output passed the bound, and whose pipes took
+  longer than 100 ms to close, was called an orphaned process tree, and the cleanup fence
+  paused the watcher. Under load, 17 of 600 such children were; the output-limit test failed
+  the same way on a loaded CI runner. An exited root now gets the whole grace (2 s) to close
+  its pipes; a descendant that holds them still fails closed.
+- **An events folder that cannot be written never stops the GitHub sync.** The pull request
+  loop's publish-error and sync events, and the watcher's own GitHub error event, were awaited
+  before the work they record: the loop stopped before the other pull requests, and the
+  watcher's write replaced the GitHub error with its own and skipped the GitHub failure record
+  and its backoff. Those events are now best effort.
+- **A pull request comment names a lane that did not finish by its status.** A completed
+  review's summary quoted each deterministic lane's own note, and a lane that failed, timed
+  out or was unavailable can quote a tool's output or a local path; a cleanup failure added
+  its folders. Results now carry a public summary for the comment: a lane that finished keeps
+  its counts, any other is named by its status (for example `eslint: error`), and a cleanup
+  failure is only said to have happened. The local report keeps every note.
+
 ## 1.21.1 — A rerun of an unchanged head settles from the round that reviewed it
 
 A rerun of the same head after `defer` no longer reviews that head again from scratch.

@@ -1,5 +1,17 @@
 # Standalone validation record
 
+## 1.21.2 three watcher fixes — 2026-11-27
+
+Deterministic tests: `process.test.ts` gives an exited Windows root that closes its pipes at 300
+ms the whole grace (it was called orphaned before); `github.test.ts` reaches every pull request
+and reports the publish error with the events folder replaced by a file; `daemon.test.ts` keeps
+the GitHub failure record when the events folder breaks during the poll; `gate.test.ts` names
+lanes by status in the public summary and keeps a failing lane's local folder out of the comment
+of a real `runGate` round. Each fails without its fix. A live load reproduction (600 children
+that overflow their output bound and exit at once, 160 at a time, on Windows with Node 24)
+called 17 orphaned before and 0 of 1,200 after. 1,165 tests passed in 42 files on Windows on the
+development host, and the package smoke passed (`rove-sentinel@1.21.2`).
+
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
 
 Deterministic tests in `scripts/review-gate/__tests__/settleDeferrals.test.ts` (17 new tests)
