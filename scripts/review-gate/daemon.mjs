@@ -339,8 +339,6 @@ export async function runWatcher({
     let stopped = false;
     let nextGithubAt = 0;
     let githubBackoffMs = LIMITS.githubPollMs;
-    // Set when a successful poll could not remove the last failure record.
-    let githubFailureStale = false;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };
     let stopTermination = null;
@@ -396,7 +394,8 @@ export async function runWatcher({
             // anything is recorded, and the records are best effort: storage
             // that fails can neither turn this outcome into another nor move
             // the schedule (1.21.2).
-            let pollError = null;
+            let pollFailed = false;
+            let pollError;
             try {
               await runWithHeartbeat(
                 context,
@@ -415,25 +414,25 @@ export async function runWatcher({
                 }),
               );
             } catch (error) {
-              pollError = error;
+              // A rejection without a reason is a failure too.
+              pollFailed = true;
+              pollError = error ?? new Error('The GitHub poll failed without a reason.');
             }
-            githubBackoffMs = pollError
+            githubBackoffMs = pollFailed
               ? Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs)
               : LIMITS.githubPollMs;
             nextGithubAt = Date.now() + githubBackoffMs;
-            if (pollError) {
+            if (pollFailed) {
               await recordEvent(context.paths, {
                 type: 'github-error',
                 message: pollError?.message || String(pollError),
               }).catch(() => {});
-              // A record a success could not remove is not this failure's
-              // predecessor: the count starts again.
-              await recordGithubFailure(context.paths, pollError, new Date(), { fresh: githubFailureStale })
-                .then(() => { githubFailureStale = false; }, () => {});
-              progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${pollError.message}`);
+              await recordGithubFailure(context.paths, pollError).catch(() => {});
+              progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${pollError?.message || String(pollError)}`);
             } else {
-              await clearGithubFailure(context.paths)
-                .then(() => { githubFailureStale = false; }, () => { githubFailureStale = true; });
+              // A record that cannot be removed stays on disk until a later
+              // success removes it, and status shows it until then.
+              await clearGithubFailure(context.paths).catch(() => {});
             }
           }
           watcherBackoffMs = LIMITS.queuePollMs;

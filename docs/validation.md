@@ -11,9 +11,8 @@ each failing without its fix: `github.test.ts` reaches every pull request and re
 publish error with the events folder replaced by a file, and republishes a stored failing
 outcome with its public summary; `daemon.test.ts` keeps the GitHub failure record when the
 events folder breaks during the poll, keeps a successful poll a success and a failed one a
-GitHub error when the failure record can be neither written nor removed, and the failure
-record starts a new count when told the record on disk is stale (the watcher's own wiring of
-that flag across two polls is not covered by a test); `gate.test.ts` names lanes by status in the public
+GitHub error (saying when it retries) when the failure record can be neither written nor
+removed, and counts a poll that rejects without a reason as a failure; `gate.test.ts` names lanes by status in the public
 summary, keeps a failing lane's local folder out of a real `runGate` round's comment, keeps a
 cleanup failure's folders local, and publishes no summary not written for the comment except a
 skipped change's; `settleDeferrals.test.ts` gives a settled round the same public summary.

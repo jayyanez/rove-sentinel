@@ -20,9 +20,26 @@ import {
 } from '../daemon.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
-import { atomicWriteJson, ensureState, readJson, recordGithubFailure, sleep } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
 
 describe('a watcher whose GitHub polls keep failing', () => {
+  it('counts a poll that rejected without a reason as a failure', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-noreason-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true,
+        // eslint-disable-next-line prefer-promise-reject-errors
+        syncPulls: () => Promise.reject(undefined),
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, message: 'The GitHub poll failed without a reason.' });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
   it('keeps count of the failures in a row, the first one\'s time and the last reason, until a poll succeeds', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-failure-'));
     const paths = await ensureState(stateRoot);
@@ -107,22 +124,6 @@ describe('a watcher whose GitHub failure record cannot be written or removed', (
       expect((await githubErrors(paths)).map((event: { message: string }) => event.message)).toEqual(['GitHub refused the comment']);
       // The backoff was set: the watcher says when it retries.
       expect(progress.some((line) => /^GitHub watcher error; retrying in \d+s: GitHub refused the comment$/.test(line))).toBe(true);
-    } finally {
-      await rm(stateRoot, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('a GitHub failure record a success could not remove', () => {
-  it('starts its count again when told the record on disk is stale', async () => {
-    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-fresh-'));
-    const paths = await ensureState(stateRoot);
-    try {
-      await recordGithubFailure(paths, new Error('first'), new Date('2026-01-01T10:00:00.000Z'));
-      await recordGithubFailure(paths, new Error('second'), new Date('2026-01-01T10:02:00.000Z'));
-      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: '2026-01-01T10:00:00.000Z' });
-      await recordGithubFailure(paths, new Error('after a success'), new Date('2026-01-01T11:00:00.000Z'), { fresh: true });
-      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, since: '2026-01-01T11:00:00.000Z', message: 'after a success' });
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

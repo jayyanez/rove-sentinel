@@ -20,9 +20,9 @@ lineage.
   watcher's write replaced the GitHub error with its own and skipped the GitHub failure record
   and its backoff. Those events are now best effort, and the watcher settles a poll's outcome
   and the next poll's time before it writes anything: a failure record that cannot be written
-  or removed no longer turns a poll into another outcome or moves the schedule, and, within a
-  running watcher, the first failure after a success whose record could not be removed starts
-  a new count (until then `status` still shows that record).
+  or removed no longer turns a poll into another outcome or moves the schedule. A record a
+  success cannot remove stays, and `status` shows it, until a later success removes it. A poll
+  that fails without a reason counts as a failure.
 - **A pull request comment's summary names a lane that did not finish by its status.** A
   completed review's summary quoted each deterministic lane's own note, and a lane that
   failed, timed out or was unavailable can quote a tool's output or a local path; a cleanup
