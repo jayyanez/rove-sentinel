@@ -4,19 +4,21 @@
 
 Deterministic tests, each failing without its fix: `process.test.ts` gives an exited Windows
 root that closes its pipes at 300 ms the whole grace, decides a root that exits before taskkill
-finds it as an exited root (closed during or after taskkill) and calls it orphaned when its
-pipes stay open; `github.test.ts` reaches every pull request and reports the publish error with
-the events folder replaced by a file, and republishes a stored failing outcome with its public
+finds it as an exited root (closed during or after taskkill) calls it orphaned when its pipes
+stay open, and still fails closed when taskkill fails for any other reason with the root gone
+and closed; `github.test.ts` reaches every pull request and reports the publish error with the
+events folder replaced by a file, and republishes a stored failing outcome with its public
 summary; `daemon.test.ts` keeps the GitHub failure record when the events folder breaks during
-the poll, and ends the poll on the GitHub error when the failure record cannot be written;
-`gate.test.ts` names lanes by status in the public summary, keeps a failing lane's local folder
-out of a real `runGate` round's comment, names the review checkout by its token in a lane
-finding, keeps a cleanup failure's folders local, and publishes no summary not written for the
-comment except a skipped change's; `settleDeferrals.test.ts` gives a settled round the same
-public summary. A live load reproduction (600 children that overflow their output bound and exit
-at once, 160 at a time, on Windows with Node 24) called 17 orphaned before and 0 of 1,200 after;
-a Windows Node 24 CI run of the output-limit test had failed the same way. 1,172 tests passed in
-42 files on Windows on the development host, and the package smoke passed
+the poll, ends the poll on the GitHub error when the failure record cannot be written, and keeps
+a successful poll a success when the old record cannot be removed; `gate.test.ts` names lanes by
+status in the public summary, keeps a failing lane's local folder out of a real `runGate`
+round's comment, names the review checkout by its token in a lane finding and only a whole
+folder by a token, keeps a cleanup failure's folders local, and publishes no summary not written
+for the comment except a skipped change's; `settleDeferrals.test.ts` gives a settled round the
+same public summary. A live load reproduction (600 children that overflow their output bound and
+exit at once, 160 at a time, on Windows with Node 24) called 17 orphaned before and 0 of 1,200
+after; a Windows Node 24 CI run of the output-limit test had failed the same way. 1,175 tests
+passed in 42 files on Windows on the development host, and the package smoke passed
 (`rove-sentinel@1.21.2`).
 
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27

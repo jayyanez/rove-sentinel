@@ -289,6 +289,28 @@ describe('bounded review subprocesses', () => {
     }
   });
 
+  it('still fails closed when taskkill fails for any other reason, even with the root gone and closed', async () => {
+    // Access denied on a descendant (exit 1) can come after taskkill ended the
+    // root: the root's close proves nothing about the descendant.
+    const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
+    const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });
+    const spawnProcess = vi.fn(() => killer);
+    let alive = true;
+    const pending = terminateProcessTree(child, {
+      platform: 'win32',
+      spawnProcess,
+      waitForNaturalClose: vi.fn(async () => false),
+      isWindowsProcessAlive: vi.fn(() => alive),
+      graceMs: 50,
+    });
+    await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
+    alive = false;
+    child.exitCode = 1;
+    child.emit('close', 1, null);
+    killer.emit('exit', 1, null);
+    await expect(pending).rejects.toThrow('taskkill failed');
+  });
+
   it('calls a root that exited before taskkill found it orphaned when its pipes stay open', async () => {
     const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null, signalCode: null, kill: vi.fn() });
     const killer = Object.assign(new EventEmitter(), { kill: vi.fn() });

@@ -1176,8 +1176,10 @@ export function localRoots({ checkout, repoRoot, stateRoot, platform = process.p
   const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return roots.map(({ root, token }) => ({
     token,
-    // Either separator, as a tool may print the path either way.
-    pattern: new RegExp(root.split(/[\\/]+/).map(escape).join('[\\\\/]+'), platform === 'win32' ? 'gi' : 'g'),
+    // Either separator, as a tool may print the path either way, and only a
+    // whole folder: not inside a longer name (`/srv/repo` never takes
+    // `/srv/repository`) nor after another folder (`/mnt/srv/repo`).
+    pattern: new RegExp(`(?<![\\w.~\\\\/-])${root.split(/[\\/]+/).map(escape).join('[\\\\/]+')}(?=$|[\\\\/]|[^\\w.~-])`, platform === 'win32' ? 'gi' : 'g'),
   }));
 }
 

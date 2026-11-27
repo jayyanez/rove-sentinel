@@ -17,11 +17,13 @@ import {
   describeReviewerFailures,
   formatGateResult,
   providerTreeCleanupFailureCode,
+  localRoots,
   publicLaneNotes,
   reconcileCleanupFailure,
   runGate,
   shouldSkipCoordinator,
   settleReviewersWithRetry,
+  withoutLocalRoots,
 } from '../gate.mjs';
 import { githubText, renderGateComment } from '../github.mjs';
 import {
@@ -170,6 +172,17 @@ describe('what a pull request comment says about the lanes (1.21.2)', () => {
     const leaf = path.basename(path.dirname(seenCheckout));
     expect(JSON.stringify(result.findings)).not.toContain(leaf);
     expect(renderGateComment(result)).not.toContain(githubText(leaf, 200));
+  });
+
+  it('names only a whole local folder by its token, never part of a longer name', () => {
+    const clean = (roots: ReturnType<typeof localRoots>, text: string) => withoutLocalRoots({ lanes: [], findings: [{ title: text }] }, roots).findings[0].title;
+    const win = localRoots({ checkout: String.raw`C:\Users\example\AppData\Local\Temp\rove-review-ab\checkout`, repoRoot: String.raw`D:\work\app`, platform: 'win32' });
+    expect(clean(win, 'import("c:/users/EXAMPLE/AppData/Local/Temp/rove-review-ab/checkout/src/x").A')).toBe('import("<checkout>/src/x").A');
+    expect(clean(win, String.raw`D:\work\app\node_modules, D:\work\app-shared\y`)).toBe(String.raw`<repository>\node_modules, D:\work\app-shared\y`);
+    const posix = localRoots({ checkout: '/srv/repo/co', repoRoot: '/srv/repo', platform: 'linux' });
+    expect(clean(posix, '/srv/repository/x /srv/repo-old/x /mnt/srv/repo/x (/srv/repo)')).toBe('/srv/repository/x /srv/repo-old/x /mnt/srv/repo/x (<repository>)');
+    // A folder at a drive's or filesystem's top is left as written.
+    expect(localRoots({ checkout: 'D:/repo', repoRoot: '/tmp', platform: 'linux' }).filter((entry) => entry.token !== '<temp>' && entry.token !== '<home>')).toEqual([]);
   });
 
   it('says in the comment only that cleanup failed, and keeps the folders local', async () => {

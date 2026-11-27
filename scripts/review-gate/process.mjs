@@ -235,6 +235,9 @@ function windowsProcessIsAlive(pid, killProcess = process.kill) {
   }
 }
 
+// taskkill's exit code when the process it was given does not exist.
+const TASKKILL_NOT_FOUND = 128;
+
 async function waitForChildClose(child, timeoutMs) {
   return await new Promise((resolve) => {
     let finished = false;
@@ -336,11 +339,16 @@ export async function terminateProcessTree(
         });
         killer.once('exit', (code, signal) => {
           if (code === 0) finish();
-          else finish(new Error(`taskkill failed for provider process tree ${child.pid} with ${signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`}.`));
+          else finish(Object.assign(new Error(`taskkill failed for provider process tree ${child.pid} with ${signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`}.`), { taskkillExitCode: code }));
         });
       });
     } catch (error) {
-      if (child.exitCode !== null || !isWindowsProcessAlive(child.pid, killProcess)) {
+      // Only taskkill's "process not found" (exit 128) on a root that is gone
+      // is decided as an exited root. Any other failure (access denied on a
+      // descendant, a timeout, taskkill not starting) fails closed as before,
+      // since it may have ended the root and left a descendant running.
+      if (error?.taskkillExitCode === TASKKILL_NOT_FOUND
+        && (child.exitCode !== null || !isWindowsProcessAlive(child.pid, killProcess))) {
         if (closedDuringKill || await waitForNaturalClose(child, graceMs)) return;
         throwOrphanedTree();
       }

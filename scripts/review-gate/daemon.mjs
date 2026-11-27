@@ -408,7 +408,9 @@ export async function runWatcher({
                 }),
               );
               githubBackoffMs = LIMITS.githubPollMs;
-              await clearGithubFailure(context.paths);
+              // A poll that succeeded stays a success when its old failure
+              // record cannot be removed (1.21.2).
+              await clearGithubFailure(context.paths).catch(() => {});
             } catch (error) {
               // The GitHub failure record and its backoff come first in
               // importance: an events folder that cannot be written must not

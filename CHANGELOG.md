@@ -13,14 +13,15 @@ a new lineage.
   paused the watcher. Under load, 17 of 600 such children were; the output-limit test failed
   the same way on a loaded CI runner. A root that exits between the liveness check and
   taskkill's lookup made taskkill fail the same way. An exited root now gets the whole grace
-  (2 s) to close its pipes, before taskkill or after it fails on a missing process; a
-  descendant that holds them still fails closed.
+  (2 s) to close its pipes, before taskkill or after taskkill reports the process missing
+  (exit 128); a descendant that holds them, and any other taskkill failure, still fail closed.
 - **An events folder that cannot be written never stops the GitHub sync.** The pull request
   loop's publish-error and sync events, and the watcher's own GitHub error event, were awaited
   before the work they record: the loop stopped before the other pull requests, and the
   watcher's write replaced the GitHub error with its own and skipped the GitHub failure record
-  and its backoff. Those events are now best effort, and the backoff no longer waits on the
-  failure record either.
+  and its backoff. Those events are now best effort, the backoff no longer waits on the
+  failure record, and a poll that succeeded stays a success when its old failure record cannot
+  be removed.
 - **A pull request comment names no local folder from a deterministic lane.** A completed
   review's summary quoted each lane's own note, and a lane that failed, timed out or was
   unavailable can quote a tool's output or a local path; a cleanup failure added its folders;
@@ -29,9 +30,10 @@ a new lineage.
   other is named by its status (for example `eslint: error`) and a cleanup failure is only
   said to have happened. A lane finding names the review checkout, the repository, Sentinel's
   state, the temporary folder and the home folder by a token (`<checkout>`, `<repository>`,
-  `<state>`, `<temp>`, `<home>`), which also keeps its identity from one round's checkout to
-  the next. A result without a public summary publishes none of its summary, except a skipped
-  change's. The local report keeps every note.
+  `<state>`, `<temp>`, `<home>`), only as a whole folder, which also keeps its identity from
+  one round's checkout to the next; a folder at the top of a drive or filesystem, such as
+  `/tmp`, is left as written. A result without a public summary publishes none of its summary,
+  except a skipped change's. The local report keeps every note.
 
 ## 1.21.1 — A rerun of an unchanged head settles from the round that reviewed it
 

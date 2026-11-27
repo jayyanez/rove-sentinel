@@ -232,8 +232,7 @@ export function renderGateComment(result) {
     '',
     // A completed review publishes its public summary (1.21.2): a lane that
     // did not finish is named by its status, never by its note, which can
-    // quote a tool's output or a local path. A result stored before 1.21.2
-    // has none and publishes its summary, as it did.
+    // quote a tool's output or a local path (publishedSummary).
     githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : publishedSummary(result), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
