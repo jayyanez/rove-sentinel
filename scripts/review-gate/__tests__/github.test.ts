@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -372,37 +372,12 @@ describe('shared review PR comment', () => {
       const body = renderGateComment(publish.mock.calls[0][3]);
       for (const secret of ['personalz7', 'sparey8', 'mainx9', 'MAINX9', 'auth.json']) expect(body).not.toContain(secret);
       expect(body).toContain('Shared review gate: ERROR');
-      // The reason the comment withholds is recorded locally, in full.
-      const events = await Promise.all((await readdir(context.paths.events))
-        .map(async (name) => JSON.parse(await readFile(path.join(context.paths.events, name), 'utf8'))));
-      expect(events).toContainEqual(expect.objectContaining({ type: 'github-review-error', pr: pr.number, message: leak }));
+      // The reason the comment withholds stays in the local outcome record.
+      const identity = attestationIdentity({
+        repository: context.repository, baseSha: pr.baseRefOid, headSha: pr.headRefOid, policyDigest: context.policy.policyDigest,
+      });
+      expect((await readOutcome(context.paths, identity))?.result?.summary).toContain(leak);
     }
-  });
-
-  it('keeps the outcome, the comment and the next pull request when the error event cannot be written', async () => {
-    const context = await makeContext();
-    // The events folder cannot be written: a file stands where it should be.
-    await rm(context.paths.events, { recursive: true, force: true });
-    await writeFile(context.paths.events, 'not a folder');
-    const first = pullRequest();
-    const second = { ...pullRequest(), number: first.number + 1, headRefOid: 'd'.repeat(40) };
-    // A new ERROR comment is a change, so the sync event is written too.
-    const publish = vi.fn(async () => ({ changed: true, commentId: 1 }));
-    await syncPullRequests({
-      context,
-      runGate: vi.fn(async () => { throw new Error('codex accounts "mainx9" and "sparey8" name the same folder.'); }),
-      listPullRequests: async () => [first, second],
-      ensureCommit: vi.fn(async () => {}),
-      resolveMergeBase: vi.fn(async (_repo, base) => base),
-      publish,
-    });
-    expect(publish).toHaveBeenCalledTimes(2);
-    for (const call of publish.mock.calls) expect(renderGateComment(call[3])).not.toContain('mainx9');
-    const identity = attestationIdentity({
-      repository: context.repository, baseSha: first.baseRefOid, headSha: first.headRefOid, policyDigest: context.policy.policyDigest,
-    });
-    // The reason is still kept locally, in the outcome record.
-    expect((await readOutcome(context.paths, identity))?.result?.summary).toContain('mainx9');
   });
 
   it('bounds technical-error retries for one unchanged identity', async () => {

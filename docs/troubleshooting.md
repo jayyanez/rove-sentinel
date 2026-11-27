@@ -195,10 +195,9 @@ source code; do not upload that directory wholesale to a public issue.
 
 When a pull request's gate comment says ERROR, the reason is in that folder, which the comment
 does not publish (1.21.1): the `outcomes` record of that head keeps the error's first 1,000
-characters, and an `events` file of type `github-review-error` names the pull request, its
-head and up to 2,000 characters. Events are pruned (the newest 200, 30 days); the outcome is
-replaced by a later review of the head, removed when the head passes, and pruned with the
-other outcomes. A round that failed closed also keeps the reason in its report.
+characters. It is replaced by a later review of the head, removed when the head passes, and
+pruned with the other outcomes. A round that failed closed also keeps the reason in its
+report.
 
 Detached foreground logs are written under the repository's state folder, in
 `logs/` (before 1.19.0, in the checkout's `output/` directory); `--log PATH`

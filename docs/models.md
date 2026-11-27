@@ -278,7 +278,7 @@ under the login Sentinel inherits, exactly as before. With accounts:
   repository, and the accounts a person reviews with are their own setup. An
   ERROR comment does not publish the error either, since an error can name an
   account; the reason stays on the reviewing machine, in the watcher's
-  records and the local report.
+  outcome record for the head (and the report of a round that failed closed).
 - `status` lists each account by label, signed in or not, with its hold and
   last review; `doctor` and `install` probe every configured account, those
   of a provider the requirement leaves out included, list them under
