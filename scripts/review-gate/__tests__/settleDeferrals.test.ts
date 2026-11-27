@@ -12,6 +12,7 @@ import {
   deferralsFollowRenames, formatGateResult, runGate, settleAllowed, settleSourceMismatch,
 } from '../gate.mjs';
 import { ensureState, readAttestation, readLineageReviews, readReport, removeDisposition } from '../storage.mjs';
+import { ProviderUsageLimitError } from '../usageLimits.mjs';
 
 // A rerun of an unchanged head after a deferral settles from the round that
 // reviewed it (1.21.1). Before, it reviewed the head again from scratch: the
@@ -274,6 +275,45 @@ describe('a rerun of an unchanged head after a deferral', () => {
     expect(gone).toMatchObject({ settledFrom: { reportId: partial.reportId } });
     expect(titles(gone)).toEqual(['Bounded defect']);
     expect(gone.findings.every((finding: { adjudicatedDisposition?: string }) => finding.adjudicatedDisposition !== 'deterministic')).toBe(true);
+  });
+
+  it('keeps the lane result a settlement handed over, and its time, through a provider restart', async () => {
+    const repository = await makeRepository();
+    const branch = 'claude/settle-restart';
+    const named = { value: [{ title: 'Bounded defect' }] as Named[] };
+    const both = { availableProviders: ['claude', 'codex'] };
+    const { reviewer, deterministicLanes, lanes, review } = harness(repository, branch, named);
+    const laneHit = {
+      candidate_id: 'deterministic-0', title: 'rule: a lane hit', priority: 'P2', file: 'src/lib/example.ts', line: 1,
+      disposition: 'verified', reason: 'r', scenario: 's', proposed_test: 't', source: 'lint', adjudicatedDisposition: 'deterministic',
+    };
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '1 hit' }], findings: [laneHit] };
+    const first = await review(repository.head, both);
+    expect(first.status).toBe('fail');
+
+    // The lane stops part-way on the rerun (after 40 ms): the settlement falls
+    // through, the fresh review's Codex work reports its usage limit, and the
+    // review restarts with Claude. A second lane run would report nothing.
+    const partialHit = { ...laneHit, title: 'rule: another lane hit' };
+    deterministicLanes.mockClear();
+    deterministicLanes.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return { lanes: [{ lane: 'lint', status: 'timeout', note: 'lint exceeded 60 seconds' }], findings: [partialHit] };
+    });
+    lanes.value = { lanes: [{ lane: 'lint', status: 'ok', note: '0 hits' }], findings: [] };
+    reviewer.mockImplementation(async ({ provider, roleIndex }) => {
+      if (provider === 'codex') throw new ProviderUsageLimitError('codex', { resetAt: Date.now() + 3_600_000, message: "You've hit your usage limit." });
+      return { provider, roleIndex, summary: 'Reviewed.', candidates: [] };
+    });
+    const restarted = await review(repository.head, both);
+    expect(restarted).toMatchObject({ providerFallback: { dropped: ['codex'], restarted: true } });
+    expect(restarted).not.toHaveProperty('settledFrom');
+    expect(deterministicLanes).toHaveBeenCalledTimes(1);
+    expect(restarted.findings).toContainEqual(expect.objectContaining({ title: 'rule: another lane hit', disposition: 'verified' }));
+    expect(restarted.status).toBe('fail');
+    // The report keeps the time the lanes took, not the hand-over's.
+    const laneStage = restarted.stages.find((stage: { name: string }) => stage.name === 'deterministic-lanes');
+    expect(laneStage.ms).toBeGreaterThanOrEqual(30);
   });
 
   it('keeps a late-discovery round the head spent when its finding is deferred', async () => {

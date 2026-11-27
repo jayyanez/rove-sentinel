@@ -31,9 +31,11 @@ branch's next review after the update is a new lineage.
 - **The same model verdicts for the same commit.** A rerun of an unchanged head without a
   deferral that settles gives the round's model verdicts again instead of a new sample; only the
   deterministic lanes' hits can change. One that cannot settle is reviewed afresh, as before, and
-  that review enforces the lane result the settling attempt already has. `gate --force` still reviews the head afresh, and a
+  that review, and any restart of it after a provider or account failure, enforces the lane
+  result the settling attempt already has. `gate --force` still reviews the head afresh, and a
   restart after a provider failure never settles. `gate --dry-run` says when a rerun would
-  settle and from which round, and `defer` says whether its rerun can settle or is reviewed again.
+  settle and from which round; `defer` says when its rerun is reviewed again because the round
+  waits for native evidence, and otherwise points to `gate --dry-run`.
 - **A rerun of the same head keeps the late-discovery round it spent.** A fresh rerun of a head
   (`--force`, or one that cannot settle) no longer gives back a late-discovery round when its
   finding is now deferred, as its reviewed-head count was already kept.

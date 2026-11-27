@@ -1220,9 +1220,11 @@ function settleReportBase({
  * the deterministic lanes run again and are enforced as a fresh round
  * enforces them. It returns `{ result }`, or `{ fallbackLanes }` when a lane
  * with hits in the round cannot run to completion or an applied deferral was
- * removed meanwhile: the head is then reviewed afresh, and that review
- * enforces the lane result this run already has instead of running the
- * lanes again (a partial lane need not report the same hits twice). The result is a completed round of its
+ * removed meanwhile: the head is then reviewed afresh, and that review, and
+ * any restart of it after a provider or account failure, enforces the lane
+ * result this run already has, with the time the lanes took, instead of
+ * running the lanes again (a partial lane need not report the same hits
+ * twice). The result is a completed round of its
  * own: a report, the lineage record (whose budgets the same head neither
  * grows nor refunds), and an attestation when nothing blocks.
  */
@@ -1272,9 +1274,13 @@ async function settleFromReport(settle) {
     const unrechecked = [...new Set((source.findings || [])
       .filter((finding) => finding?.adjudicatedDisposition === 'deterministic' && !completed.has(finding.source))
       .map((finding) => String(finding.source || 'a lane')))];
+    // What a fresh review takes over when this settlement cannot stand: the
+    // lanes' result and the time they took.
+    const laneStage = clock.snapshot().find((stage) => stage.name === 'deterministic-lanes');
+    const fallbackLanes = { value: lanes, startedAt: laneStage?.startedAt ?? null, ms: laneStage?.ms ?? 0 };
     if (unrechecked.length) {
       progress(`${unrechecked.join(', ')} could not recheck the round's hits; ${headSha.slice(0, 12)} is reviewed afresh.`);
-      return { fallbackLanes: lanes };
+      return { fallbackLanes };
     }
     // The lanes' hits are classified exactly as the settled round classified
     // them: the same round, increment, prior blockers and budgets.
@@ -1303,7 +1309,7 @@ async function settleFromReport(settle) {
     const recorded = await readDispositions(context.paths, lineage);
     if (enforcedFindings.some((finding) => finding.deferral && !recorded.has(finding.findingKey || findingKey(finding)))) {
       progress(`A deferral this settlement applied is no longer recorded; ${headSha.slice(0, 12)} is reviewed afresh.`);
-      return { fallbackLanes: lanes };
+      return { fallbackLanes };
     }
     const verified = blockingFindings(enforcedFindings);
     const advisories = advisoryFindings(enforcedFindings);
@@ -1465,11 +1471,15 @@ async function runGateWithProviderFallback(paths, options) {
   const switches = [];
   // Set by the first round that fails: the commits and branch it resolved.
   let target = null;
+  // Set by the first round that fails after a settlement fell through: the
+  // lane result every restart enforces (1.21.1).
+  let inheritedLanes = null;
   for (let round = 0; ; round += 1) {
     try {
       return await runGateWithLease({
         ...options,
         ...(target ? { base: target.base, head: target.head, branch: target.branch } : {}),
+        inheritedLanes,
         providerFallback,
         accountFallback: switches.length || Object.keys(excluded).length
           ? { excluded: { ...excluded }, switches: [...switches] } : null,
@@ -1484,6 +1494,7 @@ async function runGateWithProviderFallback(paths, options) {
       // Without the target it reviewed, no restart could be the same review.
       if (!error.reviewTarget?.head) throw error;
       target ??= error.reviewTarget;
+      inheritedLanes ??= error.settledLanes ?? null;
       const chosen = error.accountSelection ?? {};
       // The round that just failed chose the account an earlier switch went to.
       for (const entry of switches) if (entry.to === undefined && chosen[entry.provider]) entry.to = chosen[entry.provider];
@@ -1595,6 +1606,9 @@ async function runGateWithLease({
   requesterAccounts = null,
   // Set only by the restarts: the accounts this review fell back from.
   accountFallback = null,
+  // Set only by the restarts: the lane result a settlement that fell
+  // through handed to the round that failed (1.21.1).
+  inheritedLanes = null,
 } = {}) {
   const context = await createGateContext(repoRootInput, { stateRoot });
   // Reviews are serialized (one per daemon, or one foreground run); the
@@ -1797,7 +1811,7 @@ async function runGateWithLease({
   const settleFrom = settleSource && settleSourceMismatch(settleSource, {
     identity, branch, author, risk: risk.level, round, followUpBaseSha, deferrals, prIntentDigest, pendingRenames,
   }) === null ? settleSource : null;
-  let settledLanes = null;
+  let settledLanes = inheritedLanes;
   if (settleFrom) {
     const settle = {
       context, source: settleFrom, sourceRecord: ownRecord, identity, lineage, branch, author, headSha, baseSha,
@@ -2179,16 +2193,23 @@ async function runGateWithLease({
     // only reject through the process-tree fence, which must reach the same
     // fail-closed path as a provider cleanup failure.
     // A settlement that fell through already ran them on this exact head and
-    // policy: its result is the round's (1.21.1).
-    const lanesPromise = clock.time('deterministic-lanes', () => (settledLanes ?? deterministicLanes({
-      config: reviewPolicy.config,
-      checkout: worktree.checkout,
-      repoRoot: context.repoRoot,
-      files,
-      patch,
-      baseSha,
-      stateRoot: context.stateRoot,
-    }))).then(
+    // policy: its result is the round's, and so is the time they took
+    // (1.21.1).
+    if (settledLanes) {
+      const startedAt = Date.parse(settledLanes.startedAt);
+      clock.record('deterministic-lanes', Number.isFinite(startedAt) ? startedAt : Date.now(), settledLanes.ms ?? 0);
+    }
+    const lanesPromise = (settledLanes
+      ? Promise.resolve(settledLanes.value)
+      : clock.time('deterministic-lanes', () => deterministicLanes({
+        config: reviewPolicy.config,
+        checkout: worktree.checkout,
+        repoRoot: context.repoRoot,
+        files,
+        patch,
+        baseSha,
+        stateRoot: context.stateRoot,
+      }))).then(
       (value) => ({ status: 'fulfilled', value }),
       (reason) => ({ status: 'rejected', reason }),
     );
@@ -3204,6 +3225,9 @@ async function runGateWithLease({
       // The exact commits and branch this round reviewed: every restart
       // reviews them again, never what HEAD or the base names by then.
       error.reviewTarget = { base: baseSha, head: headSha, branch };
+      // The lane result a settlement handed over: the restart enforces it
+      // rather than running the lanes again (1.21.1).
+      error.settledLanes = settledLanes;
       // Labels only: the account each provider used, and the others usable.
       error.accountSelection = Object.fromEntries(Object.entries(accountSelection).map(([provider, account]) => [provider, account.label]));
       error.accountAlternatives = accountAlternatives;
