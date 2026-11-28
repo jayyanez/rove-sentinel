@@ -13,6 +13,7 @@ import {
   pauseForUnrecoverableProviderTree,
   pollDaemonStopRequest,
   runWatcher,
+  nextGithubStreak,
   runWithHeartbeat,
   scrubLongLivedWatcherEnvironment,
   startDaemonDetached,
@@ -20,7 +21,7 @@ import {
 } from '../daemon.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
-import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readGithubStreak, readJson, sleep, writeGithubFailure } from '../storage.mjs';
 
 describe('a watcher whose GitHub polls keep failing', () => {
   it('counts a poll that rejected without a reason as a failure', async () => {
@@ -123,6 +124,51 @@ describe('a watcher whose GitHub failure record cannot be written or removed', (
       expect((await githubErrors(paths)).map((event: { message: string }) => event.message)).toEqual(['GitHub refused the comment']);
       // The backoff was set: the watcher says when it retries.
       expect(progress.some((line) => /^GitHub watcher error; retrying in \d+s: GitHub refused the comment$/.test(line))).toBe(true);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the GitHub failure streak a watcher keeps', () => {
+  const at = new Date('2026-01-01T10:00:00.000Z');
+  it('counts each failure since the first, and ends with a success', () => {
+    expect(nextGithubStreak(null, true, at)).toEqual({ count: 1, since: '2026-01-01T10:00:00.000Z' });
+    expect(nextGithubStreak({ count: 2, since: '2026-01-01T09:00:00.000Z' }, true, at)).toEqual({ count: 3, since: '2026-01-01T09:00:00.000Z' });
+    expect(nextGithubStreak({ count: 2, since: '2026-01-01T09:00:00.000Z' }, false, at)).toBeNull();
+    // A record a success could not remove is no longer the streak: the next
+    // failure starts again from the streak the success ended.
+    expect(nextGithubStreak(nextGithubStreak({ count: 5, since: 'old' }, false, at), true, at)).toEqual({ count: 1, since: '2026-01-01T10:00:00.000Z' });
+  });
+
+  it('keeps a failure whose record could not be written in the next write', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-streak-'));
+    const paths = await ensureState(stateRoot);
+    try {
+      // The first failure's write fails; the watcher's own count goes on.
+      await mkdir(paths.githubFailure, { recursive: true });
+      let streak = nextGithubStreak(null, true, new Date('2026-01-01T10:00:00.000Z'));
+      await expect(writeGithubFailure(paths, new Error('first'), streak)).rejects.toThrow();
+      await rm(paths.githubFailure, { recursive: true, force: true });
+      streak = nextGithubStreak(streak, true, new Date('2026-01-01T10:05:00.000Z'));
+      await writeGithubFailure(paths, new Error('second'), streak, new Date('2026-01-01T10:05:00.000Z'));
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: '2026-01-01T10:00:00.000Z', message: 'second' });
+      expect(await readGithubStreak(paths)).toEqual({ count: 2, since: '2026-01-01T10:00:00.000Z' });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reads no streak from a missing, unreadable or malformed record', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-streak-read-'));
+    const paths = await ensureState(stateRoot);
+    try {
+      expect(await readGithubStreak(paths)).toBeNull();
+      await atomicWriteJson(paths.githubFailure, { schemaVersion: 1, count: 'two' });
+      expect(await readGithubStreak(paths)).toBeNull();
+      await rm(paths.githubFailure, { force: true });
+      await mkdir(paths.githubFailure, { recursive: true });
+      expect(await readGithubStreak(paths)).toBeNull();
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

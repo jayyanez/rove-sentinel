@@ -1424,15 +1424,33 @@ export async function writeDaemonError(paths, error) {
  * The GitHub polls that failed in a row. A watcher goes on after one, keeping its
  * heartbeat, so an event alone left one that never reviews looking well: status
  * reads this. It stays across a restart, since a restart fixes nothing by itself,
- * and goes with the next poll that succeeds (when it can be removed), or with an
- * install.
+ * and goes with the next poll that succeeds, or with an install.
  */
 export async function recordGithubFailure(paths, error, at = new Date()) {
-  const previous = await readJson(paths.githubFailure).catch(() => null);
+  const previous = await readGithubStreak(paths);
+  await writeGithubFailure(paths, error, {
+    count: (previous?.count ?? 0) + 1,
+    since: previous?.since ?? at.toISOString(),
+  }, at);
+}
+
+/**
+ * The streak a record on disk holds, or null; never throws (1.21.2). A running
+ * watcher reads it once and keeps the streak itself from then on.
+ */
+export async function readGithubStreak(paths) {
+  const record = await readJson(paths.githubFailure).catch(() => null);
+  return Number.isInteger(record?.count) && record.count > 0
+    ? { count: record.count, since: typeof record.since === 'string' ? record.since : null }
+    : null;
+}
+
+/** The whole record for a streak the caller counted: no read, so no lost count (1.21.2). */
+export async function writeGithubFailure(paths, error, { count, since }, at = new Date()) {
   await atomicWriteJson(paths.githubFailure, {
     schemaVersion: 1,
-    count: (Number.isInteger(previous?.count) ? previous.count : 0) + 1,
-    since: previous?.since ?? at.toISOString(),
+    count,
+    since: since ?? at.toISOString(),
     at: at.toISOString(),
     message: String(error?.message || error || 'unknown GitHub error').slice(0, 2000),
   });

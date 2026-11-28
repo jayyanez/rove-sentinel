@@ -21,6 +21,7 @@ import {
   acquireDaemonLock,
   clearDaemonError,
   clearGithubFailure,
+  writeGithubFailure,
   claimNextRequest,
   completeRequest,
   hasQueuedRequests,
@@ -29,7 +30,7 @@ import {
   readJson,
   readPause,
   readWatcherGithub,
-  recordGithubFailure,
+  readGithubStreak,
   removeStoredJson,
   recoverClaims,
   sleep,
@@ -302,6 +303,17 @@ export async function drainQueuedRequests(
   return paused;
 }
 
+/**
+ * The GitHub failure streak after one poll (1.21.2): null after a success, one
+ * more failure since the streak's first otherwise. Pure.
+ */
+export function nextGithubStreak(streak, failed, at = new Date()) {
+  if (!failed) return null;
+  return streak
+    ? { count: streak.count + 1, since: streak.since ?? at.toISOString() }
+    : { count: 1, since: at.toISOString() };
+}
+
 export async function runWatcher({
   repoRoot = process.cwd(),
   stateRoot,
@@ -339,6 +351,9 @@ export async function runWatcher({
     let stopped = false;
     let nextGithubAt = 0;
     let githubBackoffMs = LIMITS.githubPollMs;
+    // The GitHub failure streak this watcher counts: read from disk at its
+    // first failed poll, null after a success (1.21.2).
+    let githubStreak;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };
     let stopTermination = null;
@@ -422,16 +437,21 @@ export async function runWatcher({
               ? Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs)
               : LIMITS.githubPollMs;
             nextGithubAt = Date.now() + githubBackoffMs;
+            // The watcher keeps the failure streak itself and writes the whole
+            // record each time: a failure whose record could not be written
+            // still counts in the next write, and a record a success could
+            // not remove is replaced, not added to, by the next failure.
+            if (githubStreak === undefined) githubStreak = pollFailed ? await readGithubStreak(context.paths) : null;
+            const pollAt = new Date();
+            githubStreak = nextGithubStreak(githubStreak, pollFailed, pollAt);
             if (pollFailed) {
               await recordEvent(context.paths, {
                 type: 'github-error',
                 message: pollError?.message || String(pollError),
               }).catch(() => {});
-              await recordGithubFailure(context.paths, pollError).catch(() => {});
+              await writeGithubFailure(context.paths, pollError, githubStreak, pollAt).catch(() => {});
               progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${pollError?.message || String(pollError)}`);
             } else {
-              // A record that cannot be removed stays on disk until a later
-              // success removes it, and status shows it until then.
               await clearGithubFailure(context.paths).catch(() => {});
             }
           }
