@@ -1424,7 +1424,9 @@ export async function writeDaemonError(paths, error) {
  * The GitHub polls that failed in a row. A watcher goes on after one, keeping its
  * heartbeat, so an event alone left one that never reviews looking well: status
  * reads this. It stays across a restart, since a restart fixes nothing by itself,
- * and goes with the next poll that succeeds, or with an install.
+ * and goes with the next poll that succeeds (when it can be removed), or with an
+ * install. A running watcher writes it with writeGithubFailure; this read-and-add
+ * form remains for callers that keep no streak of their own, such as tests.
  */
 export async function recordGithubFailure(paths, error, at = new Date()) {
   const previous = await readGithubStreak(paths);

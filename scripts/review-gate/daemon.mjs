@@ -21,7 +21,6 @@ import {
   acquireDaemonLock,
   clearDaemonError,
   clearGithubFailure,
-  writeGithubFailure,
   claimNextRequest,
   completeRequest,
   hasQueuedRequests,
@@ -37,6 +36,7 @@ import {
   statePaths,
   writeHeartbeat,
   writeDaemonError,
+  writeGithubFailure,
 } from './storage.mjs';
 
 export async function loadWatcherPolicy(context) {
