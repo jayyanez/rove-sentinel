@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.21.2 — Three watcher fixes: a racing test, an unwritable events folder, a lane's note in a comment
+
+Three fixes found after 1.21.1. Nothing needs doing to receive them: they arrive as an ordinary
+automatic update. As in every release that increments the engine version, upgrading refreshes
+the installed policy snapshot digest, so a branch's next review after the update is a new
+lineage.
+
+- **The output-limit test no longer races its child's exit.** Its child wrote past the bound
+  and exited at once, so the test raced that exit against the termination it checks: on a
+  loaded host the child's pipes could close after the 100 ms check, its tree was called
+  orphaned, and the test failed that way on a Node 24 CI run. The child now keeps running for
+  up to 30 seconds, as an overflowing provider does. The same race can still call an exited
+  provider's tree orphaned under heavy load; that fails closed (the watcher pauses), and is
+  left so, since a closed pipe cannot prove that no descendant still runs.
+- **An events folder that cannot be written never stops the GitHub sync.** The pull request
+  loop's publish-error and sync events, and the watcher's own GitHub error event, were awaited
+  before the work they record: the loop stopped before the other pull requests, and the
+  watcher's write replaced the GitHub error with its own and skipped the GitHub failure record
+  and its backoff. Those events are now best effort, and the watcher settles a poll's outcome
+  and the next poll's time before it writes the poll's records (its event and the failure
+  record), so those writes failing can neither turn a poll into another outcome nor move the
+  schedule. The watcher also keeps the failure streak itself and writes the whole record each
+  time: within a running watcher, a failure whose record could not be written still counts in
+  the next one written, and a record a success could not remove is replaced, not added to, by
+  the next failure (a restart in between reads the record as it is on disk); a record the
+  watcher cannot read is left as it is, read again at the next failed poll, and the failures
+  meanwhile join its streak once it can be read (while it stays unreadable, nothing is
+  written). Until the next poll writes or removes it, `status` shows the record as it was. A
+  poll that fails without a reason counts as a failure.
+- **A pull request comment's summary names a lane that did not finish by its status.** A
+  completed review's summary quoted each deterministic lane's own note, and a lane that
+  failed, timed out or was unavailable can quote a tool's output or a local path; a cleanup
+  failure added its folders. Results now carry a public summary for the comment, in which a
+  lane that finished keeps its note, which Sentinel writes itself, any other that ran is named
+  by its status (for example `eslint: error`; a skipped lane is left out, as before), and a
+  cleanup failure is only said to have happened. A result without a public summary publishes
+  none of its summary, except a skipped change's. The local report keeps every note. A
+  finding's own text is published as before: a lane's finding is its tool's message, which can
+  name a local path.
+
 ## 1.21.1 — A rerun of an unchanged head settles from the round that reviewed it
 
 A rerun of the same head after `defer` no longer reviews that head again from scratch.

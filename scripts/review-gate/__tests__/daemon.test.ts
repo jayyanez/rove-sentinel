@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,6 +13,8 @@ import {
   pauseForUnrecoverableProviderTree,
   pollDaemonStopRequest,
   runWatcher,
+  githubStreakAfterPoll,
+  nextGithubStreak,
   runWithHeartbeat,
   scrubLongLivedWatcherEnvironment,
   startDaemonDetached,
@@ -20,9 +22,25 @@ import {
 } from '../daemon.mjs';
 import { CHARTER_VERSION, GATE_VERSION } from '../constants.mjs';
 import { reviewPolicySnapshot } from '../context.mjs';
-import { atomicWriteJson, ensureState, readJson, sleep } from '../storage.mjs';
+import { atomicWriteJson, ensureState, readGithubStreak, readJson, sleep, writeGithubFailure } from '../storage.mjs';
 
 describe('a watcher whose GitHub polls keep failing', () => {
+  it('counts a poll that rejected without a reason as a failure', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-noreason-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true,
+        syncPulls: () => Promise.reject(undefined),
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, message: 'The GitHub poll failed without a reason.' });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
   it('keeps count of the failures in a row, the first one\'s time and the last reason, until a poll succeeds', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-failure-'));
     const paths = await ensureState(stateRoot);
@@ -39,6 +57,145 @@ describe('a watcher whose GitHub polls keep failing', () => {
       expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: first.since, message: 'a later reason' });
       await poll(async () => {});
       expect(await readJson(paths.githubFailure)).toBeNull();
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a watcher whose events folder cannot be written', () => {
+  it('still records the GitHub failure, and with its own reason', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-events-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true,
+        // The events folder breaks while the poll runs (a file now stands
+        // where it was), so the watcher's own event write fails.
+        syncPulls: async () => {
+          await rm(paths.events, { recursive: true, force: true });
+          await writeFile(paths.events, 'not a folder');
+          throw new Error('GitHub refused the comment');
+        },
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 1, message: 'GitHub refused the comment' });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a watcher whose GitHub failure record cannot be written or removed', () => {
+  async function watcherState() {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-record-'));
+    const paths = await ensureState(stateRoot);
+    await atomicWriteJson(paths.policy, reviewPolicySnapshot({ charter: '# Installed charter', lessons: '# Installed lessons', config: {} }));
+    // A folder stands where the failure record is: writing or removing it fails.
+    await mkdir(paths.githubFailure, { recursive: true });
+    return { stateRoot, paths };
+  }
+  const githubErrors = async (paths: { events: string }) => (await Promise.all((await readdir(paths.events))
+    .map(async (name) => JSON.parse(await readFile(path.join(paths.events, name), 'utf8')))))
+    .filter((event: { type?: string }) => event.type === 'github-error');
+
+  it('keeps a poll that succeeded a success', async () => {
+    const { stateRoot, paths } = await watcherState();
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, syncPulls: async () => {},
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect(await githubErrors(paths)).toEqual([]);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a poll that failed a GitHub error, not a storage one', async () => {
+    const { stateRoot, paths } = await watcherState();
+    const progress: string[] = [];
+    try {
+      await runWatcher({
+        repoRoot: process.cwd(), stateRoot, once: true, progress: (line: string) => progress.push(line),
+        syncPulls: async () => { throw new Error('GitHub refused the comment'); },
+        recoverResources: async () => {}, recoverQueuedClaims: async () => {},
+      });
+      expect((await githubErrors(paths)).map((event: { message: string }) => event.message)).toEqual(['GitHub refused the comment']);
+      // The backoff was set: the watcher says when it retries.
+      expect(progress.some((line) => /^GitHub watcher error; retrying in \d+s: GitHub refused the comment$/.test(line))).toBe(true);
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the GitHub failure streak a watcher keeps', () => {
+  const at = new Date('2026-01-01T10:00:00.000Z');
+  it('counts each failure since the first, and ends with a success', () => {
+    expect(nextGithubStreak(null, true, at)).toEqual({ count: 1, since: '2026-01-01T10:00:00.000Z' });
+    expect(nextGithubStreak({ count: 2, since: '2026-01-01T09:00:00.000Z' }, true, at)).toEqual({ count: 3, since: '2026-01-01T09:00:00.000Z' });
+    expect(nextGithubStreak({ count: 2, since: '2026-01-01T09:00:00.000Z' }, false, at)).toBeNull();
+    // A record a success could not remove is no longer the streak: the next
+    // failure starts again from the streak the success ended.
+    expect(nextGithubStreak(nextGithubStreak({ count: 5, since: 'old' }, false, at), true, at)).toEqual({ count: 1, since: '2026-01-01T10:00:00.000Z' });
+  });
+
+  it('counts every failure in every order of success, failure and an unreadable record', () => {
+    const t = (minute: number) => new Date(`2026-01-01T10:${String(minute).padStart(2, '0')}:00.000Z`);
+    const start = { streak: undefined, unread: null };
+    // A success ends everything, read or not.
+    expect(githubStreakAfterPoll(start, { failed: false })).toEqual({ streak: null, unread: null });
+    // The first failure reads the record: none, or the streak it holds.
+    expect(githubStreakAfterPoll(start, { failed: true, onDisk: null, at: t(0) })).toEqual({ streak: { count: 1, since: t(0).toISOString() }, unread: null });
+    expect(githubStreakAfterPoll(start, { failed: true, onDisk: { count: 3, since: 'old' }, at: t(0) })).toEqual({ streak: { count: 4, since: 'old' }, unread: null });
+    // A record that cannot be read: the failure is kept apart, and nothing is written.
+    let state = githubStreakAfterPoll(start, { failed: true, onDisk: undefined, at: t(0) });
+    expect(state).toEqual({ streak: undefined, unread: { count: 1, since: t(0).toISOString() } });
+    state = githubStreakAfterPoll(state, { failed: true, onDisk: undefined, at: t(1) });
+    expect(state.unread).toEqual({ count: 2, since: t(0).toISOString() });
+    // Once it can be read, the failures meanwhile join its streak, and this one too.
+    expect(githubStreakAfterPoll(state, { failed: true, onDisk: { count: 3, since: 'old' }, at: t(2) })).toEqual({ streak: { count: 6, since: 'old' }, unread: null });
+    expect(githubStreakAfterPoll(state, { failed: true, onDisk: null, at: t(2) })).toEqual({ streak: { count: 3, since: t(0).toISOString() }, unread: null });
+    // A success while unreadable ends the failures kept apart.
+    expect(githubStreakAfterPoll(state, { failed: false })).toEqual({ streak: null, unread: null });
+    // A known streak goes on without reading again.
+    expect(githubStreakAfterPoll({ streak: { count: 1, since: 'a' }, unread: null }, { failed: true, onDisk: undefined, at: t(3) })).toEqual({ streak: { count: 2, since: 'a' }, unread: null });
+  });
+
+  it('keeps a failure whose record could not be written in the next write', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-streak-'));
+    const paths = await ensureState(stateRoot);
+    try {
+      // The first failure's write fails; the watcher's own count goes on.
+      await mkdir(paths.githubFailure, { recursive: true });
+      let streak = nextGithubStreak(null, true, new Date('2026-01-01T10:00:00.000Z'));
+      await expect(writeGithubFailure(paths, new Error('first'), streak)).rejects.toThrow();
+      await rm(paths.githubFailure, { recursive: true, force: true });
+      streak = nextGithubStreak(streak, true, new Date('2026-01-01T10:05:00.000Z'));
+      await writeGithubFailure(paths, new Error('second'), streak, new Date('2026-01-01T10:05:00.000Z'));
+      expect(await readJson(paths.githubFailure)).toMatchObject({ count: 2, since: '2026-01-01T10:00:00.000Z', message: 'second' });
+      expect(await readGithubStreak(paths)).toEqual({ count: 2, since: '2026-01-01T10:00:00.000Z' });
+    } finally {
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reads no streak from a missing or malformed record, and an unknown one from a record it cannot read', async () => {
+    const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-streak-read-'));
+    const paths = await ensureState(stateRoot);
+    try {
+      expect(await readGithubStreak(paths)).toBeNull();
+      await atomicWriteJson(paths.githubFailure, { schemaVersion: 1, count: 'two' });
+      expect(await readGithubStreak(paths)).toBeNull();
+      // Corrupt text is no record: the next write replaces it.
+      await writeFile(paths.githubFailure, '{ "count": 3,');
+      expect(await readGithubStreak(paths)).toBeNull();
+      // A record that cannot be read is unknown, and the watcher leaves it.
+      await rm(paths.githubFailure, { force: true });
+      await mkdir(paths.githubFailure, { recursive: true });
+      expect(await readGithubStreak(paths)).toBeUndefined();
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

@@ -29,13 +29,14 @@ import {
   readJson,
   readPause,
   readWatcherGithub,
-  recordGithubFailure,
+  readGithubStreak,
   removeStoredJson,
   recoverClaims,
   sleep,
   statePaths,
   writeHeartbeat,
   writeDaemonError,
+  writeGithubFailure,
 } from './storage.mjs';
 
 export async function loadWatcherPolicy(context) {
@@ -302,6 +303,40 @@ export async function drainQueuedRequests(
   return paused;
 }
 
+/**
+ * The GitHub failure streak after one poll (1.21.2): null after a success, one
+ * more failure since the streak's first otherwise. Pure.
+ */
+export function nextGithubStreak(streak, failed, at = new Date()) {
+  if (!failed) return null;
+  return streak
+    ? { count: streak.count + 1, since: streak.since ?? at.toISOString() }
+    : { count: 1, since: at.toISOString() };
+}
+
+/**
+ * The watcher's GitHub failure streak after one poll (1.21.2). `streak` is
+ * undefined until the record is read, null after a success, or the streak;
+ * `unread` holds the failures counted while the record could not be read.
+ * `onDisk` is what a read at this failed poll found: the record's streak,
+ * null for none, or undefined when it could not be read. A success ends both;
+ * a failure while the record cannot be read is kept in `unread`, and joins
+ * the record's streak once it can be read. Pure.
+ */
+export function githubStreakAfterPoll({ streak, unread = null }, { failed, onDisk, at = new Date() }) {
+  if (!failed) return { streak: null, unread: null };
+  let known = streak;
+  let pending = unread;
+  if (known === undefined && onDisk !== undefined) {
+    known = pending
+      ? { count: (onDisk?.count ?? 0) + pending.count, since: onDisk?.since ?? pending.since }
+      : onDisk;
+    pending = null;
+  }
+  if (known === undefined) return { streak: undefined, unread: nextGithubStreak(pending, true, at) };
+  return { streak: nextGithubStreak(known, true, at), unread: null };
+}
+
 export async function runWatcher({
   repoRoot = process.cwd(),
   stateRoot,
@@ -339,6 +374,11 @@ export async function runWatcher({
     let stopped = false;
     let nextGithubAt = 0;
     let githubBackoffMs = LIMITS.githubPollMs;
+    // The GitHub failure streak this watcher counts: read from disk at its
+    // first failed poll, null after a success (1.21.2).
+    let githubStreak;
+    // Failures counted while the record could not be read (1.21.2).
+    let githubUnread = null;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };
     let stopTermination = null;
@@ -390,6 +430,12 @@ export async function runWatcher({
               activity: 'paused',
             });
           } else if (github && Date.now() >= nextGithubAt && await readWatcherGithub(context.paths)) {
+            // The poll's outcome and the next poll's time are settled before
+            // anything is recorded, and the records are best effort: storage
+            // that fails can neither turn this outcome into another nor move
+            // the schedule (1.21.2).
+            let pollFailed = false;
+            let pollError;
             try {
               await runWithHeartbeat(
                 context,
@@ -407,18 +453,40 @@ export async function runWatcher({
                   ),
                 }),
               );
-              githubBackoffMs = LIMITS.githubPollMs;
-              await clearGithubFailure(context.paths);
             } catch (error) {
+              // A rejection without a reason is a failure too.
+              pollFailed = true;
+              pollError = error ?? new Error('The GitHub poll failed without a reason.');
+            }
+            githubBackoffMs = pollFailed
+              ? Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs)
+              : LIMITS.githubPollMs;
+            nextGithubAt = Date.now() + githubBackoffMs;
+            // The watcher keeps the failure streak itself and writes the whole
+            // record each time: a failure whose record could not be written
+            // still counts in the next write, and a record a success could
+            // not remove is replaced, not added to, by the next failure.
+            // A record the watcher cannot read is left as it is, read again at
+            // the next failed poll, and the failures meanwhile join its streak
+            // once it can be read (githubStreakAfterPoll).
+            const pollAt = new Date();
+            const onDisk = pollFailed && githubStreak === undefined ? await readGithubStreak(context.paths) : undefined;
+            ({ streak: githubStreak, unread: githubUnread } = githubStreakAfterPoll(
+              { streak: githubStreak, unread: githubUnread },
+              { failed: pollFailed, onDisk, at: pollAt },
+            ));
+            if (pollFailed) {
               await recordEvent(context.paths, {
                 type: 'github-error',
-                message: error?.message || String(error),
-              });
-              await recordGithubFailure(context.paths, error);
-              githubBackoffMs = Math.min(githubBackoffMs * 2, LIMITS.githubMaxBackoffMs);
-              progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${error.message}`);
+                message: pollError?.message || String(pollError),
+              }).catch(() => {});
+              if (githubStreak !== undefined) {
+                await writeGithubFailure(context.paths, pollError, githubStreak, pollAt).catch(() => {});
+              }
+              progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${pollError?.message || String(pollError)}`);
+            } else {
+              await clearGithubFailure(context.paths).catch(() => {});
             }
-            nextGithubAt = Date.now() + githubBackoffMs;
           }
           watcherBackoffMs = LIMITS.queuePollMs;
           watcherDelayDetails = { activity: paused ? 'paused' : 'idle' };

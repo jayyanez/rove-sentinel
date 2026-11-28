@@ -1420,7 +1420,7 @@ describe('self-review regressions (1.21.0)', () => {
     });
     // A boolean flag with `=no` must NOT be parsed as `true` (`limits --json=no` prints text, not JSON).
     const limitsWithEquals = execFileSync(process.execPath, [cliPath, 'limits', '--json=no'], { encoding: 'utf8' });
-    expect(limitsWithEquals).toContain('Rove Sentinel 1.21.1:');
+    expect(limitsWithEquals).toContain('Rove Sentinel 1.21.2:');
     expect(() => JSON.parse(limitsWithEquals)).toThrow();
     expect(() => execFileSync(process.execPath, [
       cliPath, 'gate', '--repo', root, '--state-root', stateRoot, '--base', base, '--head', head, '--dry-run', '--intent=', '--json',

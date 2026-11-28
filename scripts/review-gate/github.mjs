@@ -96,6 +96,7 @@ function compactOutcomeResult(result) {
     identity: result.identity,
     risk: result.risk,
     summary: truncate(result.summary, LIMITS.githubSummaryChars),
+    ...(typeof result.publicSummary === 'string' ? { publicSummary: truncate(result.publicSummary, LIMITS.githubSummaryChars) } : {}),
     actionableCount: result.actionableCount ?? actionable.length,
     advisoryCount: result.advisoryCount ?? advisories.length,
     convergence: result.convergence,
@@ -194,6 +195,16 @@ export function findOwnedGateComment(comments, publisherLogin) {
 // GitHub refused to update can outlive it.
 export const GITHUB_ERROR_SUMMARY = "The local review could not complete and did not produce an attestation. The reason was recorded on the reviewing machine, in the watcher's outcome record for this head, which lasts until the head is reviewed again or the record is pruned: error text is not published here, because it can carry local setup (accounts, paths, a provider CLI's output).";
 
+// The summary a comment publishes (1.21.2). A review writes a public summary
+// beside its own; a skipped change's summary is Sentinel's fixed text. Any
+// other result without one publishes nothing of its summary, rather than
+// lane notes or a cleanup detail it may carry.
+function publishedSummary(result) {
+  if (typeof result.publicSummary === 'string' && result.publicSummary) return result.publicSummary;
+  if (result.mode === 'skipped' && typeof result.summary === 'string' && result.summary) return result.summary;
+  return 'The summary is kept in the local report.';
+}
+
 export function renderGateComment(result) {
   const advisoryFindings = (result.findings || [])
     .filter((finding) => finding.disposition === 'advisory');
@@ -219,7 +230,10 @@ export function renderGateComment(result) {
     // the accounts a person reviews with are their own setup. The local
     // report, the attestation and the text result keep them by label.
     '',
-    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : (result.summary || 'No summary was produced.'), LIMITS.githubSummaryChars),
+    // A completed review publishes its public summary (1.21.2): a lane that
+    // did not finish is named by its status, never by its note, which can
+    // quote a tool's output or a local path (publishedSummary).
+    githubText(result.status === 'error' ? GITHUB_ERROR_SUMMARY : publishedSummary(result), LIMITS.githubSummaryChars),
   ];
   if (result.convergence) {
     const convergence = result.convergence;
@@ -485,12 +499,16 @@ export async function syncPullRequests({
       const message = error?.message || String(error);
       publishErrors.push(`PR #${pr.number}: ${message}`);
       outcomes.push({ pr: pr.number, status: result.status, published: false, publishError: message });
+      // Events here are a record, never a reason to stop (1.21.2): the
+      // publish error is still thrown below for the whole sync, and the
+      // other pull requests are reached when the events folder cannot be
+      // written.
       await recordEvent(context.paths, {
         type: 'github-publish-error',
         pr: pr.number,
         headSha: pr.headRefOid,
         message,
-      });
+      }).catch(() => {});
       continue;
     }
     outcomes.push({ pr: pr.number, status: result.status, published: published.changed });
@@ -501,7 +519,7 @@ export async function syncPullRequests({
         headSha: pr.headRefOid,
         status: result.status,
         published: true,
-      });
+      }).catch(() => {});
     }
   }
   if (publishErrors.length) {

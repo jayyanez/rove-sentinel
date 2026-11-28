@@ -1005,6 +1005,12 @@ export async function reconcileCleanupFailure({
   if (completedResult && completedResult.status !== 'pass') {
     completedResult.cleanupErrors = messages;
     completedResult.summary = `${completedResult.summary} Temporary resource cleanup also failed: ${detail}`;
+    // The detail names local folders; a pull request comment says only that
+    // it happened (1.21.2). The detail stays in the gate's output and the
+    // watcher's outcome record (the report was written before cleanup).
+    if (typeof completedResult.publicSummary === 'string') {
+      completedResult.publicSummary = `${completedResult.publicSummary} Temporary resource cleanup also failed; the detail stays on the reviewing machine.`;
+    }
     if (cleanupCode) {
       const cleanupError = new Error(`Review result was preserved but process-tree cleanup could not be verified: ${detail}`);
       cleanupError.code = cleanupCode;
@@ -1141,6 +1147,22 @@ async function filesAtHead(repoRoot, headSha, files) {
 export function handedLanesFor(inherited, identity) {
   if (!inherited || typeof inherited !== 'object' || !inherited.identity || !identity) return null;
   return Object.entries(identity).every(([key, value]) => inherited.identity[key] === value) ? inherited : null;
+}
+
+/** Each lane that ran, as the local report names it: its own note. */
+export function laneNotesOf(lanes) {
+  return lanes.filter((lane) => lane.status !== 'skipped').map((lane) => `${lane.lane}: ${lane.note}`);
+}
+
+/**
+ * Each lane that ran, as a pull request comment names it (1.21.2): a lane
+ * that finished keeps its note, the counts Sentinel writes itself; any
+ * other names only its status, since its note can quote a tool's output or
+ * a local path. The local report keeps every note. Pure.
+ */
+export function publicLaneNotes(lanes) {
+  return lanes.filter((lane) => lane.status !== 'skipped')
+    .map((lane) => `${lane.lane}: ${lane.status === 'ok' ? lane.note : String(lane.status)}`);
 }
 
 /** The round a settling run names: the one that ran reviewers (1.21.1). */
@@ -1330,14 +1352,15 @@ async function settleFromReport(settle) {
     const dismissed = enforcedFindings.filter((finding) => finding.disposition === 'dismissed');
     const status = verified.length ? 'fail' : 'pass';
     const pending = undisposedAdvisories(enforcedFindings, recorded);
-    const laneNotes = lanes.lanes.filter((lane) => lane.status !== 'skipped').map((lane) => `${lane.lane}: ${lane.note}`);
-    const summary = [
+    const summaryWith = (laneNotes) => [
       `Settled from report ${settledFrom.reportId}, the round that reviewed this exact head, base, policy and intent${settledFrom.reviewedAt ? ` (${settledFrom.reviewedAt})` : ''}: no reviewer ran, its verdicts stand and the deferrals recorded since apply.`,
       advisories.length
         ? `${advisories.length} lower-severity finding(s) remain visible as non-blocking advisories under the bounded-convergence policy${pending.length ? `; ${pending.length} of them need a fix or a recorded deferral before this head can be pushed` : ''}.`
         : '',
       laneNotes.length ? `Deterministic lanes — ${laneNotes.join('; ')}.` : '',
     ].filter(Boolean).join(' ');
+    const summary = summaryWith(laneNotesOf(lanes.lanes));
+    const publicSummary = summaryWith(publicLaneNotes(lanes.lanes));
     // A late-discovery round the head spent stays spent, even when the
     // deferral now makes that finding an advisory.
     const resultConvergence = {
@@ -1362,6 +1385,7 @@ async function settleFromReport(settle) {
       convergence: resultConvergence,
       status,
       summary,
+      publicSummary,
       round,
       followUpBaseSha,
       shards,
@@ -1402,6 +1426,7 @@ async function settleFromReport(settle) {
       mode: advisories.length ? 'reviewed-with-advisories' : 'reviewed',
       round,
       summary,
+      publicSummary,
       providers: reviewers.length ? reviewers : [...new Set(source.plan?.reviewers ?? [])],
       providerExecutions,
       modelDiversity: baseReport.modelDiversity,
@@ -3106,9 +3131,7 @@ async function runGateWithLease({
         ? 'needs_native_evidence'
         : 'pass';
     const pending = undisposedAdvisories(enforcedFindings, deferralsAtHead);
-    const laneNotes = lanes.lanes.filter((lane) => lane.status !== 'skipped')
-      .map((lane) => `${lane.lane}: ${lane.note}`);
-    const summary = [
+    const summaryWith = (laneNotes) => [
       adjudication.summary,
       advisories.length
         ? `${advisories.length} lower-severity finding(s) remain visible as non-blocking advisories under the bounded-convergence policy${pending.length ? `; ${pending.length} of them need a fix or a recorded deferral before this head can be pushed` : ''}.`
@@ -3116,6 +3139,8 @@ async function runGateWithLease({
       laneNotes.length ? `Deterministic lanes — ${laneNotes.join('; ')}.` : '',
       carriedForward.length ? `${carriedForward.length} prior blocker(s) could not be re-verified this round and are carried forward as still present.` : '',
     ].filter(Boolean).join(' ');
+    const summary = summaryWith(laneNotesOf(lanes.lanes));
+    const publicSummary = summaryWith(publicLaneNotes(lanes.lanes));
     const resultConvergence = {
       ...convergence,
       // A late-discovery round this head already spent stays spent on a rerun
@@ -3133,6 +3158,7 @@ async function runGateWithLease({
       convergence: resultConvergence,
       status,
       summary,
+      publicSummary,
       round,
       followUpBaseSha,
       shards: shardRecords,
@@ -3192,6 +3218,7 @@ async function runGateWithLease({
       mode,
       round,
       summary,
+      publicSummary,
       providers: [...new Set([...plan.reviewers, ...(usedCoordinator ? [plan.coordinator] : [])])],
       providerExecutions,
       modelDiversity: baseReport.modelDiversity,

