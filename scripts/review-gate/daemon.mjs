@@ -314,6 +314,29 @@ export function nextGithubStreak(streak, failed, at = new Date()) {
     : { count: 1, since: at.toISOString() };
 }
 
+/**
+ * The watcher's GitHub failure streak after one poll (1.21.2). `streak` is
+ * undefined until the record is read, null after a success, or the streak;
+ * `unread` holds the failures counted while the record could not be read.
+ * `onDisk` is what a read at this failed poll found: the record's streak,
+ * null for none, or undefined when it could not be read. A success ends both;
+ * a failure while the record cannot be read is kept in `unread`, and joins
+ * the record's streak once it can be read. Pure.
+ */
+export function githubStreakAfterPoll({ streak, unread = null }, { failed, onDisk, at = new Date() }) {
+  if (!failed) return { streak: null, unread: null };
+  let known = streak;
+  let pending = unread;
+  if (known === undefined && onDisk !== undefined) {
+    known = pending
+      ? { count: (onDisk?.count ?? 0) + pending.count, since: onDisk?.since ?? pending.since }
+      : onDisk;
+    pending = null;
+  }
+  if (known === undefined) return { streak: undefined, unread: nextGithubStreak(pending, true, at) };
+  return { streak: nextGithubStreak(known, true, at), unread: null };
+}
+
 export async function runWatcher({
   repoRoot = process.cwd(),
   stateRoot,
@@ -354,6 +377,8 @@ export async function runWatcher({
     // The GitHub failure streak this watcher counts: read from disk at its
     // first failed poll, null after a success (1.21.2).
     let githubStreak;
+    // Failures counted while the record could not be read (1.21.2).
+    let githubUnread = null;
     let watcherBackoffMs = LIMITS.queuePollMs;
     let watcherDelayDetails = { activity: 'idle' };
     let stopTermination = null;
@@ -441,12 +466,15 @@ export async function runWatcher({
             // record each time: a failure whose record could not be written
             // still counts in the next write, and a record a success could
             // not remove is replaced, not added to, by the next failure.
-            // A record the watcher cannot read is left as it is, and read again
-            // at the next failed poll, rather than replaced with a count that
-            // does not know it.
-            if (githubStreak === undefined) githubStreak = pollFailed ? await readGithubStreak(context.paths) : null;
+            // A record the watcher cannot read is left as it is, read again at
+            // the next failed poll, and the failures meanwhile join its streak
+            // once it can be read (githubStreakAfterPoll).
             const pollAt = new Date();
-            if (githubStreak !== undefined) githubStreak = nextGithubStreak(githubStreak, pollFailed, pollAt);
+            const onDisk = pollFailed && githubStreak === undefined ? await readGithubStreak(context.paths) : undefined;
+            ({ streak: githubStreak, unread: githubUnread } = githubStreakAfterPoll(
+              { streak: githubStreak, unread: githubUnread },
+              { failed: pollFailed, onDisk, at: pollAt },
+            ));
             if (pollFailed) {
               await recordEvent(context.paths, {
                 type: 'github-error',

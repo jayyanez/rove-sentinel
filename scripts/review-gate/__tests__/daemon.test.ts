@@ -13,6 +13,7 @@ import {
   pauseForUnrecoverableProviderTree,
   pollDaemonStopRequest,
   runWatcher,
+  githubStreakAfterPoll,
   nextGithubStreak,
   runWithHeartbeat,
   scrubLongLivedWatcherEnvironment,
@@ -139,6 +140,28 @@ describe('the GitHub failure streak a watcher keeps', () => {
     // A record a success could not remove is no longer the streak: the next
     // failure starts again from the streak the success ended.
     expect(nextGithubStreak(nextGithubStreak({ count: 5, since: 'old' }, false, at), true, at)).toEqual({ count: 1, since: '2026-01-01T10:00:00.000Z' });
+  });
+
+  it('counts every failure in every order of success, failure and an unreadable record', () => {
+    const t = (minute: number) => new Date(`2026-01-01T10:${String(minute).padStart(2, '0')}:00.000Z`);
+    const start = { streak: undefined, unread: null };
+    // A success ends everything, read or not.
+    expect(githubStreakAfterPoll(start, { failed: false })).toEqual({ streak: null, unread: null });
+    // The first failure reads the record: none, or the streak it holds.
+    expect(githubStreakAfterPoll(start, { failed: true, onDisk: null, at: t(0) })).toEqual({ streak: { count: 1, since: t(0).toISOString() }, unread: null });
+    expect(githubStreakAfterPoll(start, { failed: true, onDisk: { count: 3, since: 'old' }, at: t(0) })).toEqual({ streak: { count: 4, since: 'old' }, unread: null });
+    // A record that cannot be read: the failure is kept apart, and nothing is written.
+    let state = githubStreakAfterPoll(start, { failed: true, onDisk: undefined, at: t(0) });
+    expect(state).toEqual({ streak: undefined, unread: { count: 1, since: t(0).toISOString() } });
+    state = githubStreakAfterPoll(state, { failed: true, onDisk: undefined, at: t(1) });
+    expect(state.unread).toEqual({ count: 2, since: t(0).toISOString() });
+    // Once it can be read, the failures meanwhile join its streak, and this one too.
+    expect(githubStreakAfterPoll(state, { failed: true, onDisk: { count: 3, since: 'old' }, at: t(2) })).toEqual({ streak: { count: 6, since: 'old' }, unread: null });
+    expect(githubStreakAfterPoll(state, { failed: true, onDisk: null, at: t(2) })).toEqual({ streak: { count: 3, since: t(0).toISOString() }, unread: null });
+    // A success while unreadable ends the failures kept apart.
+    expect(githubStreakAfterPoll(state, { failed: false })).toEqual({ streak: null, unread: null });
+    // A known streak goes on without reading again.
+    expect(githubStreakAfterPoll({ streak: { count: 1, since: 'a' }, unread: null }, { failed: true, onDisk: undefined, at: t(3) })).toEqual({ streak: { count: 2, since: 'a' }, unread: null });
   });
 
   it('keeps a failure whose record could not be written in the next write', async () => {

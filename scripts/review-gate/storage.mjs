@@ -1430,6 +1430,7 @@ export async function writeDaemonError(paths, error) {
  */
 export async function recordGithubFailure(paths, error, at = new Date()) {
   const previous = await readGithubStreak(paths);
+  if (previous === undefined) throw new Error('The GitHub failure record could not be read; it is left as it is.');
   await writeGithubFailure(paths, error, {
     count: (previous?.count ?? 0) + 1,
     since: previous?.since ?? at.toISOString(),
