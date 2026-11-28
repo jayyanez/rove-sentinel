@@ -19,13 +19,15 @@ lineage.
   before the work they record: the loop stopped before the other pull requests, and the
   watcher's write replaced the GitHub error with its own and skipped the GitHub failure record
   and its backoff. Those events are now best effort, and the watcher settles a poll's outcome
-  and the next poll's time before it writes anything, so storage that fails can neither turn a
-  poll into another outcome nor move the schedule. The watcher also keeps the failure streak
-  itself and writes the whole record each time: within a running watcher, a failure whose
-  record could not be written still counts in the next one written, and a record a success
-  could not remove is replaced, not added to, by the next failure (a restart in between reads
-  the record as it is on disk). Until the next poll writes or removes it, `status` shows the
-  record as it was. A poll that fails without a reason counts as a failure.
+  and the next poll's time before it writes the poll's records (its event and the failure
+  record), so those writes failing can neither turn a poll into another outcome nor move the
+  schedule. The watcher also keeps the failure streak itself and writes the whole record each
+  time: within a running watcher, a failure whose record could not be written still counts in
+  the next one written, and a record a success could not remove is replaced, not added to, by
+  the next failure (a restart in between reads the record as it is on disk); a record the
+  watcher cannot read is left as it is and read again at the next failed poll. Until the next
+  poll writes or removes it, `status` shows the record as it was. A poll that fails without a
+  reason counts as a failure.
 - **A pull request comment's summary names a lane that did not finish by its status.** A
   completed review's summary quoted each deterministic lane's own note, and a lane that
   failed, timed out or was unavailable can quote a tool's output or a local path; a cleanup

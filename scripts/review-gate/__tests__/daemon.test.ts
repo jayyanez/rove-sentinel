@@ -159,16 +159,20 @@ describe('the GitHub failure streak a watcher keeps', () => {
     }
   });
 
-  it('reads no streak from a missing, unreadable or malformed record', async () => {
+  it('reads no streak from a missing or malformed record, and an unknown one from a record it cannot read', async () => {
     const stateRoot = await mkdtemp(path.join(os.tmpdir(), 'sentinel-github-streak-read-'));
     const paths = await ensureState(stateRoot);
     try {
       expect(await readGithubStreak(paths)).toBeNull();
       await atomicWriteJson(paths.githubFailure, { schemaVersion: 1, count: 'two' });
       expect(await readGithubStreak(paths)).toBeNull();
+      // Corrupt text is no record: the next write replaces it.
+      await writeFile(paths.githubFailure, '{ "count": 3,');
+      expect(await readGithubStreak(paths)).toBeNull();
+      // A record that cannot be read is unknown, and the watcher leaves it.
       await rm(paths.githubFailure, { force: true });
       await mkdir(paths.githubFailure, { recursive: true });
-      expect(await readGithubStreak(paths)).toBeNull();
+      expect(await readGithubStreak(paths)).toBeUndefined();
     } finally {
       await rm(stateRoot, { recursive: true, force: true });
     }

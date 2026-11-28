@@ -1437,11 +1437,21 @@ export async function recordGithubFailure(paths, error, at = new Date()) {
 }
 
 /**
- * The streak a record on disk holds, or null; never throws (1.21.2). A running
- * watcher reads it once and keeps the streak itself from then on.
+ * The streak a record on disk holds, null when there is none, or undefined when
+ * it could not be read; never throws (1.21.2). A running watcher reads it once
+ * and keeps the streak itself from then on.
  */
 export async function readGithubStreak(paths) {
-  const record = await readJson(paths.githubFailure).catch(() => null);
+  let record;
+  try {
+    record = await readJson(paths.githubFailure);
+  } catch (error) {
+    // Corrupt text is no record (status cannot read it either), and the next
+    // write replaces it. A record that could not be read is unknown
+    // (undefined), and is left as it is.
+    if (error instanceof SyntaxError) return null;
+    return undefined;
+  }
   return Number.isInteger(record?.count) && record.count > 0
     ? { count: record.count, since: typeof record.since === 'string' ? record.since : null }
     : null;

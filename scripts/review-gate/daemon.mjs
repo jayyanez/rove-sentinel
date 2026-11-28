@@ -441,15 +441,20 @@ export async function runWatcher({
             // record each time: a failure whose record could not be written
             // still counts in the next write, and a record a success could
             // not remove is replaced, not added to, by the next failure.
+            // A record the watcher cannot read is left as it is, and read again
+            // at the next failed poll, rather than replaced with a count that
+            // does not know it.
             if (githubStreak === undefined) githubStreak = pollFailed ? await readGithubStreak(context.paths) : null;
             const pollAt = new Date();
-            githubStreak = nextGithubStreak(githubStreak, pollFailed, pollAt);
+            if (githubStreak !== undefined) githubStreak = nextGithubStreak(githubStreak, pollFailed, pollAt);
             if (pollFailed) {
               await recordEvent(context.paths, {
                 type: 'github-error',
                 message: pollError?.message || String(pollError),
               }).catch(() => {});
-              await writeGithubFailure(context.paths, pollError, githubStreak, pollAt).catch(() => {});
+              if (githubStreak !== undefined) {
+                await writeGithubFailure(context.paths, pollError, githubStreak, pollAt).catch(() => {});
+              }
               progress(`GitHub watcher error; retrying in ${Math.round(githubBackoffMs / 1000)}s: ${pollError?.message || String(pollError)}`);
             } else {
               await clearGithubFailure(context.paths).catch(() => {});

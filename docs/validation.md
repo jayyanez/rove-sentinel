@@ -13,14 +13,14 @@ summary; `daemon.test.ts` keeps the GitHub failure record when the events folder
 the poll, keeps a successful poll a success and a failed one a GitHub error (saying when it
 retries) when the failure record can be neither written nor removed, counts a poll that rejects
 without a reason as a failure, counts a failure whose record could not be written in the next
-record written, starts a new streak after a success, and reads no streak from a missing or
-malformed record (the watcher's use of the streak across two polls of one run is not covered by
-a test); `gate.test.ts` names lanes by status in the public summary, keeps a failing lane's
-local folder out of a real `runGate` round's comment, keeps a cleanup failure's folders local,
-and publishes no summary not written for the comment except a skipped change's;
-`settleDeferrals.test.ts` gives a settled round the same public summary. 1,173 tests passed in
-42 files on Windows on the development host, and the package smoke passed
-(`rove-sentinel@1.21.2`).
+record written, starts a new streak after a success, reads no streak from a missing or malformed
+record (corrupt text included) and an unknown one from a record it cannot read (the watcher's
+use of the streak across two polls of one run is not covered by a test); `gate.test.ts` names
+lanes by status in the public summary, keeps a failing lane's local folder out of a real
+`runGate` round's comment, keeps a cleanup failure's folders local, and publishes no summary not
+written for the comment except a skipped change's; `settleDeferrals.test.ts` gives a settled
+round the same public summary. 1,173 tests passed in 42 files on Windows on the development
+host, and the package smoke passed (`rove-sentinel@1.21.2`).
 
 ## 1.21.1 a rerun of an unchanged head settles from the round that reviewed it — 2026-11-27
 
